@@ -3,7 +3,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from app.core.config import settings
-from app.core.dependencies import DbSession, require_role
+from app.core.dependencies import DbSession, require_role, require_roles
 from app.modules.academic.models import Student, StudentSubjectEnrollment, Teacher
 from app.modules.identity.models import User
 from app.modules.operations.models import AuditLog
@@ -14,7 +14,7 @@ from .service import distance_meters,generate_qr_token,validate_qr_token
 router=APIRouter(tags=["attendance"])
 def teacher_session(db,user,session_id):
     session=db.get(ClassSession,session_id); teacher=db.scalar(select(Teacher).where(Teacher.user_id==user.id))
-    if not session or not teacher or session.timetable_entry.teacher_id!=teacher.id: raise HTTPException(403,"Not your class session")
+    if not session or not teacher or session.effective_teacher_id!=teacher.id: raise HTTPException(403,"Not your class session")
     return session
 @router.get("/sessions/{id}/qr",response_model=QRResponse)
 def qr(id:int,user:Annotated[User,Depends(require_role("teacher"))],db:DbSession):
@@ -49,6 +49,15 @@ def roster(id:int,user:Annotated[User,Depends(require_role("teacher"))],db:DbSes
     for student in students:
         record=db.scalar(select(AttendanceRecord).where(AttendanceRecord.class_session_id==id,AttendanceRecord.student_id==student.id))
         result.append(RosterItem(attendance_id=record.id if record else None,student_id=student.id,student_name=student.user.name,roll_number=student.roll_number,status=record.status.value if record else "pending"))
+    return result
+@router.get("/sessions/{id}/summary",response_model=list[RosterItem])
+def summary(id:int,user:Annotated[User,Depends(require_roles("teacher","admin"))],db:DbSession):
+    session=db.get(ClassSession,id)
+    if not session:raise HTTPException(404,"Session not found")
+    if user.role.value=="teacher":teacher_session(db,user,id)
+    entry=session.timetable_entry;students=db.scalars(select(Student).join(StudentSubjectEnrollment).where(Student.section_id==entry.section_id,StudentSubjectEnrollment.subject_id==entry.subject_id)).all();result=[]
+    for student in students:
+        record=db.scalar(select(AttendanceRecord).where(AttendanceRecord.class_session_id==id,AttendanceRecord.student_id==student.id));result.append(RosterItem(attendance_id=record.id if record else None,student_id=student.id,student_name=student.user.name,roll_number=student.roll_number,status=record.status.value if record else "pending"))
     return result
 @router.post("/sessions/{id}/finalize",response_model=list[RosterItem])
 def finalize(id:int,user:Annotated[User,Depends(require_role("teacher"))],db:DbSession):

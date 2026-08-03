@@ -5,8 +5,6 @@ from app.core.config import settings
 from app.core.database import Base
 from app.modules.academic import models as academic_models
 from app.modules.attendance import models as attendance_models
-from app.modules.course_completion import models as course_models
-from app.modules.crm import models as crm_models
 from app.modules.identity import models as identity_models
 from app.modules.operations import models as operations_models
 from app.modules.scheduling import models as scheduling_models
@@ -28,4 +26,3 @@ def run_migrations_online() -> None:
 
 if context.is_offline_mode(): run_migrations_offline()
 else: run_migrations_online()
-

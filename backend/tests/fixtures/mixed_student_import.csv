@@ -1,0 +1,4 @@
+name,email,batch_name,section_name,phone
+Imported Demo,imported.demo@example.com,2026,A,9800000000
+Missing Email,,2026,A,
+Wrong Section,wrong.section@example.com,2026,Z,

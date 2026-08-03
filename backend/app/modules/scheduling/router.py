@@ -1,33 +1,65 @@
-from datetime import datetime
+from datetime import date,datetime
 from typing import Annotated
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
-from app.core.dependencies import DbSession, get_current_user, require_role
+from fastapi import APIRouter,Depends,HTTPException,Query
+from sqlalchemy import or_,select
+from app.core.dependencies import DbSession,require_role,require_roles
 from app.modules.academic.models import Teacher
 from app.modules.identity.models import User
-from .models import ClassSession, ScheduleOverride, SessionStatus, TimetableEntry
-from .schemas import ClassSessionRead, CurrentSession, TimetableCreate, TimetableRead
-router = APIRouter(tags=["scheduling"])
-@router.post("/scheduling/timetable-entries", response_model=TimetableRead, dependencies=[Depends(require_role("admin"))])
-def create_entry(p: TimetableCreate, db: DbSession):
-    obj=TimetableEntry(**p.model_dump()); db.add(obj); db.commit(); db.refresh(obj); return obj
-@router.get("/teachers/me/current-sessions", response_model=list[CurrentSession])
-def current_sessions(user: Annotated[User, Depends(require_role("teacher"))], db: DbSession):
+from .models import ClassSession,OverrideStatus,ScheduleOverride,SessionStatus,TimetableEntry
+from .schemas import ClassSessionRead,CurrentSession,OverrideCreate,OverrideDecision,OverrideRead,SessionHistory,TimetableCreate,TimetableRead
+router=APIRouter(tags=["scheduling"])
+def approved_override(db,entry_id,on_date):return db.scalar(select(ScheduleOverride).where(ScheduleOverride.timetable_entry_id==entry_id,ScheduleOverride.override_date==on_date,ScheduleOverride.status==OverrideStatus.APPROVED))
+def teacher_profile(db,user):
     teacher=db.scalar(select(Teacher).where(Teacher.user_id==user.id))
-    if not teacher: raise HTTPException(404,"Teacher profile not found")
-    now=datetime.now(); entries=db.scalars(select(TimetableEntry).where(TimetableEntry.teacher_id==teacher.id, TimetableEntry.day_of_week==now.weekday())).all(); result=[]
+    if not teacher:raise HTTPException(404,"Teacher profile not found")
+    return teacher
+@router.post("/scheduling/timetable-entries",response_model=TimetableRead,dependencies=[Depends(require_role("admin"))])
+def create_entry(p:TimetableCreate,db:DbSession):obj=TimetableEntry(**p.model_dump());db.add(obj);db.commit();db.refresh(obj);return obj
+@router.get("/scheduling/timetable-entries",response_model=list[TimetableRead])
+def entries(user:Annotated[User,Depends(require_role("admin"))],db:DbSession):return db.scalars(select(TimetableEntry)).all()
+@router.post("/scheduling/overrides",response_model=OverrideRead)
+def create_override(p:OverrideCreate,user:Annotated[User,Depends(require_role("admin"))],db:DbSession):obj=ScheduleOverride(**p.model_dump(),created_by=user.id);db.add(obj);db.commit();db.refresh(obj);return obj
+@router.get("/scheduling/overrides",response_model=list[OverrideRead])
+def list_overrides(user:Annotated[User,Depends(require_role("admin"))],db:DbSession,date_from:date|None=None,date_to:date|None=None,status:str|None=None):
+    q=select(ScheduleOverride)
+    if date_from:q=q.where(ScheduleOverride.override_date>=date_from)
+    if date_to:q=q.where(ScheduleOverride.override_date<=date_to)
+    if status:q=q.where(ScheduleOverride.status==OverrideStatus(status))
+    return db.scalars(q.order_by(ScheduleOverride.override_date.desc())).all()
+@router.patch("/scheduling/overrides/{id}",response_model=OverrideRead)
+def decide_override(id:int,p:OverrideDecision,user:Annotated[User,Depends(require_role("admin"))],db:DbSession):
+    obj=db.get(ScheduleOverride,id)
+    if not obj:raise HTTPException(404,"Override not found")
+    try:obj.status=OverrideStatus(p.status)
+    except ValueError as exc:raise HTTPException(422,"Status must be approved or rejected") from exc
+    if obj.status==OverrideStatus.PENDING:raise HTTPException(422,"Choose approved or rejected")
+    db.commit();db.refresh(obj);return obj
+@router.get("/teachers/me/current-sessions",response_model=list[CurrentSession])
+def current_sessions(user:Annotated[User,Depends(require_role("teacher"))],db:DbSession):
+    teacher=teacher_profile(db,user);now=datetime.now();entries=db.scalars(select(TimetableEntry).where(TimetableEntry.day_of_week==now.weekday())).all();result=[]
     for entry in entries:
-        override=db.scalar(select(ScheduleOverride).where(ScheduleOverride.timetable_entry_id==entry.id, ScheduleOverride.override_date==now.date()))
-        if override and override.is_cancelled: continue
-        start=override.start_time if override and override.start_time else entry.start_time; end=override.end_time if override and override.end_time else entry.end_time
-        if start <= now.time() <= end:
+        override=approved_override(db,entry.id,now.date());effective_teacher=override.new_teacher_id if override and override.new_teacher_id else entry.teacher_id
+        if effective_teacher!=teacher.id or (override and override.is_cancelled):continue
+        start=override.start_time if override and override.start_time else entry.start_time;end=override.end_time if override and override.end_time else entry.end_time
+        if start<=now.time()<=end:
             session=db.scalar(select(ClassSession).where(ClassSession.timetable_entry_id==entry.id,ClassSession.session_date==now.date()))
-            result.append(CurrentSession(timetable_entry_id=entry.id,subject_name=entry.subject.name,room_name=entry.room_name,start_time=start,end_time=end,class_session_id=session.id if session else None,status=session.status.value if session else None))
+            result.append(CurrentSession(timetable_entry_id=entry.id,subject_name=entry.subject.name,original_teacher_id=entry.teacher_id,effective_teacher_id=effective_teacher,original_room=entry.room_name,room_name=override.new_room if override and override.new_room else entry.room_name,start_time=start,end_time=end,class_session_id=session.id if session else None,status=session.status.value if session else None,override_id=override.id if override else None))
     return result
-@router.post("/sessions/{entry_id}/start", response_model=ClassSessionRead)
+@router.post("/sessions/{entry_id}/start",response_model=ClassSessionRead)
 def start_session(entry_id:int,user:Annotated[User,Depends(require_role("teacher"))],db:DbSession):
-    teacher=db.scalar(select(Teacher).where(Teacher.user_id==user.id)); entry=db.get(TimetableEntry,entry_id)
-    if not entry or not teacher or entry.teacher_id!=teacher.id: raise HTTPException(403,"Not your timetable entry")
-    today=datetime.now().date(); session=db.scalar(select(ClassSession).where(ClassSession.timetable_entry_id==entry_id,ClassSession.session_date==today))
-    if not session: session=ClassSession(timetable_entry_id=entry_id,session_date=today,status=SessionStatus.ACTIVE); db.add(session); db.commit(); db.refresh(session)
+    teacher=teacher_profile(db,user);entry=db.get(TimetableEntry,entry_id)
+    if not entry:raise HTTPException(404,"Timetable entry not found")
+    today=datetime.now().date();override=approved_override(db,entry_id,today);effective=override.new_teacher_id if override and override.new_teacher_id else entry.teacher_id
+    if override and override.is_cancelled:raise HTTPException(409,"Class is cancelled")
+    if effective!=teacher.id:raise HTTPException(403,"This session is assigned to another teacher")
+    session=db.scalar(select(ClassSession).where(ClassSession.timetable_entry_id==entry_id,ClassSession.session_date==today))
+    if not session:session=ClassSession(timetable_entry_id=entry_id,session_date=today,effective_teacher_id=effective,effective_room=override.new_room if override and override.new_room else entry.room_name,schedule_override_id=override.id if override else None,status=SessionStatus.ACTIVE);db.add(session);db.commit();db.refresh(session)
     return session
+@router.get("/sessions",response_model=list[SessionHistory])
+def history(user:Annotated[User,Depends(require_roles("teacher","admin"))],db:DbSession,teacher_id:int|None=None,date_from:date|None=None,date_to:date|None=None):
+    q=select(ClassSession)
+    if user.role.value=="teacher":q=q.where(ClassSession.effective_teacher_id==teacher_profile(db,user).id)
+    elif teacher_id:q=q.where(ClassSession.effective_teacher_id==teacher_id)
+    if date_from:q=q.where(ClassSession.session_date>=date_from)
+    if date_to:q=q.where(ClassSession.session_date<=date_to)
+    return [SessionHistory(id=s.id,session_date=s.session_date,subject_name=s.timetable_entry.subject.name,effective_teacher_id=s.effective_teacher_id,effective_room=s.effective_room,status=s.status.value,finalized_at=s.finalized_at) for s in db.scalars(q.order_by(ClassSession.session_date.desc())).all()]

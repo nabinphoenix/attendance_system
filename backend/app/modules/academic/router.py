@@ -1,5 +1,6 @@
 from typing import Annotated, TypeVar
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 from app.core.dependencies import DbSession, require_role
 from app.core.security import hash_password
@@ -43,3 +44,18 @@ def get_student(id: int, db: DbSession):
 def get_teacher(id: int, db: DbSession):
     if not (obj := db.get(Teacher, id)): raise HTTPException(404, "Teacher not found")
     return obj
+@router.get("/teachers",response_model=list[schemas.TeacherRead])
+def teachers(db:DbSession):return db.scalars(select(Teacher)).all()
+@router.post("/students/{id}/enrollments", response_model=schemas.SubjectRead)
+def enroll(id:int,p:schemas.EnrollmentCreate,db:DbSession):
+    student=db.get(Student,id);subject=db.get(Subject,p.subject_id)
+    if not student or not subject:raise HTTPException(404,"Student or subject not found")
+    if subject not in student.subjects:student.subjects.append(subject);db.commit()
+    return subject
+@router.get("/students/{id}/subjects",response_model=list[schemas.SubjectRead])
+def student_subjects(id:int,db:DbSession):
+    student=db.get(Student,id)
+    if not student:raise HTTPException(404,"Student not found")
+    return student.subjects
+@router.get("/sections/{id}/students",response_model=list[schemas.StudentRead])
+def section_students(id:int,db:DbSession):return db.scalars(select(Student).where(Student.section_id==id)).all()
