@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     geofence_radius_meters: float = 150
     geolocation_max_accuracy_meters: float = 100
     attendance_threshold_percent: float = 75
+    minimum_observations: int = 4
     cors_origins: list[str] = ["http://localhost:3000"]
 
 

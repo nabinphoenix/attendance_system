@@ -3,7 +3,7 @@ from datetime import date, datetime
 from sqlalchemy import Date, DateTime, Enum, ForeignKey, Index, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
 from app.core.database import Base
-class AttendanceStatus(str, enum.Enum): PRESENT="present"; ABSENT="absent"; LEAVE="leave"; BUNK="bunk"
+class AttendanceStatus(str, enum.Enum): PRESENT="present"; LATE="late"; ABSENT="absent"; LEAVE="leave"; BUNK="bunk"
 class AttendanceMethod(str, enum.Enum): QR_GEOFENCE="qr_geofence"; FINALIZATION="finalization"; MANUAL="manual"
 class AttendanceRecord(Base):
     __tablename__="attendance_records"

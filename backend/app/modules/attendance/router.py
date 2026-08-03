@@ -8,6 +8,8 @@ from app.modules.academic.models import Student, StudentSubjectEnrollment, Teach
 from app.modules.identity.models import User
 from app.modules.operations.models import AuditLog
 from app.modules.scheduling.models import ClassSession, SessionStatus
+from app.modules.course_completion.models import CoursePlan
+from app.modules.academic.models import Section
 from .models import AttendanceChange,AttendanceMethod,AttendanceRecord,AttendanceStatus,LeaveRequest
 from .schemas import CheckInRequest,CheckInResponse,QRResponse,RosterItem,StatusChange
 from .service import distance_meters,generate_qr_token,validate_qr_token
@@ -62,12 +64,15 @@ def summary(id:int,user:Annotated[User,Depends(require_roles("teacher","admin"))
 @router.post("/sessions/{id}/finalize",response_model=list[RosterItem])
 def finalize(id:int,user:Annotated[User,Depends(require_role("teacher"))],db:DbSession):
     session=teacher_session(db,user,id); entry=session.timetable_entry
+    if session.status==SessionStatus.COMPLETED:return roster(id,user,db)
     students=db.scalars(select(Student).join(StudentSubjectEnrollment).where(Student.section_id==entry.section_id,StudentSubjectEnrollment.subject_id==entry.subject_id)).all()
     for student in students:
         record=db.scalar(select(AttendanceRecord).where(AttendanceRecord.class_session_id==id,AttendanceRecord.student_id==student.id))
         if not record:
             leave=db.scalar(select(LeaveRequest).where(LeaveRequest.student_id==student.id,LeaveRequest.leave_date==session.session_date,LeaveRequest.status=="approved"))
             db.add(AttendanceRecord(class_session_id=id,student_id=student.id,status=AttendanceStatus.LEAVE if leave else AttendanceStatus.ABSENT,method=AttendanceMethod.FINALIZATION))
+    batch_id=db.scalar(select(Section.batch_id).where(Section.id==entry.section_id));plan=db.scalar(select(CoursePlan).where(CoursePlan.subject_id==entry.subject_id,CoursePlan.batch_id==batch_id))
+    if plan:plan.conducted_sessions+=1
     session.status=SessionStatus.COMPLETED; session.finalized_at=datetime.now(UTC); db.commit(); return roster(id,user,db)
 @router.patch("/attendance/{id}",response_model=RosterItem)
 def change_status(id:int,p:StatusChange,user:Annotated[User,Depends(require_role("teacher"))],db:DbSession):

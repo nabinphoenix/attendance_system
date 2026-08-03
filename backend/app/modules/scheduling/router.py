@@ -7,6 +7,7 @@ from app.modules.academic.models import Teacher
 from app.modules.identity.models import User
 from .models import ClassSession,OverrideStatus,ScheduleOverride,SessionStatus,TimetableEntry
 from .schemas import ClassSessionRead,CurrentSession,OverrideCreate,OverrideDecision,OverrideRead,SessionHistory,TimetableCreate,TimetableRead
+from .service import create_schedule_override
 router=APIRouter(tags=["scheduling"])
 def approved_override(db,entry_id,on_date):return db.scalar(select(ScheduleOverride).where(ScheduleOverride.timetable_entry_id==entry_id,ScheduleOverride.override_date==on_date,ScheduleOverride.status==OverrideStatus.APPROVED))
 def teacher_profile(db,user):
@@ -18,7 +19,7 @@ def create_entry(p:TimetableCreate,db:DbSession):obj=TimetableEntry(**p.model_du
 @router.get("/scheduling/timetable-entries",response_model=list[TimetableRead])
 def entries(user:Annotated[User,Depends(require_role("admin"))],db:DbSession):return db.scalars(select(TimetableEntry)).all()
 @router.post("/scheduling/overrides",response_model=OverrideRead)
-def create_override(p:OverrideCreate,user:Annotated[User,Depends(require_role("admin"))],db:DbSession):obj=ScheduleOverride(**p.model_dump(),created_by=user.id);db.add(obj);db.commit();db.refresh(obj);return obj
+def create_override(p:OverrideCreate,user:Annotated[User,Depends(require_role("admin"))],db:DbSession):obj=create_schedule_override(db,**p.model_dump(),created_by=user.id);db.commit();db.refresh(obj);return obj
 @router.get("/scheduling/overrides",response_model=list[OverrideRead])
 def list_overrides(user:Annotated[User,Depends(require_role("admin"))],db:DbSession,date_from:date|None=None,date_to:date|None=None,status:str|None=None):
     q=select(ScheduleOverride)

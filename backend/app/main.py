@@ -9,6 +9,7 @@ from app.modules.crm.router import router as crm_router
 from app.modules.identity.router import router as identity_router
 from app.modules.operations.router import router as operations_router
 from app.modules.scheduling.router import router as scheduling_router
+from app.modules.analytics.router import router as analytics_router
 
 app = FastAPI(title=settings.app_name, version="0.1.0")
 app.add_middleware(
@@ -27,6 +28,7 @@ for router in (
     course_completion_router,
     crm_router,
     operations_router,
+    analytics_router,
 ):
     app.include_router(router, prefix="/api/v1")
 
@@ -34,4 +36,3 @@ for router in (
 @app.get("/health", tags=["system"])
 def health_check() -> dict[str, str]:
     return {"status": "healthy", "service": settings.app_name}
-

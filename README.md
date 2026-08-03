@@ -57,3 +57,9 @@ For this hackathon slice, the browser stores the JWT in `localStorage`. This is 
 ## Phase 3 operations
 
 Admins can create and approve dated schedule overrides at `/admin/overrides`. An approved substitute assignment completely transfers start/manage access for that date: the original teacher cannot start or manage the overridden session, while original and effective teacher/room values remain recorded separately. Bulk student CSV onboarding is available at `/admin/imports`; expected headers are `name,email,batch_name,section_name,phone`. Successful accounts receive the temporary password `Welcome123!`, which must be replaced with a reset-token flow before production use. Each row uses a database savepoint, so invalid rows do not roll back valid accounts. Teachers can review their session history from `/teacher/sessions` and open completed roster summaries.
+
+## Phase 4 intervention workflow
+
+Course plans track planned and finalized sessions. Finalization increments the matching subject/batch plan exactly once. Admins can request the first conflict-free one-hour makeup slot within the next 14 days and approve it into the existing schedule-override workflow at `/admin/course-completion`.
+
+Attendance analytics are exposed under `/api/v1/analytics`. Risk evaluation requires at least `MINIMUM_OBSERVATIONS` finalized observations and compares subject attendance against `ATTENDANCE_THRESHOLD_PERCENT`. Re-running evaluation refreshes the active case rather than creating duplicates. PostgreSQL enforces this with the partial unique index `uq_active_case` for open/in-progress cases. Coordinators manage assignment, chronological interactions, resolution, and closure from `/coordinator/cases`; closing requires a note.
