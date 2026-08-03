@@ -1,0 +1,2 @@
+"""AntimBench backend application."""
+

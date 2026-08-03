@@ -1,0 +1,1 @@
+"""Academic structure and people."""
