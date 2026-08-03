@@ -1,5 +1,7 @@
 # AntimBench
 
+> Phase 5 adds role-scoped CSV/PDF reports, durable notifications, an audit viewer, parent access, and a college-wide admin dashboard.
+
 AntimBench is a modular college attendance and CRM platform. The FastAPI backend groups identity, academics, scheduling, attendance, course-completion, CRM, and operations concerns into self-contained modules. The Next.js frontend provides role-oriented workspaces for students, teachers, administrators, coordinators, and parents.
 
 ## Backend

@@ -1,1 +1,3 @@
-export default function Page() { return <h1 className="text-3xl font-bold">Notifications</h1>; }
+"use client";
+import{useEffect,useState}from"react";import api from"@/lib/api";
+export default function Page(){const[rows,setRows]=useState<any[]|null>(null);const[error,setError]=useState("");useEffect(()=>{api.get("/api/v1/guardians/me/notifications").then(r=>setRows(r.data)).catch(e=>setError(e.response?.data?.detail??"Unable to load notifications"))},[]);return <><h1 className="mb-6 text-3xl font-bold">Notifications</h1>{error&&<p className="text-red-400">{error}</p>}{rows===null&&!error&&<p>Loading notifications…</p>}{rows?.map(n=><article key={n.id} className="mb-3 rounded border border-slate-800 p-4"><div className="flex justify-between"><b>{n.subject}</b><span className="capitalize text-slate-400">{n.status}</span></div><p className="my-2">{n.body}</p><small>{new Date(n.created_at).toLocaleString()}</small></article>)}</>}

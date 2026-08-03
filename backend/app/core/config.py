@@ -17,6 +17,12 @@ class Settings(BaseSettings):
     geolocation_max_accuracy_meters: float = 100
     attendance_threshold_percent: float = 75
     minimum_observations: int = 4
+    college_name: str = "AntimBench College"
+    smtp_host: str | None = None
+    smtp_port: int = 587
+    smtp_username: str | None = None
+    smtp_password: str | None = None
+    smtp_from_email: str = "notifications@antimbench.local"
     cors_origins: list[str] = ["http://localhost:3000"]
 
 

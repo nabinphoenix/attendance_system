@@ -10,6 +10,7 @@ from app.modules.identity.router import router as identity_router
 from app.modules.operations.router import router as operations_router
 from app.modules.scheduling.router import router as scheduling_router
 from app.modules.analytics.router import router as analytics_router
+from app.modules.academic.guardian_router import router as guardian_router
 
 app = FastAPI(title=settings.app_name, version="0.1.0")
 app.add_middleware(
@@ -29,6 +30,7 @@ for router in (
     crm_router,
     operations_router,
     analytics_router,
+    guardian_router,
 ):
     app.include_router(router, prefix="/api/v1")
 

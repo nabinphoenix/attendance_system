@@ -33,6 +33,8 @@ class Guardian(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(150))
     student_id: Mapped[int] = mapped_column(ForeignKey("students.id"))
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    phone: Mapped[str | None] = mapped_column(String(30), nullable=True)
 
 class Teacher(Base):
     __tablename__ = "teachers"

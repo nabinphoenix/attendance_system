@@ -9,6 +9,8 @@ from app.modules.scheduling.service import create_schedule_override
 from .models import CoursePlan,MakeupSuggestion,SuggestionStatus
 from .schemas import PlanCreate,PlanRead,SuggestionDecision,SuggestionRead
 from .service import find_makeup_slot
+from app.modules.operations.service import log_audit,queue_notification
+from app.modules.academic.models import Student,StudentSubjectEnrollment
 router=APIRouter(prefix="/course-completion",tags=["course completion"],dependencies=[Depends(require_role("admin"))])
 def plan_read(p):return PlanRead(id=p.id,subject_id=p.subject_id,batch_id=p.batch_id,planned_sessions=p.planned_sessions,conducted_sessions=p.conducted_sessions,deficit=p.planned_sessions-p.conducted_sessions)
 @router.post("/plans",response_model=PlanRead)
@@ -32,5 +34,7 @@ def decide(id:int,p:SuggestionDecision,user:Annotated[User,Depends(require_role(
     except ValueError as exc:raise HTTPException(422,"Status must be approved or rejected") from exc
     if obj.status==SuggestionStatus.PENDING:raise HTTPException(422,"Choose approved or rejected")
     if obj.status==SuggestionStatus.APPROVED:
-        obj.approved_by=user.id;start_dt=datetime.combine(obj.suggested_date,obj.suggested_start_time);create_schedule_override(db,timetable_entry_id=obj.timetable_entry_id,override_date=obj.suggested_date,created_by=user.id,reason=f"Approved makeup for course plan {obj.course_plan_id}",new_teacher_id=obj.teacher_id,new_room=obj.suggested_room,start_time=obj.suggested_start_time,end_time=(start_dt+timedelta(hours=1)).time(),status=OverrideStatus.APPROVED)
+        obj.approved_by=user.id;start_dt=datetime.combine(obj.suggested_date,obj.suggested_start_time);override=create_schedule_override(db,timetable_entry_id=obj.timetable_entry_id,override_date=obj.suggested_date,created_by=user.id,reason=f"Approved makeup for course plan {obj.course_plan_id}",new_teacher_id=obj.teacher_id,new_room=obj.suggested_room,start_time=obj.suggested_start_time,end_time=(start_dt+timedelta(hours=1)).time(),status=OverrideStatus.APPROVED);plan=db.get(CoursePlan,obj.course_plan_id)
+        for student in db.scalars(select(Student).join(StudentSubjectEnrollment).where(StudentSubjectEnrollment.subject_id==plan.subject_id)).all():queue_notification(db,"student",student.id,"Makeup class scheduled",f"A makeup class is scheduled on {obj.suggested_date} at {obj.suggested_start_time} in {obj.suggested_room}.","schedule_override",override.id)
+        queue_notification(db,"teacher",obj.teacher_id,"Makeup class scheduled",f"Your makeup class is scheduled on {obj.suggested_date} at {obj.suggested_start_time} in {obj.suggested_room}.","schedule_override",override.id);log_audit(db,user.id,"makeup_suggestion.approved","makeup_suggestion",obj.id,{"status":"pending"},{"status":"approved","override_id":override.id})
     db.commit();db.refresh(obj);return obj

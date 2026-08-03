@@ -8,6 +8,7 @@ from app.modules.identity.models import User
 from .models import ClassSession,OverrideStatus,ScheduleOverride,SessionStatus,TimetableEntry
 from .schemas import ClassSessionRead,CurrentSession,OverrideCreate,OverrideDecision,OverrideRead,SessionHistory,TimetableCreate,TimetableRead
 from .service import create_schedule_override
+from app.modules.operations.service import log_audit
 router=APIRouter(tags=["scheduling"])
 def approved_override(db,entry_id,on_date):return db.scalar(select(ScheduleOverride).where(ScheduleOverride.timetable_entry_id==entry_id,ScheduleOverride.override_date==on_date,ScheduleOverride.status==OverrideStatus.APPROVED))
 def teacher_profile(db,user):
@@ -31,10 +32,11 @@ def list_overrides(user:Annotated[User,Depends(require_role("admin"))],db:DbSess
 def decide_override(id:int,p:OverrideDecision,user:Annotated[User,Depends(require_role("admin"))],db:DbSession):
     obj=db.get(ScheduleOverride,id)
     if not obj:raise HTTPException(404,"Override not found")
+    before=obj.status.value
     try:obj.status=OverrideStatus(p.status)
     except ValueError as exc:raise HTTPException(422,"Status must be approved or rejected") from exc
     if obj.status==OverrideStatus.PENDING:raise HTTPException(422,"Choose approved or rejected")
-    db.commit();db.refresh(obj);return obj
+    log_audit(db,user.id,"schedule_override.decision","schedule_override",obj.id,{"status":before},{"status":obj.status.value});db.commit();db.refresh(obj);return obj
 @router.get("/teachers/me/current-sessions",response_model=list[CurrentSession])
 def current_sessions(user:Annotated[User,Depends(require_role("teacher"))],db:DbSession):
     teacher=teacher_profile(db,user);now=datetime.now();entries=db.scalars(select(TimetableEntry).where(TimetableEntry.day_of_week==now.weekday())).all();result=[]
