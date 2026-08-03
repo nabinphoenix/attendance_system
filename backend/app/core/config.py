@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     access_token_expire_minutes: int = 60
     qr_token_expire_seconds: int = 45
     geofence_radius_meters: float = 150
+    geolocation_max_accuracy_meters: float = 100
     attendance_threshold_percent: float = 75
     cors_origins: list[str] = ["http://localhost:3000"]
 
@@ -24,4 +25,3 @@ def get_settings() -> Settings:
 
 
 settings = get_settings()
-

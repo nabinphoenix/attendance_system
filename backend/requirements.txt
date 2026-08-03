@@ -10,8 +10,10 @@ anyio==4.14.2
     # via
     #   starlette
     #   watchfiles
-bcrypt==5.0.0
-    # via passlib
+bcrypt==4.0.1
+    # via
+    #   antimbench-backend (pyproject.toml)
+    #   passlib
 boto3==1.43.62
     # via antimbench-backend (pyproject.toml)
 botocore==1.43.62

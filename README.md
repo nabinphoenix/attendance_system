@@ -12,6 +12,7 @@ Copy-Item .env.example .env   # skip when retaining the generated local developm
 # Edit .env with a working PostgreSQL URL and a secure JWT key.
 uv sync
 uv run alembic upgrade head
+uv run python -m app.seed
 uv run uvicorn app.main:app --reload --port 8000
 ```
 
@@ -43,3 +44,9 @@ Open `http://localhost:3000`. Role routes use explicit prefixes such as `/studen
 - `frontend/types`: shared frontend domain interfaces
 
 Secrets belong only in ignored `.env` and `.env.local` files. Commit the corresponding `.example` templates instead.
+
+## Attendance vertical-slice demo
+
+Run the seed command above after migrating. It creates an active timetable, one teacher, and four enrolled students and prints their credentials. Sign in as the teacher at `/login`, start the current class, and open its live view. In another browser profile, sign in as a student, paste the displayed QR token at `/student/check-in`, and permit a fresh high-accuracy location reading. QR codes rotate on the backend according to `QR_TOKEN_EXPIRE_SECONDS`; the teacher roster polls every four seconds.
+
+For this hackathon slice, the browser stores the JWT in `localStorage`. This is vulnerable to token theft if an XSS flaw exists. Production deployment should replace it with a same-origin backend-for-frontend that sets a `Secure`, `HttpOnly`, `SameSite` cookie.

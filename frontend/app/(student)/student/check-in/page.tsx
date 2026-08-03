@@ -1,2 +1,6 @@
-import QRScanner from "@/components/QRScanner";
-export default function Page() { return <><h1 className="mb-6 text-3xl font-bold">Check in</h1><QRScanner /></>; }
+"use client";
+import { FormEvent,useState } from "react";
+import api from "@/lib/api";
+import { getCurrentPosition } from "@/lib/geolocation";
+import { Button } from "@/components/ui/Button";
+export default function Page(){const[token,setToken]=useState("");const[message,setMessage]=useState("");const[working,setWorking]=useState(false);async function submit(e:FormEvent){e.preventDefault();setWorking(true);setMessage("Requesting a fresh location…");try{const p=await getCurrentPosition();const{data}=await api.post("/api/v1/check-ins",{qr_token:token,latitude:p.coords.latitude,longitude:p.coords.longitude,accuracy:p.coords.accuracy});setMessage(`Checked in ✓ (${data.status})`)}catch(err:any){setMessage(err.response?.data?.detail??err.message??"Check-in failed")}finally{setWorking(false)}}return <div className="mx-auto max-w-xl"><h1 className="mb-2 text-3xl font-bold">Check in</h1><p className="mb-6 text-slate-400">Scan support can use the installed camera library; paste the QR token below for reliable demos without camera permissions.</p><form onSubmit={submit} className="space-y-4"><textarea value={token} onChange={e=>setToken(e.target.value)} className="h-36 w-full rounded bg-slate-800 p-3" placeholder="Paste QR token" required/><Button disabled={working}>{working?"Checking…":"Use location and check in"}</Button></form>{message&&<p className="mt-5 rounded bg-slate-900 p-4">{message}</p>}</div>}

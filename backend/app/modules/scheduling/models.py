@@ -1,11 +1,39 @@
-from sqlalchemy.orm import Mapped, mapped_column
+import enum
+from datetime import date, datetime, time
+from sqlalchemy import Date, DateTime, Enum, Float, ForeignKey, Integer, String, Time, UniqueConstraint, func
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.core.database import Base
+class SessionStatus(str, enum.Enum): ACTIVE="active"; COMPLETED="completed"
 class TimetableEntry(Base):
     __tablename__ = "timetable_entries"
     id: Mapped[int] = mapped_column(primary_key=True)
+    teacher_id: Mapped[int] = mapped_column(ForeignKey("teachers.id"))
+    subject_id: Mapped[int] = mapped_column(ForeignKey("subjects.id"))
+    section_id: Mapped[int] = mapped_column(ForeignKey("sections.id"))
+    day_of_week: Mapped[int] = mapped_column(Integer)
+    start_time: Mapped[time] = mapped_column(Time)
+    end_time: Mapped[time] = mapped_column(Time)
+    room_name: Mapped[str] = mapped_column(String(100))
+    latitude: Mapped[float] = mapped_column(Float)
+    longitude: Mapped[float] = mapped_column(Float)
+    subject = relationship("Subject")
 class ScheduleOverride(Base):
     __tablename__ = "schedule_overrides"
     id: Mapped[int] = mapped_column(primary_key=True)
+    timetable_entry_id: Mapped[int] = mapped_column(ForeignKey("timetable_entries.id"))
+    override_date: Mapped[date] = mapped_column(Date)
+    start_time: Mapped[time | None] = mapped_column(Time, nullable=True)
+    end_time: Mapped[time | None] = mapped_column(Time, nullable=True)
+    is_cancelled: Mapped[bool] = mapped_column(default=False)
 class ClassSession(Base):
     __tablename__ = "class_sessions"
+    __table_args__ = (UniqueConstraint("timetable_entry_id", "session_date", name="uq_session_entry_date"),)
     id: Mapped[int] = mapped_column(primary_key=True)
+    timetable_entry_id: Mapped[int] = mapped_column(ForeignKey("timetable_entries.id"))
+    session_date: Mapped[date] = mapped_column(Date)
+    status: Mapped[SessionStatus] = mapped_column(Enum(SessionStatus), default=SessionStatus.ACTIVE)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    finalized_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    current_qr_token: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    qr_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    timetable_entry = relationship("TimetableEntry")
