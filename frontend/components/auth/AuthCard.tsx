@@ -1,0 +1,3 @@
+import {ReactNode} from "react";
+export function AuthMain({children}:{children:ReactNode}){return <main className="flex min-h-screen items-center justify-center bg-slate-950 px-4 py-10"><section className="w-full max-w-md rounded-2xl border border-slate-800 bg-slate-950 p-6 shadow-2xl shadow-black/20 sm:p-8">{children}</section></main>}
+export function Field({label,error,children}:{label:string,error:string|false,children:ReactNode}){return <label className="block"><span className="mb-2 block text-sm font-medium text-slate-200">{label}</span>{children}{error&&<span className="mt-1.5 block text-sm text-red-400">{error}</span>}</label>}
