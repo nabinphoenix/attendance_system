@@ -89,9 +89,10 @@ Add these **GitHub Variables**:
 
 AWS Academy credentials expire. Refresh all three AWS secrets together before
 they expire; the workflow supports the required session token. The deployment
-job validates its non-secret variables, uploads a uniquely named ZIP, creates
-an application version, updates the existing environment, and waits for
-`Ready` plus `Green` health. It does not create infrastructure.
+job validates its non-secret variables, uploads a uniquely named ZIP, waits for
+Elastic Beanstalk to process the application version and for the environment to
+be `Ready`, updates the existing environment, and then waits for `Ready` plus
+`Green` health. It does not create infrastructure.
 
 ## Bundle and service behaviour
 

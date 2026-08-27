@@ -270,6 +270,80 @@ jobs:
             --process \
             --no-auto-create-application
 
+      - name: Wait for Elastic Beanstalk version processing
+        shell: bash
+        env:
+          VERSION_LABEL: ${{ steps.package.outputs.version_label }}
+        run: |
+          set -euo pipefail
+          deadline=$((SECONDS + 600))
+
+          while (( SECONDS < deadline )); do
+            version_status="$(aws elasticbeanstalk describe-application-versions \
+              --application-name "${EB_APPLICATION_NAME}" \
+              --version-labels "${VERSION_LABEL}" \
+              --query 'ApplicationVersions[0].Status' \
+              --output text)"
+            echo "Application version status=${version_status}"
+
+            case "${version_status}" in
+              Processed)
+                exit 0
+                ;;
+              Failed)
+                reason="$(aws elasticbeanstalk describe-application-versions \
+                  --application-name "${EB_APPLICATION_NAME}" \
+                  --version-labels "${VERSION_LABEL}" \
+                  --query 'ApplicationVersions[0].StatusReason' \
+                  --output text)"
+                echo "::error title=Elastic Beanstalk version processing failed::${reason}"
+                exit 1
+                ;;
+              Unprocessed|Processing|Building)
+                sleep 10
+                ;;
+              *)
+                echo "::error title=Elastic Beanstalk version not found::${VERSION_LABEL} was not returned by Elastic Beanstalk."
+                exit 1
+                ;;
+            esac
+          done
+
+          echo "::error title=Elastic Beanstalk version processing timed out::${VERSION_LABEL} was not Processed within 10 minutes."
+          exit 1
+
+      - name: Wait for Elastic Beanstalk environment availability
+        shell: bash
+        run: |
+          set -euo pipefail
+          deadline=$((SECONDS + 900))
+
+          while (( SECONDS < deadline )); do
+            environment_status="$(aws elasticbeanstalk describe-environments \
+              --application-name "${EB_APPLICATION_NAME}" \
+              --environment-names "${EB_ENVIRONMENT_NAME}" \
+              --no-include-deleted \
+              --query 'Environments[0].Status' \
+              --output text)"
+            echo "Environment status=${environment_status}"
+
+            case "${environment_status}" in
+              Ready)
+                exit 0
+                ;;
+              Terminated|None|"")
+                echo "::error title=Elastic Beanstalk environment not available::${EB_ENVIRONMENT_NAME} has status=${environment_status:-not-found}."
+                exit 1
+                ;;
+              *)
+                sleep 15
+                ;;
+            esac
+          done
+
+          echo "::error title=Elastic Beanstalk environment remained busy::${EB_ENVIRONMENT_NAME} did not become Ready within 15 minutes."
+          exit 1
+
       - name: Deploy Elastic Beanstalk application version
         shell: bash
         env:
