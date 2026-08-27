@@ -1,14 +1,14 @@
 """add user profile avatar storage key
 
 Revision ID: f7a8b9c0d1e2
-Revises: f6a7b8c9d0e1
+Revises: f2a3b4c5d6e7
 """
 from alembic import op
 import sqlalchemy as sa
 
 
 revision = "f7a8b9c0d1e2"
-down_revision = "f6a7b8c9d0e1"
+down_revision = "f2a3b4c5d6e7"
 branch_labels = None
 depends_on = None
 
