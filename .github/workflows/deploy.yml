@@ -235,7 +235,8 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
           mask-aws-account-id: true
 
-      - name: Create application version and deploy
+      - name: Upload Elastic Beanstalk source bundle
+        id: upload
         shell: bash
         env:
           VERSION_LABEL: ${{ steps.package.outputs.version_label }}
@@ -246,17 +247,32 @@ jobs:
 
           echo "Commit: ${GITHUB_SHA}"
           echo "Version label: ${VERSION_LABEL}"
-          echo "Target application: ${EB_APPLICATION_NAME}"
-          echo "Target environment: ${EB_ENVIRONMENT_NAME}"
           echo "Region: ${AWS_REGION}"
+          echo "Source bundle: s3://${EB_S3_BUCKET}/${S3_KEY}"
 
           aws s3 cp "${ARTIFACT_PATH}" "s3://${EB_S3_BUCKET}/${S3_KEY}" --only-show-errors
+          echo "s3_key=${S3_KEY}" >> "${GITHUB_OUTPUT}"
+
+      - name: Create Elastic Beanstalk application version
+        shell: bash
+        env:
+          VERSION_LABEL: ${{ steps.package.outputs.version_label }}
+          S3_KEY: ${{ steps.upload.outputs.s3_key }}
+        run: |
+          set -euo pipefail
           aws elasticbeanstalk create-application-version \
             --application-name "${EB_APPLICATION_NAME}" \
             --version-label "${VERSION_LABEL}" \
             --source-bundle S3Bucket="${EB_S3_BUCKET}",S3Key="${S3_KEY}" \
             --process \
             --no-auto-create-application
+
+      - name: Deploy Elastic Beanstalk application version
+        shell: bash
+        env:
+          VERSION_LABEL: ${{ steps.package.outputs.version_label }}
+        run: |
+          set -euo pipefail
           aws elasticbeanstalk update-environment \
             --application-name "${EB_APPLICATION_NAME}" \
             --environment-name "${EB_ENVIRONMENT_NAME}" \
