@@ -1,1 +1,1 @@
-export function Card({ children }: { children: React.ReactNode }) { return <section className="rounded-xl border border-slate-800 bg-slate-900 p-5">{children}</section>; }
+export function Card({children,className=""}:{children:React.ReactNode;className?:string}){return <section className={`panel p-5 sm:p-6 ${className}`}>{children}</section>}

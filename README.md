@@ -6,20 +6,33 @@ AntimBench is a modular college attendance and CRM platform. The FastAPI backend
 
 ## Backend
 
-Requirements: Python 3.12+, Docker Desktop, and [uv](https://docs.astral.sh/uv/).
+Requirements: Python 3.12+, a native PostgreSQL installation, and [uv](https://docs.astral.sh/uv/).
+
+Create the database and a local application user in PostgreSQL (using psql or pgAdmin):
+
+```sql
+CREATE DATABASE antimbench;
+CREATE USER antimbench_user WITH PASSWORD 'choose-a-local-password';
+GRANT ALL PRIVILEGES ON DATABASE antimbench TO antimbench_user;
+```
+
+Then configure `backend/.env` with `DATABASE_URL=postgresql://antimbench_user:<password>@localhost:5432/antimbench` and run:
 
 ```powershell
-docker compose up -d postgres
 cd backend
 Copy-Item .env.example .env   # skip when retaining the generated local development file
-# Edit .env with a working PostgreSQL URL and a secure JWT key.
 uv sync
 uv run alembic upgrade head
 uv run python -m app.seed
 uv run uvicorn app.main:app --reload --port 8000
 ```
 
-The Compose service runs PostgreSQL 17 at `localhost:5433` (container port 5432) with database, user, and password all set to `antimbench`. Port 5433 avoids collisions with commonly installed local PostgreSQL services. Data persists in the named `antimbench_postgres_data` volume. Wait for `docker compose ps` to report the service as healthy before migrating. The checked-in environment template already contains `postgresql://antimbench:antimbench@localhost:5433/antimbench`; use different credentials outside local development.
+Run durable notification delivery in a second terminal after configuring SMTP:
+
+```powershell
+cd backend
+uv run python -m app.workers.worker
+```
 
 The API health endpoint is `http://localhost:8000/health`; interactive documentation is at `/docs`. Run tests with `uv run pytest` and create the initial database migration with `uv run alembic revision --autogenerate -m "initial schema"` once PostgreSQL is available.
 
@@ -36,11 +49,17 @@ npm run dev
 
 Open `http://localhost:3000`. Role routes use explicit prefixes such as `/student/dashboard`, `/teacher/sessions`, and `/admin/dashboard`; route groups organize their source without producing ambiguous duplicate URLs.
 
+### Testing on a phone
+
+`npm run dev` listens on the local network and proxies browser API requests through Next.js. Keep the computer and phone on the same Wi-Fi network, then open `http://<computer-LAN-IP>:3000` on the phone (find the LAN IP with `ipconfig`). Do not use `localhost` on the phone: it refers to the phone itself. If Windows asks, allow Node.js through the private-network firewall.
+
+Mobile camera and GPS access for QR attendance require HTTPS. For local testing, run `npm run dev:https` and open `https://<computer-LAN-IP>:3000`; accept the local development certificate on the phone. For deployment, use a trusted HTTPS certificate and never rely on the self-signed development certificate.
+
 ## Structure
 
 - `backend/app/core`: settings, database sessions, security, and dependencies
 - `backend/app/modules`: independently organized business modules
-- `backend/app/workers`: local queue starter and job handlers
+- `backend/app/workers`: durable notification worker and job handlers
 - `backend/migrations`: Alembic environment and generated revisions
 - `backend/tests`: module-level test suites
 - `frontend/app`: App Router pages grouped by role
@@ -50,11 +69,11 @@ Open `http://localhost:3000`. Role routes use explicit prefixes such as `/studen
 
 Secrets belong only in ignored `.env` and `.env.local` files. Commit the corresponding `.example` templates instead.
 
-## Attendance vertical-slice demo
+## Initial data
 
-Run the seed command above after migrating. It creates an active timetable, one teacher, and four enrolled students and prints their credentials. Sign in as the teacher at `/login`, start the current class, and open its live view. In another browser profile, sign in as a student, paste the displayed QR token at `/student/check-in`, and permit a fresh high-accuracy location reading. QR codes rotate on the backend according to `QR_TOKEN_EXPIRE_SECONDS`; the teacher roster polls every four seconds.
+Run the seed command above after migrating to create the administrator login only. No academic, timetable, student, or attendance sample data is created; add your own program, batch, section, subjects, teachers, and routine from the admin workspace.
 
-For this hackathon slice, the browser stores the JWT in `localStorage`. This is vulnerable to token theft if an XSS flaw exists. Production deployment should replace it with a same-origin backend-for-frontend that sets a `Secure`, `HttpOnly`, `SameSite` cookie.
+Browser logins now establish a `HttpOnly`, `SameSite=Lax` session cookie; the frontend never stores the token in `localStorage`. Set `AUTH_COOKIE_SECURE=true` when serving the application over HTTPS in production. Login responses retain a bearer token only for documented non-browser API clients.
 
 ## Phase 3 operations
 
@@ -62,6 +81,6 @@ Admins can create and approve dated schedule overrides at `/admin/overrides`. An
 
 ## Phase 4 intervention workflow
 
-Course plans track planned and finalized sessions. Finalization increments the matching subject/batch plan exactly once. Admins can request the first conflict-free one-hour makeup slot within the next 14 days and approve it into the existing schedule-override workflow at `/admin/course-completion`.
+Course plans track planned and finalized sessions. Finalization increments the matching canonical module-offering/batch plan exactly once (legacy subject plans remain supported for historical records). Admins can request the first conflict-free one-hour makeup slot within the next 14 days and approve it as an additional routine occurrence at `/admin/course-completion`.
 
 Attendance analytics are exposed under `/api/v1/analytics`. Risk evaluation requires at least `MINIMUM_OBSERVATIONS` finalized observations and compares subject attendance against `ATTENDANCE_THRESHOLD_PERCENT`. Re-running evaluation refreshes the active case rather than creating duplicates. PostgreSQL enforces this with the partial unique index `uq_active_case` for open/in-progress cases. Coordinators manage assignment, chronological interactions, resolution, and closure from `/coordinator/cases`; closing requires a note.

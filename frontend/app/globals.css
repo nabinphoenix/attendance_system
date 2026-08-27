@@ -1,4 +1,61 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
-body { @apply bg-slate-950 text-slate-100 antialiased; }
+
+:root {
+  color-scheme: dark;
+  --background: 8 15 28;
+  --surface: 15 23 42;
+  --surface-muted: 20 30 50;
+  --border: 45 58 79;
+  --primary: 52 211 153;
+  --primary-hover: 110 231 183;
+  --text: 241 245 249;
+  --text-muted: 148 163 184;
+  --success: 52 211 153;
+  --warning: 251 191 36;
+  --danger: 248 113 113;
+  --info: 96 165 250;
+  --radius: 0.75rem;
+  --shadow: 0 14px 35px rgb(0 0 0 / 0.16);
+}
+
+@layer base {
+  * { @apply border-slate-800; }
+  html { @apply bg-slate-950; -webkit-text-size-adjust: 100%; }
+  body { @apply min-h-screen overflow-x-hidden bg-slate-950 text-slate-100 antialiased; background-image: radial-gradient(circle at top right, rgb(16 185 129 / .055), transparent 32rem); }
+  h1, h2, h3 { @apply tracking-tight text-slate-50; }
+  button, a, input, select, textarea { @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950; }
+  input:not([type="checkbox"]):not([type="radio"]):not([type="file"]), select, textarea { @apply min-h-10 rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 shadow-sm transition placeholder:text-slate-500 hover:border-slate-600 focus:border-emerald-500 disabled:cursor-not-allowed disabled:opacity-60; }
+  input[type="checkbox"], input[type="radio"] { @apply h-4 w-4 accent-emerald-500; }
+  table { @apply w-full text-left text-sm; }
+  thead { @apply bg-slate-900/80 text-xs font-semibold uppercase tracking-wider text-slate-400; }
+  th { @apply px-4 py-3; }
+  td { @apply px-4 py-3 align-middle text-slate-300; }
+  tbody tr { @apply border-t border-slate-800 transition hover:bg-slate-800/30; }
+}
+
+@layer components {
+  .page-container { @apply mx-auto w-full max-w-screen-2xl px-4 py-5 sm:px-6 sm:py-6 lg:px-8 lg:py-8; }
+  .panel { @apply rounded-xl border border-slate-800 bg-slate-900/75; box-shadow: var(--shadow); }
+  .field-label { @apply mb-1.5 block text-sm font-medium text-slate-200; }
+  .helper-text { @apply mt-1.5 text-sm text-slate-400; }
+  .table-wrap { @apply overflow-x-auto rounded-xl border border-slate-800 bg-slate-900/60; -webkit-overflow-scrolling: touch; }
+  .interactive-link { @apply font-medium text-emerald-400 transition hover:text-emerald-300; }
+}
+
+#attendance-qr-reader video,
+#attendance-qr-reader img,
+#attendance-qr-reader canvas {
+  max-width: 100% !important;
+  height: auto !important;
+}
+
+@media (max-width: 639px) {
+  #attendance-qr-reader__dashboard { padding: 0.75rem !important; }
+  #attendance-qr-reader__dashboard_section_swaplink { display: none !important; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { scroll-behavior: auto !important; transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; }
+}

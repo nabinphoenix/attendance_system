@@ -1,0 +1,1 @@
+import RoutineMasterPage from "@/components/RoutineMasterPage";export default function Page(){return <RoutineMasterPage title="Time slots" endpoint="time-slots" fields={[{key:"start_time",label:"Start time",type:"time"},{key:"end_time",label:"End time",type:"time"},{key:"duration_label",label:"Label"}]}/>}

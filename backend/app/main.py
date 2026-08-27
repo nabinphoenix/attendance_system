@@ -11,6 +11,8 @@ from app.modules.operations.router import router as operations_router
 from app.modules.scheduling.router import router as scheduling_router
 from app.modules.analytics.router import router as analytics_router
 from app.modules.academic.guardian_router import router as guardian_router
+from app.modules.academic.routine_router import router as routine_router, student_router as student_routine_router
+from app.modules.academic.onboarding_router import router as onboarding_router
 
 app = FastAPI(title=settings.app_name, version="0.1.0")
 app.add_middleware(
@@ -31,6 +33,9 @@ for router in (
     operations_router,
     analytics_router,
     guardian_router,
+    student_routine_router,
+    routine_router,
+    onboarding_router,
 ):
     app.include_router(router, prefix="/api/v1")
 

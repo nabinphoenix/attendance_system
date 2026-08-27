@@ -1,0 +1,1 @@
+import RoutineMasterPage from "@/components/RoutineMasterPage";export default function Page(){return <RoutineMasterPage title="Rooms" endpoint="rooms" fields={[{key:"block_id",label:"Campus block",optionsEndpoint:"/api/v1/academic/blocks"},{key:"name",label:"Room name"},{key:"room_type",label:"Type"},{key:"capacity",label:"Capacity",type:"number"}]}/>}

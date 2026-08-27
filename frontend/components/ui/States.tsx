@@ -1,0 +1,5 @@
+import { Button } from "./Button";
+
+export function EmptyState({title,description,action}:{title:string;description?:string;action?:React.ReactNode}){return <div className="grid min-h-36 place-items-center p-6 text-center"><div><p className="font-medium text-slate-200">{title}</p>{description&&<p className="mt-1 text-sm text-slate-400">{description}</p>}{action&&<div className="mt-4">{action}</div>}</div></div>}
+export function ErrorState({title="Unable to load this page",description,onRetry}:{title?:string;description?:string;onRetry?:()=>void}){return <div role="alert" className="rounded-xl border border-red-500/30 bg-red-500/10 p-4 text-red-200"><p className="font-semibold">{title}</p>{description&&<p className="mt-1 text-sm text-red-200/80">{description}</p>}{onRetry&&<Button className="mt-3" size="sm" variant="danger" onClick={onRetry}>Try again</Button>}</div>}
+export function LoadingState({label="Loading"}:{label?:string}){return <div role="status" className="space-y-3 py-2"><span className="sr-only">{label}</span>{[1,2,3].map(item=><div key={item} className="h-14 animate-pulse rounded-lg bg-slate-800/70"/>)}</div>}

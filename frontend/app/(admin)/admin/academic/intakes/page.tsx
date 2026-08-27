@@ -1,0 +1,1 @@
+import RoutineMasterPage from "@/components/RoutineMasterPage";export default function Page(){return <RoutineMasterPage title="Intakes" endpoint="intakes" fields={[{key:"name",label:"Name"},{key:"code",label:"Code"},{key:"start_date",label:"Start date",type:"date"},{key:"program_id",label:"Program",optionsEndpoint:"/api/v1/academic/programs"}]}/>}

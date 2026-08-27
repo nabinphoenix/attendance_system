@@ -1,0 +1,1 @@
+import RoutineMasterPage from "@/components/RoutineMasterPage";export default function Page(){return <RoutineMasterPage title="Campus blocks" endpoint="blocks" fields={[{key:"name",label:"Block name"}]}/>}

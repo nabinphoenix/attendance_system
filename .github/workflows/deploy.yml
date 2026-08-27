@@ -1,0 +1,232 @@
+name: AntimBench CI/CD
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: antimbench-production-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Validate, package, and deploy
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION || secrets.AWS_REGION }}
+      EB_APPLICATION_NAME: ${{ vars.EB_APPLICATION_NAME || secrets.EB_APPLICATION_NAME }}
+      EB_ENVIRONMENT_NAME: ${{ vars.EB_ENVIRONMENT_NAME || secrets.EB_ENVIRONMENT_NAME }}
+      EB_S3_BUCKET: ${{ vars.EB_S3_BUCKET }}
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.8.15"
+
+      - name: Install locked backend dependencies
+        working-directory: backend
+        run: uv sync --locked --all-groups
+
+      - name: Run backend tests
+        working-directory: backend
+        run: uv run --locked pytest
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Type-check frontend
+        working-directory: frontend
+        run: npx tsc --noEmit
+
+      - name: Lint frontend
+        working-directory: frontend
+        run: npm run lint
+
+      - name: Build frontend
+        working-directory: frontend
+        env:
+          # Empty keeps the current same-origin /api behavior. This value is public
+          # and is embedded into the browser bundle if an external API is configured.
+          NEXT_PUBLIC_API_URL: ${{ vars.NEXT_PUBLIC_API_URL }}
+        run: npm run build
+
+      - name: Validate deployment configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          for required in AWS_REGION EB_APPLICATION_NAME EB_ENVIRONMENT_NAME EB_S3_BUCKET; do
+            if [[ -z "${!required:-}" ]]; then
+              echo "::error title=Missing deployment configuration::${required} must be configured before deployment."
+              exit 1
+            fi
+          done
+
+      - name: Create Elastic Beanstalk source bundle
+        id: package
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION_LABEL="antimbench-${GITHUB_SHA:0:12}-${GITHUB_RUN_NUMBER}"
+          BUNDLE_DIR="${RUNNER_TEMP}/antimbench-eb-bundle"
+          ARTIFACT_PATH="${RUNNER_TEMP}/${VERSION_LABEL}.zip"
+
+          rm -rf "${BUNDLE_DIR}" "${ARTIFACT_PATH}"
+          mkdir -p "${BUNDLE_DIR}/backend" "${BUNDLE_DIR}/frontend"
+
+          cp Procfile "${BUNDLE_DIR}/"
+          cp -a .platform "${BUNDLE_DIR}/"
+          cp backend/alembic.ini backend/pyproject.toml backend/uv.lock "${BUNDLE_DIR}/backend/"
+          rsync -a --exclude=__pycache__ --exclude='*.pyc' backend/app backend/migrations "${BUNDLE_DIR}/backend/"
+
+          cp frontend/package.json frontend/package-lock.json frontend/next.config.js "${BUNDLE_DIR}/frontend/"
+          rsync -a \
+            --exclude=cache \
+            --exclude=dev \
+            --exclude=diagnostics \
+            --exclude=types \
+            --exclude=trace \
+            --exclude=trace-build \
+            frontend/.next/ "${BUNDLE_DIR}/frontend/.next/"
+          if [[ -d frontend/public ]]; then
+            rsync -a frontend/public/ "${BUNDLE_DIR}/frontend/public/"
+          fi
+
+          # Preserve executable hook permissions inside the ZIP regardless of the
+          # repository checkout's filesystem mode.
+          find "${BUNDLE_DIR}/.platform/hooks" -type f -exec chmod 755 {} +
+          (cd "${BUNDLE_DIR}" && zip -qr "${ARTIFACT_PATH}" .)
+
+          for required in \
+            Procfile \
+            .platform/hooks/prebuild/01-install-runtime-dependencies.sh \
+            .platform/hooks/predeploy/01-run-migrations.sh \
+            .platform/hooks/postdeploy/01-start-api-service.sh \
+            backend/alembic.ini \
+            backend/pyproject.toml \
+            backend/uv.lock \
+            frontend/package.json \
+            frontend/.next/BUILD_ID; do
+            if ! unzip -Z1 "${ARTIFACT_PATH}" | grep -Fxq "${required}"; then
+              echo "::error title=Invalid deployment bundle::Required file is missing: ${required}"
+              exit 1
+            fi
+          done
+
+          if unzip -Z1 "${ARTIFACT_PATH}" | grep -Eq '(^|/)(\.git|node_modules|\.venv|\.pytest_cache|__pycache__|\.env[^/]*|certificates)(/|$)|(^|/)\.next/(cache|dev|diagnostics|types)(/|$)|\.db$'; then
+            echo "::error title=Unsafe deployment bundle::The archive contains an excluded local, cache, or secret file."
+            exit 1
+          fi
+
+          echo "version_label=${VERSION_LABEL}" >> "${GITHUB_OUTPUT}"
+          echo "artifact_path=${ARTIFACT_PATH}" >> "${GITHUB_OUTPUT}"
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ env.AWS_REGION }}
+          mask-aws-account-id: true
+
+      - name: Create application version and deploy
+        shell: bash
+        env:
+          VERSION_LABEL: ${{ steps.package.outputs.version_label }}
+          ARTIFACT_PATH: ${{ steps.package.outputs.artifact_path }}
+        run: |
+          set -euo pipefail
+          S3_KEY="antimbench/${VERSION_LABEL}.zip"
+
+          echo "Commit: ${GITHUB_SHA}"
+          echo "Version label: ${VERSION_LABEL}"
+          echo "Target application: ${EB_APPLICATION_NAME}"
+          echo "Target environment: ${EB_ENVIRONMENT_NAME}"
+          echo "Region: ${AWS_REGION}"
+
+          aws s3 cp "${ARTIFACT_PATH}" "s3://${EB_S3_BUCKET}/${S3_KEY}" --only-show-errors
+          aws elasticbeanstalk create-application-version \
+            --application-name "${EB_APPLICATION_NAME}" \
+            --version-label "${VERSION_LABEL}" \
+            --source-bundle S3Bucket="${EB_S3_BUCKET}",S3Key="${S3_KEY}" \
+            --process \
+            --no-auto-create-application
+          aws elasticbeanstalk update-environment \
+            --application-name "${EB_APPLICATION_NAME}" \
+            --environment-name "${EB_ENVIRONMENT_NAME}" \
+            --version-label "${VERSION_LABEL}" >/dev/null
+
+      - name: Wait for a healthy Elastic Beanstalk environment
+        shell: bash
+        env:
+          VERSION_LABEL: ${{ steps.package.outputs.version_label }}
+        run: |
+          set -euo pipefail
+          deadline=$((SECONDS + 1800))
+
+          while (( SECONDS < deadline )); do
+            state="$(aws elasticbeanstalk describe-environments \
+              --application-name "${EB_APPLICATION_NAME}" \
+              --environment-names "${EB_ENVIRONMENT_NAME}" \
+              --no-include-deleted \
+              --query 'Environments[0].[Status,Health,VersionLabel]' \
+              --output text)"
+
+            if [[ -z "${state}" || "${state}" == None* ]]; then
+              echo "::error title=Elastic Beanstalk environment not found::${EB_ENVIRONMENT_NAME} was not returned by Elastic Beanstalk."
+              exit 1
+            fi
+
+            read -r status health deployed_version <<<"${state}"
+            echo "Environment status=${status}; health=${health}; version=${deployed_version}"
+
+            if [[ "${status}" == "Ready" && "${health}" == "Green" && "${deployed_version}" == "${VERSION_LABEL}" ]]; then
+              echo "Elastic Beanstalk deployment is healthy."
+              exit 0
+            fi
+
+            if [[ "${status}" == "Terminated" || "${health}" == "Red" ]]; then
+              echo "::error title=Elastic Beanstalk deployment failed::Environment entered status=${status}, health=${health}."
+              aws elasticbeanstalk describe-events \
+                --application-name "${EB_APPLICATION_NAME}" \
+                --environment-name "${EB_ENVIRONMENT_NAME}" \
+                --max-records 20 \
+                --query 'Events[].[EventDate,Severity,Message]' \
+                --output table
+              exit 1
+            fi
+
+            sleep 20
+          done
+
+          echo "::error title=Elastic Beanstalk deployment timed out::Environment did not become Ready and Green within 30 minutes."
+          aws elasticbeanstalk describe-events \
+            --application-name "${EB_APPLICATION_NAME}" \
+            --environment-name "${EB_ENVIRONMENT_NAME}" \
+            --max-records 20 \
+            --query 'Events[].[EventDate,Severity,Message]' \
+            --output table
+          exit 1

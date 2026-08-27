@@ -4,8 +4,9 @@ __pycache__/
 .venv/
 node_modules/
 .next/
+frontend/certificates/
 *.pyc
 *.db
-uv.lock
 .DS_Store
 .pytest_cache/
+*.tsbuildinfo

@@ -1,0 +1,1 @@
+import RoutineMasterPage from "@/components/RoutineMasterPage";export default function Page(){return <RoutineMasterPage title="Class types" endpoint="class-types" fields={[{key:"name",label:"Class type"}]}/>}

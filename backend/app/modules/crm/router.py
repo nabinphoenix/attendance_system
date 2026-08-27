@@ -29,7 +29,7 @@ def assign(id:int,p:Assignment,user:Staff,db:DbSession):
 @router.post("/{id}/interactions",response_model=InteractionRead)
 def interact(id:int,p:InteractionCreate,user:Staff,db:DbSession):
     if not db.get(StudentCase,id):raise HTTPException(404,"Case not found")
-    obj=CaseInteraction(case_id=id,staff_id=user.id,**p.model_dump());db.add(obj);db.commit();db.refresh(obj);return obj
+    obj=CaseInteraction(case_id=id,staff_id=user.id,**p.model_dump());db.add(obj);db.flush();log_audit(db,user.id,"case.interaction_created","case_interaction",obj.id,None,{"case_id":id,"channel":p.channel});db.commit();db.refresh(obj);return obj
 @router.patch("/{id}/status",response_model=CaseRead)
 def change_status(id:int,p:StatusChange,user:Staff,db:DbSession):
     case=db.get(StudentCase,id)

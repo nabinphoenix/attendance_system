@@ -1,10 +1,11 @@
 import enum
 from datetime import date, datetime
-from sqlalchemy import Date, DateTime, Enum, ForeignKey, Index, String, Text, UniqueConstraint, func
+from sqlalchemy import Boolean, Date, DateTime, Enum, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
 from app.core.database import Base
 class AttendanceStatus(str, enum.Enum): PRESENT="present"; LATE="late"; ABSENT="absent"; LEAVE="leave"; BUNK="bunk"
 class AttendanceMethod(str, enum.Enum): QR_GEOFENCE="qr_geofence"; FINALIZATION="finalization"; MANUAL="manual"
+class CheckInAttemptStatus(str, enum.Enum): ACCEPTED="accepted"; PENDING="pending"; CONFIRMED="confirmed"; REJECTED="rejected"
 class AttendanceRecord(Base):
     __tablename__="attendance_records"
     __table_args__=(UniqueConstraint("class_session_id","student_id",name="uq_attendance_session_student"),Index("ix_attendance_session_student","class_session_id","student_id"))
@@ -23,6 +24,25 @@ class AttendanceChange(Base):
     reason:Mapped[str]=mapped_column(Text)
     actor_id:Mapped[int]=mapped_column(ForeignKey("users.id"))
     changed_at:Mapped[datetime]=mapped_column(DateTime(timezone=True),server_default=func.now())
+class CheckInAttempt(Base):
+    __tablename__="check_in_attempts"
+    __table_args__=(Index("ix_check_in_attempt_session_status","class_session_id","status"),)
+    id:Mapped[int]=mapped_column(primary_key=True)
+    class_session_id:Mapped[int]=mapped_column(ForeignKey("class_sessions.id",ondelete="CASCADE"))
+    student_id:Mapped[int]=mapped_column(ForeignKey("students.id"))
+    status:Mapped[CheckInAttemptStatus]=mapped_column(Enum(CheckInAttemptStatus))
+    failure_reason:Mapped[str|None]=mapped_column(String(50),nullable=True)
+    qr_version:Mapped[int|None]=mapped_column(Integer,nullable=True)
+    latitude:Mapped[float|None]=mapped_column(Float,nullable=True)
+    longitude:Mapped[float|None]=mapped_column(Float,nullable=True)
+    accuracy_meters:Mapped[float|None]=mapped_column(Float,nullable=True)
+    distance_meters:Mapped[float|None]=mapped_column(Float,nullable=True)
+    allowed_radius_meters:Mapped[float|None]=mapped_column(Float,nullable=True)
+    geofence_pass:Mapped[bool|None]=mapped_column(Boolean,nullable=True)
+    reviewed_by:Mapped[int|None]=mapped_column(ForeignKey("users.id"),nullable=True)
+    reviewed_at:Mapped[datetime|None]=mapped_column(DateTime(timezone=True),nullable=True)
+    decision_reason:Mapped[str|None]=mapped_column(Text,nullable=True)
+    created_at:Mapped[datetime]=mapped_column(DateTime(timezone=True),server_default=func.now())
 class LeaveRequest(Base):
     __tablename__="leave_requests"
     id:Mapped[int]=mapped_column(primary_key=True)

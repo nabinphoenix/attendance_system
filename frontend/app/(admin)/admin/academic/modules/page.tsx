@@ -1,0 +1,1 @@
+import RoutineMasterPage from "@/components/RoutineMasterPage";export default function Page(){return <RoutineMasterPage title="Curriculum modules" endpoint="modules" fields={[{key:"code",label:"Module code"},{key:"title",label:"Module title"},{key:"credits",label:"Credits",type:"number"},{key:"semester_number",label:"Semester",type:"number"}]}/>}
