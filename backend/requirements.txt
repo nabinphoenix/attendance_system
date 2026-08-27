@@ -82,6 +82,7 @@ passlib==1.7.4
     # via antimbench-backend (pyproject.toml)
 pillow==12.3.0
     # via
+    #   antimbench-backend
     #   reportlab
     #   weasyprint
 psycopg2-binary==2.9.12

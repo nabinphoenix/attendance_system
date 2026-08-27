@@ -1,20 +1,27 @@
 import hashlib
+import io
+from pathlib import Path
+from uuid import uuid4
 from datetime import UTC, datetime
 from typing import Annotated
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, File, HTTPException, Response, UploadFile, status
+from fastapi.responses import FileResponse
+from PIL import Image, UnidentifiedImageError
 from pydantic import BaseModel
 from sqlalchemy import func, select
 from app.core.dependencies import DbSession, get_current_user, require_role
 from app.modules.operations.service import log_audit
-from app.core.security import hash_password
+from app.core.security import hash_password, verify_password
 from app.modules.academic.models import Batch, InvitationStatus, Section, Student, StudentInvitation
 from app.modules.academic.schemas import BatchRead, SectionRead
 from app.modules.identity.models import User, UserRole
-from app.modules.identity.schemas import LoginRequest, SignupRequest, TokenResponse, UserRead, UserUpdate
+from app.modules.identity.schemas import LoginRequest, PasswordChange, ProfileUpdate, SignupRequest, TokenResponse, UserRead, UserUpdate
 from app.modules.identity.service import authenticate, issue_token
 from app.core.config import settings
 
 router = APIRouter(tags=["identity"])
+PROFILE_MEDIA_DIR = Path(__file__).resolve().parents[3] / "uploads" / "profiles"
+MAX_PROFILE_IMAGE_BYTES = 5 * 1024 * 1024
 
 
 def browser_session(response: Response, user: User) -> TokenResponse:
@@ -97,6 +104,77 @@ def public_sections(batch_id: int, db: DbSession):
 
 @router.get("/auth/me", response_model=UserRead)
 def me(user: Annotated[User, Depends(get_current_user)]) -> User: return user
+
+@router.patch("/auth/me", response_model=UserRead)
+def update_profile(payload: ProfileUpdate, user: Annotated[User, Depends(get_current_user)], db: DbSession) -> User:
+    name = payload.name.strip()
+    if not name:
+        raise HTTPException(422, "Name is required")
+    before = {"name": user.name}
+    user.name = name
+    student = db.scalar(select(Student).where(Student.user_id == user.id))
+    if student:
+        student.name = name
+    log_audit(db, user.id, "user.profile_updated", "user", user.id, before, {"name": name})
+    db.commit(); db.refresh(user)
+    return user
+
+@router.post("/auth/me/password", status_code=status.HTTP_204_NO_CONTENT)
+def change_password(payload: PasswordChange, user: Annotated[User, Depends(get_current_user)], db: DbSession) -> Response:
+    if not verify_password(payload.current_password, user.password_hash):
+        raise HTTPException(422, "Your current password is incorrect")
+    if payload.current_password == payload.new_password:
+        raise HTTPException(422, "Choose a password you have not used for this change")
+    user.password_hash = hash_password(payload.new_password)
+    log_audit(db, user.id, "user.password_changed", "user", user.id)
+    db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+@router.post("/auth/me/avatar", response_model=UserRead)
+async def upload_avatar(
+    image: Annotated[UploadFile, File(description="A JPEG, PNG, or WEBP profile image")],
+    user: Annotated[User, Depends(get_current_user)],
+    db: DbSession,
+) -> User:
+    if image.content_type not in {"image/jpeg", "image/png", "image/webp"}:
+        raise HTTPException(415, "Upload a JPEG, PNG, or WEBP image")
+    contents = await image.read()
+    if not contents or len(contents) > MAX_PROFILE_IMAGE_BYTES:
+        raise HTTPException(422, "Profile images must be between 1 byte and 5 MB")
+    try:
+        decoded = Image.open(io.BytesIO(contents))
+        image_format = decoded.format
+        decoded.verify()
+        decoded = Image.open(io.BytesIO(contents))
+        if decoded.width > 4096 or decoded.height > 4096:
+            raise HTTPException(422, "Profile images must be no larger than 4096 pixels on either side")
+    except (UnidentifiedImageError, OSError, SyntaxError, Image.DecompressionBombError) as exc:
+        raise HTTPException(422, "The uploaded file is not a valid image") from exc
+    expected_format = {"image/jpeg": "JPEG", "image/png": "PNG", "image/webp": "WEBP"}[image.content_type]
+    if image_format != expected_format:
+        raise HTTPException(422, "The uploaded file does not match its image type")
+    suffix = {"image/jpeg": "jpg", "image/png": "png", "image/webp": "webp"}[image.content_type]
+    PROFILE_MEDIA_DIR.mkdir(parents=True, exist_ok=True)
+    avatar_key = f"{uuid4().hex}.{suffix}"
+    (PROFILE_MEDIA_DIR / avatar_key).write_bytes(contents)
+    old_key = user.avatar_key
+    user.avatar_key = avatar_key
+    log_audit(db, user.id, "user.avatar_updated", "user", user.id, {"avatar_key": old_key}, {"avatar_key": avatar_key})
+    db.commit(); db.refresh(user)
+    if old_key:
+        old_file = PROFILE_MEDIA_DIR / old_key
+        if old_file.is_file():
+            old_file.unlink()
+    return user
+
+@router.get("/profile-media/{avatar_key}")
+def profile_media(avatar_key: str) -> FileResponse:
+    if Path(avatar_key).name != avatar_key:
+        raise HTTPException(404, "Profile image not found")
+    image_file = PROFILE_MEDIA_DIR / avatar_key
+    if not image_file.is_file():
+        raise HTTPException(404, "Profile image not found")
+    return FileResponse(image_file, headers={"Cache-Control": "public, max-age=31536000, immutable"})
 
 @router.post("/auth/logout", status_code=status.HTTP_204_NO_CONTENT)
 def logout(response: Response) -> Response:
