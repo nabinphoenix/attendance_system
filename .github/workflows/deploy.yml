@@ -13,16 +13,26 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  deploy:
-    name: Validate, package, and deploy
+  ci:
+    name: Validate application
     runs-on: ubuntu-latest
-    environment:
-      name: production
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: antimbench_test
+          POSTGRES_PASSWORD: antimbench_test_password
+          POSTGRES_DB: antimbench_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U antimbench_test -d antimbench_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     env:
-      AWS_REGION: ${{ vars.AWS_REGION || secrets.AWS_REGION }}
-      EB_APPLICATION_NAME: ${{ vars.EB_APPLICATION_NAME || secrets.EB_APPLICATION_NAME }}
-      EB_ENVIRONMENT_NAME: ${{ vars.EB_ENVIRONMENT_NAME || secrets.EB_ENVIRONMENT_NAME }}
-      EB_S3_BUCKET: ${{ vars.EB_S3_BUCKET }}
+      DATABASE_URL: postgresql://antimbench_test:antimbench_test_password@127.0.0.1:5432/antimbench_test
+      JWT_SECRET_KEY: a-test-only-secret-with-at-least-16-characters
 
     steps:
       - name: Check out source
@@ -42,9 +52,20 @@ jobs:
         working-directory: backend
         run: uv sync --locked --all-groups
 
+      - name: Apply backend migrations
+        working-directory: backend
+        run: uv run --locked alembic upgrade head
+
+      - name: Validate Alembic head
+        working-directory: backend
+        run: |
+          set -euo pipefail
+          test "$(uv run --locked alembic heads | wc -l)" -eq 1
+          uv run --locked alembic current
+
       - name: Run backend tests
         working-directory: backend
-        run: uv run --locked pytest
+        run: uv run --locked pytest -q
 
       - name: Set up Node.js 22
         uses: actions/setup-node@v4
@@ -67,11 +88,37 @@ jobs:
 
       - name: Build frontend
         working-directory: frontend
-        env:
-          # Empty keeps the current same-origin /api behavior. This value is public
-          # and is embedded into the browser bundle if an external API is configured.
-          NEXT_PUBLIC_API_URL: ${{ vars.NEXT_PUBLIC_API_URL }}
         run: npm run build
+
+  deploy:
+    name: Package and deploy
+    needs: ci
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      EB_APPLICATION_NAME: ${{ vars.EB_APPLICATION_NAME }}
+      EB_ENVIRONMENT_NAME: ${{ vars.EB_ENVIRONMENT_NAME }}
+      EB_S3_BUCKET: ${{ vars.EB_S3_BUCKET }}
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Build production frontend bundle
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
 
       - name: Validate deployment configuration
         shell: bash

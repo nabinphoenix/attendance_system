@@ -1,115 +1,116 @@
 # AntimBench Elastic Beanstalk deployment
 
-## Scope and target design
+## Demo architecture and limitations
 
-This repository is prepared for deployment to a **single-instance Elastic Beanstalk Node.js 22 Amazon Linux 2023 environment**. The environment, VPC, instance profile, PostgreSQL installation, and all other AWS infrastructure are intentionally outside this repository.
-
-The application version runs three local-only processes:
+This repository targets **one Elastic Beanstalk instance** in `us-east-1`:
 
 ```text
-Internet -> Elastic Beanstalk nginx (port 80/443)
-                   |- /api/* and /health -> FastAPI (127.0.0.1:8000)
-                   `- all other paths -> Next.js (EB Node.js port)
+Internet -> nginx (public port 80)
+               |- /api/* and /health -> FastAPI (127.0.0.1:8000)
+               `- all other requests -> Next.js (internal EB Node.js listener)
+
+PostgreSQL 15 -> 127.0.0.1:5432 only
 ```
 
-The root `Procfile` makes Elastic Beanstalk supervise the Next.js process. `.platform/hooks/prebuild/01-install-runtime-dependencies.sh` installs the frontend's production dependencies and uses `uv` to provision Python 3.12 and sync the backend's production dependencies. `.platform/hooks/postdeploy/01-start-api-service.sh` creates an unprivileged systemd service for Uvicorn. `.platform/nginx/conf.d/elasticbeanstalk/antimbench.conf` extends the default EB nginx server block to proxy only the API and health-check routes to the loopback-only FastAPI listener.
+Use the Node.js 22 Amazon Linux 2023 Elastic Beanstalk platform, application
+`AntimBench`, environment `AntimBench-Prod`, and a single `t3.micro` instance.
+The Node.js platform supervises the `web` command in the root `Procfile`; FastAPI
+is a `systemd` service created by the post-deploy hook. The Node.js platform
+supplies the internal listener port to Next.js (it defaults to port 3000 outside
+Elastic Beanstalk). FastAPI explicitly binds to `127.0.0.1:8000`.
 
-Docker is not used: the existing source bundle is enough when the Elastic Beanstalk environment uses the Node.js 22 AL2023 platform, whose Node runtime satisfies Next.js 16's Node 20.9+ requirement.
+PostgreSQL runs on that same EC2 instance for this demonstration. It is **not** a
+highly available production database: terminating or replacing the instance can
+remove its data. Back up the database before an environment replacement. Do not
+open port 5432 in the security group; nginx is the only public application entry
+point. This design uses no RDS, Load Balancer, NAT Gateway, or Docker. S3 is used
+only to hold Elastic Beanstalk application-version bundles.
 
-## GitHub Actions workflow
+## Required Elastic Beanstalk environment properties
 
-Workflow file: `.github/workflows/deploy.yml`
-Workflow name: **AntimBench CI/CD**
+Set these through **Elastic Beanstalk -> Environment -> Configuration -> Updates,
+monitoring, and logging -> Runtime environment variables**. Do not commit these
+values or put them in the GitHub workflow.
 
-It runs on pushes to `main` and on manual `workflow_dispatch`; it does not deploy pull requests. The concurrency group `antimbench-production-deploy` serializes deployments and does not cancel one already updating Elastic Beanstalk.
+| Property | Required | Purpose |
+| --- | --- | --- |
+| `DATABASE_URL` | Yes | `postgresql://antimbench_app:<URL_ENCODED_PASSWORD>@127.0.0.1:5432/antimbench` |
+| `POSTGRES_PASSWORD` | Yes | Password applied to the local `antimbench_app` PostgreSQL role. |
+| `JWT_SECRET_KEY` | Yes | Backend signing key; use a strong unique value. |
+| `AUTH_COOKIE_SECURE` | Yes | Set `false` for plain HTTP; set `true` as soon as HTTPS is introduced. |
+| `FRONTEND_URL` | Yes | For plain HTTP, `http://<elastic-beanstalk-cname>`. |
+| `CORS_ORIGINS` | Yes | JSON array, for example `["http://<elastic-beanstalk-cname>"]`. |
+| `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM_EMAIL` | Optional | Needed only when notification email delivery is enabled. |
+| `COLLEGE_NAME`, `ATTENDANCE_THRESHOLD_PERCENT`, `MINIMUM_OBSERVATIONS` | Optional | Branding and attendance-analysis behaviour. |
 
-The workflow stages are:
+The backend Settings model also supports `JWT_ALGORITHM`,
+`ACCESS_TOKEN_EXPIRE_MINUTES`, `AUTH_COOKIE_NAME`, QR/geofence limits,
+notification-worker polling settings, and `INVITATION_EXPIRE_HOURS`; their safe
+defaults are in `backend/app/core/config.py`.
 
-1. Check out the commit.
-2. Set up Python 3.12 and uv 0.8.15.
-3. Run `uv sync --locked --all-groups` and `uv run --locked pytest` in `backend`.
-4. Set up Node.js 22, run `npm ci`, `npx tsc --noEmit`, `npm run lint`, and `npm run build` in `frontend`.
-5. Create a minimal source ZIP containing only the runtime bundle, migration files, lockfile, process files, nginx configuration, and platform hooks. The workflow rejects archives containing `.env` files, Git metadata, virtual environments, `node_modules`, caches, local databases, or certificates.
-6. Upload the ZIP to the explicitly configured S3 bucket, create a version named `antimbench-<short-sha>-<run-number>`, update the target Elastic Beanstalk environment, and poll for `Ready` + `Green` health for up to 30 minutes.
+The pre-deploy hook initializes PostgreSQL 15 only once, sets
+`listen_addresses = '127.0.0.1'`, changes only the IPv4 and IPv6 loopback
+`pg_hba.conf` host rules to `scram-sha-256`, enables the service, waits for
+`pg_isready`, creates or updates `antimbench_app`, creates `antimbench` when
+needed, and runs `uv run --locked alembic upgrade head`. It never echoes the
+database URL or password.
 
-The workflow prints the commit, version label, target application, target environment, and region. It never prints credentials.
+The browser uses relative `/api/...` requests by default. nginx proxies those
+requests to local FastAPI, so no `NEXT_PUBLIC_API_URL`, public backend URL, or
+hard-coded Elastic Beanstalk hostname is required.
 
-## GitHub configuration
+## GitHub Actions configuration
 
-Before the first deployment, open **Repository -> Settings -> Secrets and variables -> Actions**.
+The workflow is [.github/workflows/deploy.yml](.github/workflows/deploy.yml),
+named **AntimBench CI/CD**. It first runs backend migrations and tests against a
+throwaway PostgreSQL 15 service container, then runs `npm ci`, TypeScript,
+lint, and a production frontend build. Only after CI succeeds does the deploy
+job build a minimal Elastic Beanstalk ZIP and update the environment.
 
-Add these under **Secrets**:
+Add these **GitHub Secrets**:
 
 | Name | Purpose |
 | --- | --- |
-| `AWS_ACCESS_KEY_ID` | Temporary AWS access-key ID used only by the deployment run. |
+| `AWS_ACCESS_KEY_ID` | Temporary AWS access-key ID. |
 | `AWS_SECRET_ACCESS_KEY` | Matching temporary AWS secret access key. |
 | `AWS_SESSION_TOKEN` | Matching temporary AWS session token. |
 
-Add these under **Variables**:
+Add these **GitHub Variables**:
 
 | Name | Purpose |
 | --- | --- |
-| `AWS_REGION` | Target AWS Region, normally `us-east-1`. A secret with this name is also accepted if your policy requires it. |
-| `EB_APPLICATION_NAME` | Existing Elastic Beanstalk application name. |
-| `EB_ENVIRONMENT_NAME` | Existing Elastic Beanstalk environment name. |
-| `EB_S3_BUCKET` | Existing bucket permitted to store Elastic Beanstalk application-version ZIPs. |
-| `NEXT_PUBLIC_API_URL` | Optional public API origin used only at frontend build time. Leave unset for the recommended same-origin `/api` proxy. |
+| `AWS_REGION` | `us-east-1` for this environment. |
+| `EB_APPLICATION_NAME` | `AntimBench`. |
+| `EB_ENVIRONMENT_NAME` | `AntimBench-Prod`. |
+| `EB_S3_BUCKET` | Existing bucket for application-version bundles. |
 
-Create **Repository -> Settings -> Environments -> New environment -> `production`** before the first run. The workflow targets this environment, so you can later add required reviewers or branch/deployment protection rules. This repository does not create the GitHub Environment through the API.
+AWS Academy credentials expire. Refresh all three AWS secrets together before
+they expire; the workflow supports the required session token. The deployment
+job validates its non-secret variables, uploads a uniquely named ZIP, creates
+an application version, updates the existing environment, and waits for
+`Ready` plus `Green` health. It does not create infrastructure.
 
-## Elastic Beanstalk prerequisites
+## Bundle and service behaviour
 
-Create these separately before enabling deployment:
+The generated ZIP includes `Procfile`, hidden `.platform` hooks and nginx
+configuration, backend source/migrations/lockfile, and the built Next.js output.
+It rejects `.env` files, `.git`, `node_modules`, virtual environments, local
+databases, certificates, test caches, and development build diagnostics.
 
-- An Elastic Beanstalk application and a **single-instance** environment with no load balancer.
-- The current Node.js 22 Amazon Linux 2023 platform branch.
-- The custom VPC, subnet, security groups, instance profile, and local PostgreSQL installation that your architecture requires.
-- An existing `EB_S3_BUCKET` with permissions for the deployment credentials to upload application versions.
-- Least-privilege AWS permissions to upload the version ZIP and call `elasticbeanstalk:create-application-version`, `elasticbeanstalk:update-environment`, `elasticbeanstalk:describe-environments`, and `elasticbeanstalk:describe-events` on the intended resources.
-- An EB health check path of `/health`; nginx proxies that path to FastAPI without opening port 8000 publicly.
+`01-start-api-service.sh` creates the existing unprivileged `DynamicUser`
+FastAPI service with its working directory under `backend`, an internal
+`127.0.0.1:8000` Uvicorn command, restart policy, and the Elastic Beanstalk
+environment-property file. Secrets are not copied into a new world-readable
+file. nginx proxies only `/api/` and `/health` to FastAPI; it never exposes
+PostgreSQL or port 8000 publicly.
 
-Set application settings through **Elastic Beanstalk -> Environment -> Configuration -> Updates, monitoring, and logging -> Runtime environment variables**. Keep secrets out of this repository and GitHub workflow source. At minimum configure:
+## Deploying and rollback
 
-| Setting | Notes |
-| --- | --- |
-| `DATABASE_URL` | Required. PostgreSQL URL reachable from the EC2 instance, commonly via `127.0.0.1:5432`. Store it as a secret value. |
-| `JWT_SECRET_KEY` | Required by the backend; use a strong, rotated secret. |
-| `AUTH_COOKIE_SECURE` | Set to `true` when the public site uses HTTPS. |
-| `FRONTEND_URL` | Public canonical frontend URL. |
-| `CORS_ORIGINS` | JSON array containing the public frontend origin, for example `["https://app.example.edu"]`. |
-| `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM_EMAIL` | Configure only when email delivery is required; treat `SMTP_PASSWORD` as secret. |
+Push to `main` or manually run **AntimBench CI/CD** from the Actions tab after
+configuring the existing Elastic Beanstalk application, environment, S3 bucket,
+and GitHub settings. The security group does not need SSH for this workflow.
 
-`NEXT_PUBLIC_API_URL` is different: Next.js embeds it into browser code during `npm run build`. It must never contain a secret. The current application defaults to an empty value and therefore makes same-origin `/api` calls, which is the intended Elastic Beanstalk configuration; no build-time value is needed in that case.
-
-## Alembic migration behavior
-
-`.platform/hooks/predeploy/01-run-migrations.sh` runs `uv run --locked alembic upgrade head` on the Elastic Beanstalk instance before the Next.js process is started. It receives `DATABASE_URL` from Elastic Beanstalk environment properties and fails the deployment if that setting is absent. GitHub Actions never connects to the private/local PostgreSQL database and never receives `DATABASE_URL`.
-
-## Deploying and troubleshooting
-
-After configuring the values above, either push a commit to `main` or open **Repository -> Actions -> AntimBench CI/CD -> Run workflow** and select `main`.
-
-If a run fails:
-
-1. Open the failed GitHub Actions step. Validation, tests, TypeScript, frontend build, package checks, AWS upload, and EB health polling fail independently with a useful step name.
-2. For Elastic Beanstalk failures, the workflow prints the 20 most recent EB events. Then inspect **Elastic Beanstalk -> Environment -> Events** and request instance logs, especially `eb-engine`, nginx, and `antimbench-api.service` logs.
-3. Check the required variables and secrets are set, the bucket and EB resources are in the same configured region, and the target environment is on the Node.js 22 AL2023 platform.
-4. Confirm the EC2 instance can reach PostgreSQL at the configured `DATABASE_URL` and that `/health` returns successfully through nginx.
-
-## Rollback
-
-No automated rollback is performed. To roll back safely, identify the previous healthy application version in **Elastic Beanstalk -> Application versions**, then deploy it to the same environment using the console or:
-
-```bash
-aws elasticbeanstalk update-environment \
-  --application-name "$EB_APPLICATION_NAME" \
-  --environment-name "$EB_ENVIRONMENT_NAME" \
-  --version-label "$PREVIOUS_HEALTHY_VERSION"
-```
-
-Wait for the environment to become `Ready` and `Green`. Review whether the database migration is backward-compatible before rolling back application code.
-
-## Credential rotation
-
-Use short-lived AWS credentials, rotate the three GitHub AWS secrets together before they expire, and rerun a manual deployment to verify access. Do not place AWS credentials, database passwords, JWT secrets, or SMTP passwords in `.env` files committed to Git or in GitHub repository variables.
+For rollback, select a previous healthy application version in Elastic
+Beanstalk and deploy it to the same environment. Confirm database-migration
+compatibility before rolling back code; a database backup is essential before
+replacing the single instance.

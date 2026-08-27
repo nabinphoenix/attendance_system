@@ -9,6 +9,10 @@ UV_BIN="/usr/local/bin/uv"
 export PATH="/usr/local/bin:${PATH}"
 export UV_PYTHON_INSTALL_DIR="/opt/antimbench/python"
 
+# Amazon Linux 2023 provides PostgreSQL 15 through these versioned packages.
+# dnf safely reports the packages as already installed on later deployments.
+dnf install -y postgresql15 postgresql15-server
+
 if [[ ! -x "${UV_BIN}" ]]; then
   curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin UV_NO_MODIFY_PATH=1 sh
 fi
