@@ -158,7 +158,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          VERSION_LABEL="antimbench-${GITHUB_SHA:0:12}-${GITHUB_RUN_NUMBER}"
+          # A workflow rerun keeps GITHUB_RUN_NUMBER, so include the attempt
+          # number to avoid colliding with an application version created by
+          # an earlier attempt of this same workflow run.
+          VERSION_LABEL="antimbench-${GITHUB_SHA:0:12}-${GITHUB_RUN_NUMBER}-${GITHUB_RUN_ATTEMPT}"
           BUNDLE_DIR="${RUNNER_TEMP}/antimbench-eb-bundle"
           ARTIFACT_PATH="${RUNNER_TEMP}/${VERSION_LABEL}.zip"
 
