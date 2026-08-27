@@ -107,6 +107,16 @@ jobs:
       - name: Check out source
         uses: actions/checkout@v6
 
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v9.0.0
+        with:
+          version: "0.8.15"
+
       - name: Set up Node.js 22
         uses: actions/setup-node@v6
         with:
@@ -120,31 +130,17 @@ jobs:
           npm ci
           npm run build
 
-      - name: Build Amazon Linux backend runtime bundle
-        shell: bash
+      - name: Build Linux backend runtime bundle
+        working-directory: backend
         run: |
           set -euo pipefail
 
-          # Build native Python wheels in the same Amazon Linux 2023 family as
-          # the Elastic Beanstalk instance. Only site-packages is carried into
-          # the ZIP; the target uses it with its local /usr/bin/python3.12
-          # interpreter through PYTHONPATH.
-          docker run --rm --platform linux/amd64 \
-            -e HOST_UID="$(id -u)" \
-            -e HOST_GID="$(id -g)" \
-            -v "${GITHUB_WORKSPACE}/backend:/workspace/backend" \
-            -w /workspace/backend \
-            public.ecr.aws/amazonlinux/amazonlinux:2023 \
-            bash -ceu '
-              dnf install -y --setopt=install_weak_deps=False python3.12 curl tar gzip
-              curl -LsSf https://astral.sh/uv/0.8.15/install.sh | \
-                env UV_INSTALL_DIR=/usr/local/bin UV_NO_MODIFY_PATH=1 sh
-              /usr/local/bin/uv sync --locked --no-dev --no-install-project \
-                --link-mode=copy --python /usr/bin/python3.12
-              rm -rf runtime-site-packages
-              cp -a .venv/lib/python3.12/site-packages runtime-site-packages
-              chown -R "${HOST_UID}:${HOST_GID}" runtime-site-packages
-            '
+          # The x86_64 Linux runner resolves manylinux wheels that run on the
+          # x86_64 Amazon Linux 2023 Elastic Beanstalk instance. `--no-build`
+          # prevents an undeclared compiler toolchain from entering the bundle.
+          rm -rf runtime-site-packages
+          uv sync --locked --no-dev --no-install-project --link-mode=copy --no-build
+          cp -a .venv/lib/python3.12/site-packages runtime-site-packages
 
       - name: Validate deployment configuration
         shell: bash

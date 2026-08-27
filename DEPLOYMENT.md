@@ -96,8 +96,8 @@ an application version, updates the existing environment, and waits for
 ## Bundle and service behaviour
 
 The generated ZIP includes `Procfile`, hidden `.platform` hooks and nginx
-configuration, backend source/migrations/lockfile, an Amazon Linux 2023-built
-Python package tree, and the traced Next.js standalone runtime. The two bundled
+configuration, backend source/migrations/lockfile, a locked Linux Python
+package tree, and the traced Next.js standalone runtime. The two bundled
 production runtimes deliberately contain the Node and Python packages needed to
 start the app; the instance does not run `npm ci`, download `uv`, or resolve
 PyPI packages while Elastic Beanstalk is deploying. The workflow rejects other
