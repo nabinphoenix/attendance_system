@@ -120,6 +120,32 @@ jobs:
           npm ci
           npm run build
 
+      - name: Build Amazon Linux backend runtime bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Build native Python wheels in the same Amazon Linux 2023 family as
+          # the Elastic Beanstalk instance. Only site-packages is carried into
+          # the ZIP; the target uses it with its local /usr/bin/python3.12
+          # interpreter through PYTHONPATH.
+          docker run --rm --platform linux/amd64 \
+            -e HOST_UID="$(id -u)" \
+            -e HOST_GID="$(id -g)" \
+            -v "${GITHUB_WORKSPACE}/backend:/workspace/backend" \
+            -w /workspace/backend \
+            public.ecr.aws/amazonlinux/amazonlinux:2023 \
+            bash -ceu '
+              dnf install -y --setopt=install_weak_deps=False python3.12 curl tar gzip
+              curl -LsSf https://astral.sh/uv/0.8.15/install.sh | \
+                env UV_INSTALL_DIR=/usr/local/bin UV_NO_MODIFY_PATH=1 sh
+              /usr/local/bin/uv sync --locked --no-dev --no-install-project \
+                --link-mode=copy --python /usr/bin/python3.12
+              rm -rf runtime-site-packages
+              cp -a .venv/lib/python3.12/site-packages runtime-site-packages
+              chown -R "${HOST_UID}:${HOST_GID}" runtime-site-packages
+            '
+
       - name: Validate deployment configuration
         shell: bash
         run: |
@@ -147,16 +173,14 @@ jobs:
           cp -a .platform "${BUNDLE_DIR}/"
           cp backend/alembic.ini backend/pyproject.toml backend/uv.lock "${BUNDLE_DIR}/backend/"
           rsync -a --exclude=__pycache__ --exclude='*.pyc' backend/app backend/migrations "${BUNDLE_DIR}/backend/"
+          rsync -a backend/runtime-site-packages/ "${BUNDLE_DIR}/backend/runtime-site-packages/"
 
-          cp frontend/package.json frontend/package-lock.json frontend/next.config.js "${BUNDLE_DIR}/frontend/"
-          rsync -a \
-            --exclude=cache \
-            --exclude=dev \
-            --exclude=diagnostics \
-            --exclude=types \
-            --exclude=trace \
-            --exclude=trace-build \
-            frontend/.next/ "${BUNDLE_DIR}/frontend/.next/"
+          # `output: standalone` traces the minimum Node runtime. Next.js does
+          # not copy public assets or static chunks into it, so add those two
+          # directories explicitly as documented by Next.js.
+          rsync -a frontend/.next/standalone/ "${BUNDLE_DIR}/frontend/"
+          mkdir -p "${BUNDLE_DIR}/frontend/.next"
+          rsync -a frontend/.next/static/ "${BUNDLE_DIR}/frontend/.next/static/"
           if [[ -d frontend/public ]]; then
             rsync -a frontend/public/ "${BUNDLE_DIR}/frontend/public/"
           fi
@@ -174,18 +198,34 @@ jobs:
             backend/alembic.ini \
             backend/pyproject.toml \
             backend/uv.lock \
-            frontend/package.json \
-            frontend/.next/BUILD_ID; do
+            backend/runtime-site-packages/alembic/__init__.py \
+            frontend/server.js \
+            frontend/.next/BUILD_ID \
+            frontend/.next/static/; do
             if ! unzip -Z1 "${ARTIFACT_PATH}" | grep -Fxq "${required}"; then
               echo "::error title=Invalid deployment bundle::Required file is missing: ${required}"
               exit 1
             fi
           done
 
-          if unzip -Z1 "${ARTIFACT_PATH}" | grep -Eq '(^|/)(\.git|node_modules|\.venv|\.pytest_cache|__pycache__|\.env[^/]*|certificates)(/|$)|(^|/)\.next/(cache|dev|diagnostics|types)(/|$)|\.db$'; then
-            echo "::error title=Unsafe deployment bundle::The archive contains an excluded local, cache, or secret file."
-            exit 1
-          fi
+          while IFS= read -r archive_path; do
+            case "${archive_path}" in
+              frontend/node_modules|frontend/node_modules/*|backend/runtime-site-packages|backend/runtime-site-packages/*)
+                # These are the intentionally traced/prebuilt production runtimes.
+                ;;
+              */node_modules|*/node_modules/*|.venv|.venv/*|*/.venv|*/.venv/*|\
+              .git|.git/*|*/.git|*/.git/*|\
+              .pytest_cache|.pytest_cache/*|*/.pytest_cache|*/.pytest_cache/*|\
+              __pycache__|__pycache__/*|*/__pycache__|*/__pycache/*|\
+              .env|.env/*|*/.env|*/.env/*|.env.*|*/.env.*|\
+              certificates|certificates/*|*/certificates|*/certificates/*|\
+              *.db|*/.next/cache|*/.next/cache/*|*/.next/dev|*/.next/dev/*|\
+              */.next/diagnostics|*/.next/diagnostics/*|*/.next/types|*/.next/types/*)
+                echo "::error title=Unsafe deployment bundle::Excluded path found: ${archive_path}"
+                exit 1
+                ;;
+            esac
+          done < <(unzip -Z1 "${ARTIFACT_PATH}")
 
           echo "version_label=${VERSION_LABEL}" >> "${GITHUB_OUTPUT}"
           echo "artifact_path=${ARTIFACT_PATH}" >> "${GITHUB_OUTPUT}"

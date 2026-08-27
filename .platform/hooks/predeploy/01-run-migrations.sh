@@ -102,5 +102,6 @@ else
   runuser -u postgres -- psql --dbname=postgres -v ON_ERROR_STOP=1 -c "ALTER DATABASE antimbench OWNER TO antimbench_app"
 fi
 
-cd "$(pwd)/backend"
-/usr/local/bin/uv run --locked alembic upgrade head
+BACKEND_DIR="$(pwd)/backend"
+cd "${BACKEND_DIR}"
+PYTHONPATH="${BACKEND_DIR}/runtime-site-packages" /usr/bin/python3.12 -m alembic upgrade head

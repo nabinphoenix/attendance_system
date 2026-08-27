@@ -2,6 +2,9 @@
 const apiTarget = (process.env.API_PROXY_TARGET ?? "http://127.0.0.1:8000").replace(/\/$/, "");
 
 const nextConfig = {
+  // The deployment workflow ships this traced runtime to Elastic Beanstalk so
+  // the EC2 instance does not need to download npm packages during deployment.
+  output: "standalone",
   reactStrictMode: true,
   // Allow phones on the local Wi-Fi to receive Next.js development assets.
   allowedDevOrigins: ["10.21.4.107", "192.168.43.178", "localhost", "127.0.0.1"],

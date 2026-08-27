@@ -1,1 +1,1 @@
-web: cd frontend && npm run start
+web: cd frontend && HOSTNAME=0.0.0.0 node server.js

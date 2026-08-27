@@ -2,29 +2,22 @@
 set -euo pipefail
 
 # This bundle targets the Elastic Beanstalk Node.js 22 Amazon Linux 2023 platform.
-# The platform supplies Node.js; uv provisions the backend's required Python 3.12
-# in a shared location so the runtime service can use the resulting virtualenv.
+# Node's traced runtime and the backend's locked Python packages are built in
+# GitHub Actions and included in the bundle. Keep this hook limited to the OS
+# packages that must be installed on the instance.
 APP_DIR="$(pwd)"
-UV_BIN="/usr/local/bin/uv"
-export PATH="/usr/local/bin:${PATH}"
-export UV_PYTHON_INSTALL_DIR="/opt/antimbench/python"
+BACKEND_DIR="${APP_DIR}/backend"
 
 # Amazon Linux 2023 provides PostgreSQL 15 through these versioned packages.
-# dnf safely reports the packages as already installed on later deployments.
-dnf install -y postgresql15 postgresql15-server
+# `python3.12` supplies the target interpreter for the prebuilt site-packages.
+# dnf safely reports packages as already installed on later deployments.
+dnf install -y --setopt=install_weak_deps=False \
+  postgresql15 postgresql15-server python3.12
 
-if [[ ! -x "${UV_BIN}" ]]; then
-  curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin UV_NO_MODIFY_PATH=1 sh
+if [[ ! -d "${BACKEND_DIR}/runtime-site-packages" ]]; then
+  echo "The deployment bundle is missing the prebuilt backend runtime packages." >&2
+  exit 1
 fi
 
-install -d -m 0755 "${UV_PYTHON_INSTALL_DIR}"
-"${UV_BIN}" python install 3.12
-
-cd "${APP_DIR}/frontend"
-npm ci --omit=dev
-
-cd "${APP_DIR}/backend"
-"${UV_BIN}" sync --locked --no-dev --no-editable
-
 # The API is deliberately run as an unprivileged systemd DynamicUser.
-chmod -R a+rX "${APP_DIR}/backend/.venv"
+chmod -R a+rX "${BACKEND_DIR}/runtime-site-packages"

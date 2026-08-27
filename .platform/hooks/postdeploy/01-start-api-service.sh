@@ -14,8 +14,9 @@ Type=simple
 DynamicUser=yes
 WorkingDirectory=${APP_DIR}/backend
 Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONPATH=${APP_DIR}/backend/runtime-site-packages
 EnvironmentFile=-/opt/elasticbeanstalk/deployment/env
-ExecStart=${APP_DIR}/backend/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000
+ExecStart=/usr/bin/python3.12 -m uvicorn app.main:app --host 127.0.0.1 --port 8000
 Restart=always
 RestartSec=5
 NoNewPrivileges=yes

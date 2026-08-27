@@ -23,8 +23,11 @@ PostgreSQL runs on that same EC2 instance for this demonstration. It is **not** 
 highly available production database: terminating or replacing the instance can
 remove its data. Back up the database before an environment replacement. Do not
 open port 5432 in the security group; nginx is the only public application entry
-point. This design uses no RDS, Load Balancer, NAT Gateway, or Docker. S3 is used
-only to hold Elastic Beanstalk application-version bundles.
+point. This design uses no RDS, Load Balancer, or Docker. S3 is used only to hold
+Elastic Beanstalk application-version bundles. The instance needs ordinary
+outbound HTTPS access to the Amazon Linux package repositories to install the
+small PostgreSQL and Python runtime packages; use a public subnet with an
+internet gateway or provide NAT when placing it in a private subnet.
 
 ## Required Elastic Beanstalk environment properties
 
@@ -52,8 +55,8 @@ The pre-deploy hook initializes PostgreSQL 15 only once, sets
 `listen_addresses = '127.0.0.1'`, changes only the IPv4 and IPv6 loopback
 `pg_hba.conf` host rules to `scram-sha-256`, enables the service, waits for
 `pg_isready`, creates or updates `antimbench_app`, creates `antimbench` when
-needed, and runs `uv run --locked alembic upgrade head`. It never echoes the
-database URL or password.
+needed, then runs `python -m alembic upgrade head` using the deployment's
+prebuilt package tree. It never echoes the database URL or password.
 
 The browser uses relative `/api/...` requests by default. nginx proxies those
 requests to local FastAPI, so no `NEXT_PUBLIC_API_URL`, public backend URL, or
@@ -65,7 +68,7 @@ The workflow is [.github/workflows/deploy.yml](.github/workflows/deploy.yml),
 named **AntimBench CI/CD**. It first runs backend migrations and tests against a
 throwaway PostgreSQL 15 service container, then runs `npm ci`, TypeScript,
 lint, and a production frontend build. Only after CI succeeds does the deploy
-job build a minimal Elastic Beanstalk ZIP and update the environment.
+job build a self-contained Elastic Beanstalk ZIP and update the environment.
 
 Add these **GitHub Secrets**:
 
@@ -93,9 +96,13 @@ an application version, updates the existing environment, and waits for
 ## Bundle and service behaviour
 
 The generated ZIP includes `Procfile`, hidden `.platform` hooks and nginx
-configuration, backend source/migrations/lockfile, and the built Next.js output.
-It rejects `.env` files, `.git`, `node_modules`, virtual environments, local
-databases, certificates, test caches, and development build diagnostics.
+configuration, backend source/migrations/lockfile, an Amazon Linux 2023-built
+Python package tree, and the traced Next.js standalone runtime. The two bundled
+production runtimes deliberately contain the Node and Python packages needed to
+start the app; the instance does not run `npm ci`, download `uv`, or resolve
+PyPI packages while Elastic Beanstalk is deploying. The workflow rejects other
+`.env` files, Git metadata, virtual environments, local databases, certificates,
+test caches, and development build diagnostics.
 
 `01-start-api-service.sh` creates the existing unprivileged `DynamicUser`
 FastAPI service with its working directory under `backend`, an internal
