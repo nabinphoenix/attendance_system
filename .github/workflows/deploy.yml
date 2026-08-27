@@ -299,7 +299,9 @@ jobs:
                 echo "::error title=Elastic Beanstalk version processing failed::${reason}"
                 exit 1
                 ;;
-              Unprocessed|Processing|Building)
+              # Elastic Beanstalk can take a few seconds to return a newly
+              # created version from DescribeApplicationVersions.
+              None|""|Unprocessed|Processing|Building)
                 sleep 10
                 ;;
               *)
