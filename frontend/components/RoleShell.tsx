@@ -1,8 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname, useRouter } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import { usePathname } from "next/navigation";
+import { type MouseEvent, useEffect, useMemo, useState } from "react";
 import api from "@/lib/api";
 import { type Role } from "@/lib/auth";
 import Brand from "@/components/Brand";
@@ -48,28 +48,36 @@ function Icon({ name }: { name: IconName }) {
 }
 
 export default function RoleShell({ role, children }: { role: Role; children: React.ReactNode }) {
-  const router = useRouter();
   const pathname = usePathname();
   const [allowed, setAllowed] = useState(false);
   const [user, setUser] = useState<CurrentUser | null>(null);
   const [mobileOpen, setMobileOpen] = useState(false);
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
+  const [loggingOut, setLoggingOut] = useState(false);
+  const [logoutError, setLogoutError] = useState("");
   const groups = useMemo(() => [...navigation[role], { label: "Account", items: [{ label: "Settings", href: "/settings", icon: "settings" as IconName }] }], [role]);
   const flat = useMemo(() => groups.flatMap((group) => group.items), [groups]);
   const current = flat.filter((item) => pathname === item.href || pathname.startsWith(`${item.href}/`)).sort((a, b) => b.href.length - a.href.length)[0];
 
   useEffect(() => {
     let active = true;
-    api.get<CurrentUser>("/api/v1/auth/me").then((response) => {
+    const confirmAccess = () => api.get<CurrentUser>("/api/v1/auth/me").then((response) => {
       if (!active) return;
-      if (response.data.role !== role) { router.replace("/login"); return; }
+      if (response.data.role !== role) { window.location.replace("/login"); return; }
       setUser(response.data);
       setAllowed(true);
       setCollapsed(localStorage.getItem("sidebar_collapsed") === "true");
-    }).catch(() => { if (active) router.replace("/login"); });
-    return () => { active = false; };
-  }, [role, router]);
+    }).catch(() => { if (active) { setAllowed(false); window.location.replace("/login"); } });
+    void confirmAccess();
+    const recheckOnRestore = (event: PageTransitionEvent) => {
+      if (!event.persisted) return;
+      setAllowed(false);
+      void confirmAccess();
+    };
+    window.addEventListener("pageshow", recheckOnRestore);
+    return () => { active = false; window.removeEventListener("pageshow", recheckOnRestore); };
+  }, [role]);
 
   useEffect(() => { setMobileOpen(false); setUserMenuOpen(false); }, [pathname]);
   useEffect(() => {
@@ -87,14 +95,30 @@ export default function RoleShell({ role, children }: { role: Role; children: Re
   function toggleCollapsed() {
     setCollapsed((value) => { localStorage.setItem("sidebar_collapsed", String(!value)); return !value; });
   }
-  function logout() { void api.post("/api/v1/auth/logout").finally(() => router.replace("/login")); }
+  async function logout(destination = "/login") {
+    if (loggingOut) return;
+    setLoggingOut(true);
+    setLogoutError("");
+    try {
+      await api.post("/api/v1/auth/logout");
+      window.location.replace(destination);
+    } catch {
+      setLogoutError("We couldn't sign you out. Please try again.");
+      setLoggingOut(false);
+    }
+  }
+
+  function logoutToHome(event: MouseEvent<HTMLAnchorElement>) {
+    event.preventDefault();
+    void logout("/");
+  }
 
   if (!allowed) return <main className="grid min-h-screen place-items-center px-4"><div role="status" className="text-center"><span className="mx-auto block h-9 w-9 animate-spin rounded-full border-2 border-emerald-400 border-r-transparent" /><p className="mt-3 text-sm app-caption">Opening your workspace…</p></div></main>;
 
   const sidebar = <aside className={`app-sidebar flex h-full w-full flex-col border-r transition-[width] ${collapsed ? "lg:w-[4.75rem]" : "lg:w-64"}`}>
-    <div className="app-divider flex h-[4.5rem] items-center justify-between border-b px-4"><Brand compact={collapsed} /><button className="hidden rounded-lg p-2 app-caption hover:bg-emerald-500/10 hover:text-emerald-600 lg:block" onClick={toggleCollapsed} aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}><svg aria-hidden="true" viewBox="0 0 24 24" className={`h-5 w-5 transition ${collapsed ? "rotate-180" : ""}`} fill="none" stroke="currentColor" strokeWidth="2"><path d="m15 18-6-6 6-6" /></svg></button></div>
+    <div className="app-divider flex h-[4.5rem] items-center justify-between border-b px-4"><Brand compact={collapsed} onClick={logoutToHome} /><button className="hidden rounded-lg p-2 app-caption hover:bg-emerald-500/10 hover:text-emerald-600 lg:block" onClick={toggleCollapsed} aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}><svg aria-hidden="true" viewBox="0 0 24 24" className={`h-5 w-5 transition ${collapsed ? "rotate-180" : ""}`} fill="none" stroke="currentColor" strokeWidth="2"><path d="m15 18-6-6 6-6" /></svg></button></div>
     <nav aria-label={`${role} navigation`} className="flex-1 space-y-5 overflow-y-auto px-3 py-5">{groups.map((group) => <div key={group.label}>{!collapsed && <p className="app-nav-label mb-2 px-3 text-[11px] font-semibold uppercase tracking-[.14em]">{group.label}</p>}<div className="space-y-1">{group.items.map((item) => { const active = pathname === item.href || pathname.startsWith(`${item.href}/`); return <Link title={collapsed ? item.label : undefined} aria-current={active ? "page" : undefined} key={item.href} href={item.href} className={`app-nav-link relative flex min-h-10 items-center gap-3 rounded-lg px-3 text-sm font-medium transition ${active ? "app-nav-link-active" : ""} ${collapsed ? "justify-center" : ""}`}>{active && <span className="absolute inset-y-2 left-0 w-0.5 rounded-r bg-emerald-500" />}<Icon name={item.icon} />{!collapsed && <span>{item.label}</span>}</Link>; })}</div></div>)}</nav>
-    <div className="app-divider border-t p-3"><button onClick={logout} title={collapsed ? "Log out" : undefined} className={`flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-red-500 transition hover:bg-red-500/10 ${collapsed ? "justify-center" : ""}`}><svg aria-hidden="true" viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M10 17l5-5-5-5m5 5H3m11-9h6v18h-6" /></svg>{!collapsed && "Log out"}</button></div>
+    <div className="app-divider border-t p-3"><button onClick={() => void logout()} disabled={loggingOut} title={collapsed ? "Log out" : undefined} className={`flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-red-500 transition hover:bg-red-500/10 disabled:cursor-wait disabled:opacity-60 ${collapsed ? "justify-center" : ""}`}><svg aria-hidden="true" viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M10 17l5-5-5-5m5 5H3m11-9h6v18h-6" /></svg>{!collapsed && (loggingOut ? "Logging out…" : "Log out")}</button>{logoutError && !collapsed && <p className="mt-2 px-2 text-xs text-red-400" role="alert">{logoutError}</p>}</div>
   </aside>;
 
   return <div className="app-shell">
@@ -105,7 +129,7 @@ export default function RoleShell({ role, children }: { role: Role; children: Re
         <button className="grid h-10 w-10 place-items-center rounded-lg app-caption hover:bg-emerald-500/10 hover:text-emerald-600 lg:hidden" aria-label="Open navigation" onClick={() => setMobileOpen(true)}><svg aria-hidden="true" viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="2"><path d="M4 7h16M4 12h16M4 17h16" /></svg></button>
         <div className="min-w-0 flex-1"><p className="app-title truncate text-sm font-semibold">{current?.label ?? `${role[0].toUpperCase()}${role.slice(1)} workspace`}</p><p className="app-caption hidden text-xs capitalize sm:block">{role} workspace</p></div>
         <ThemeToggle compact />
-        <div className="relative"><button aria-label="Open account menu" aria-expanded={userMenuOpen} onClick={() => setUserMenuOpen((value) => !value)} className="rounded-full transition hover:scale-[1.03]"><ProfileAvatar name={user?.name ?? role} src={user?.avatar_url} /></button>{userMenuOpen && <div className="app-user-menu absolute right-0 top-12 w-72 overflow-hidden rounded-xl border p-2 shadow-xl"><div className="app-divider flex items-center gap-3 border-b px-2 py-3"><ProfileAvatar name={user?.name ?? role} src={user?.avatar_url} /><div className="min-w-0"><p className="app-user-name truncate text-sm font-semibold">{user?.name ?? "Signed-in user"}</p><p className="app-caption mt-0.5 truncate text-xs">{user?.email}</p><p className="mt-1 text-xs capitalize text-emerald-600">{role}</p></div></div><Link href="/settings" className="mt-1 flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm font-semibold app-caption hover:bg-emerald-500/10 hover:text-emerald-700"><Icon name="settings" />Account settings</Link><button onClick={logout} className="mt-1 w-full rounded-lg px-3 py-2 text-left text-sm font-semibold text-red-500 hover:bg-red-500/10">Log out</button></div>}</div>
+        <div className="relative"><button aria-label="Open account menu" aria-expanded={userMenuOpen} onClick={() => setUserMenuOpen((value) => !value)} className="rounded-full transition hover:scale-[1.03]"><ProfileAvatar name={user?.name ?? role} src={user?.avatar_url} /></button>{userMenuOpen && <div className="app-user-menu absolute right-0 top-12 w-72 overflow-hidden rounded-xl border p-2 shadow-xl"><div className="app-divider flex items-center gap-3 border-b px-2 py-3"><ProfileAvatar name={user?.name ?? role} src={user?.avatar_url} /><div className="min-w-0"><p className="app-user-name truncate text-sm font-semibold">{user?.name ?? "Signed-in user"}</p><p className="app-caption mt-0.5 truncate text-xs">{user?.email}</p><p className="mt-1 text-xs capitalize text-emerald-600">{role}</p></div></div><Link href="/settings" className="mt-1 flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm font-semibold app-caption hover:bg-emerald-500/10 hover:text-emerald-700"><Icon name="settings" />Account settings</Link><button onClick={() => void logout()} disabled={loggingOut} className="mt-1 w-full rounded-lg px-3 py-2 text-left text-sm font-semibold text-red-500 hover:bg-red-500/10 disabled:cursor-wait disabled:opacity-60">{loggingOut ? "Logging out…" : "Log out"}</button>{logoutError && <p className="px-3 py-2 text-xs text-red-400" role="alert">{logoutError}</p>}</div>}</div>
       </header>
       <main className="page-container min-w-0">{children}</main>
     </div>

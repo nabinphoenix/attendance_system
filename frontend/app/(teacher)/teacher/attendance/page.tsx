@@ -44,7 +44,7 @@ export default function Page() {
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const [dialog, setDialog] = useState<PendingChange | null>(null);
-  const [filters, setFilters] = useState({ query: "", section: "", student: "", status: "" });
+  const [filters, setFilters] = useState({ section: "", student: "", status: "" });
 
   const load = useCallback(async (date = selectedDate) => {
     setLoading(true);
@@ -83,17 +83,17 @@ export default function Page() {
     return <Badge tone="neutral">Not recorded</Badge>;
   }
 
+  const sections = useMemo(() => Array.from(new Set(classes.flatMap((item) => item.section_names))).sort(), [classes]);
+
   const visibleClasses = useMemo(() => classes.map((item) => {
-    const classText = [item.module_code, item.module_title, item.section_names.join(" "), item.room].join(" ").toLowerCase();
     const students = item.students.filter((row) => {
       if (filters.status && row.status !== filters.status) return false;
       if (filters.student && ![row.student_name, row.roll_number].join(" ").toLowerCase().includes(filters.student.toLowerCase())) return false;
       return true;
     });
-    return { ...item, students, classText };
+    return { ...item, students };
   }).filter((item) => {
-    if (filters.query && !item.classText.includes(filters.query.toLowerCase())) return false;
-    if (filters.section && !item.section_names.some((section) => section.toLowerCase().includes(filters.section.toLowerCase()))) return false;
+    if (filters.section && !item.section_names.includes(filters.section)) return false;
     if ((filters.student || filters.status) && !item.students.length) return false;
     return true;
   }), [classes, filters]);
@@ -102,7 +102,7 @@ export default function Page() {
     <PageHeader title="Manual attendance" description="Choose today or an earlier date to review every class you teach and correct any student’s attendance. Each change is saved in the audit trail." action={<Button variant="outline" onClick={() => void load()}>Refresh</Button>} />
     <section className="panel mb-6 p-5">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between"><label className="block w-full max-w-xs"><span className="field-label">Attendance date</span><input type="date" max={today} value={selectedDate} onChange={event => setSelectedDate(event.target.value)} /><span className="helper-text">Future dates are not available for manual editing.</span></label><div className="flex flex-wrap gap-2"><Button variant={selectedDate === today ? "primary" : "outline"} onClick={() => setSelectedDate(today)}>Today</Button><Button variant="ghost" onClick={() => setSelectedDate(localDate(new Date(Date.now() - 86400000)))}>Yesterday</Button></div></div>
-      <div className="mt-5 border-t border-slate-800 pt-5"><div className="mb-4 flex flex-wrap items-end justify-between gap-3"><div><h2 className="text-lg font-semibold">Attendance filters</h2><p className="mt-1 text-sm text-slate-400">Narrow the classes or students shown for the selected date.</p></div><Button type="button" variant="ghost" onClick={() => setFilters({ query: "", section: "", student: "", status: "" })}>Clear filters</Button></div><div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4"><label><span className="field-label">Class search</span><input placeholder="Module or room" value={filters.query} onChange={event => setFilters(current => ({ ...current, query: event.target.value }))} /></label><label><span className="field-label">Section</span><input placeholder="Any section" value={filters.section} onChange={event => setFilters(current => ({ ...current, section: event.target.value }))} /></label><label><span className="field-label">Student search</span><input placeholder="Name or roll number" value={filters.student} onChange={event => setFilters(current => ({ ...current, student: event.target.value }))} /></label><label><span className="field-label">Attendance status</span><select value={filters.status} onChange={event => setFilters(current => ({ ...current, status: event.target.value }))}><option value="">All statuses</option>{editableStatuses.map(status => <option key={status} value={status}>{status.replaceAll("_", " ")}</option>)}<option value="not_checked_in">Not checked in</option><option value="pending_verification">Pending verification</option><option value="rejected">Rejected</option></select></label></div></div>
+      <div className="mt-5 border-t border-slate-800 pt-5"><div className="mb-4 flex flex-wrap items-end justify-between gap-3"><div><h2 className="text-lg font-semibold">Attendance filters</h2><p className="mt-1 text-sm text-slate-400">Choose one of your sections, then find and update a student’s attendance.</p></div><Button type="button" variant="ghost" onClick={() => setFilters({ section: "", student: "", status: "" })}>Clear filters</Button></div><div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3"><label><span className="field-label">Section</span><select value={filters.section} onChange={event => setFilters(current => ({ ...current, section: event.target.value }))}><option value="">All assigned sections</option>{sections.map(section => <option key={section} value={section}>{section}</option>)}</select></label><label><span className="field-label">Student search</span><input placeholder="Name or roll number" value={filters.student} onChange={event => setFilters(current => ({ ...current, student: event.target.value }))} /></label><label><span className="field-label">Attendance status</span><select value={filters.status} onChange={event => setFilters(current => ({ ...current, status: event.target.value }))}><option value="">All statuses</option>{editableStatuses.map(status => <option key={status} value={status}>{status.replaceAll("_", " ")}</option>)}<option value="not_checked_in">Not checked in</option><option value="pending_verification">Pending verification</option><option value="rejected">Rejected</option></select></label></div></div>
     </section>
     {message && <p role="status" className="mb-4 rounded-lg border border-emerald-500/20 bg-emerald-500/10 p-3 text-sm text-emerald-200">{message}</p>}
     {error && <div className="mb-4"><ErrorState title="Unable to load attendance" description={error} onRetry={() => void load()} /></div>}
