@@ -439,9 +439,11 @@ jobs:
           test -n "${VERCEL_PROJECT_ID}"
 
       - name: Build and deploy the Vercel frontend
-        working-directory: frontend
         run: |
           set -euo pipefail
+          # The Vercel project defines `frontend` as its Root Directory. Run
+          # from the repository root so the CLI does not resolve it as
+          # `frontend/frontend`.
           npx --yes vercel@latest pull --yes --environment=production --token="${VERCEL_TOKEN}"
           npx --yes vercel@latest build --prod --token="${VERCEL_TOKEN}"
           npx --yes vercel@latest deploy --prebuilt --prod --token="${VERCEL_TOKEN}"
