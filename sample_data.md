@@ -6,15 +6,6 @@ These accounts are for local development and demonstration only. Change or remov
 | --- | --- | --- | --- |
 | Super admin | `superadmin@antimbench.example.com` | `SuperAdmin123!` | Stored as the `admin` role; use for full administration. |
 | Admin | `admin@antimbench.example.com` | `Admin123!` | Academic setup, routine management, imports, and administration. |
-| Coordinator | `coordinator@antimbench.example.com` | `Coordinator123!` | Coordinator case-management workflow. |
-| Faculty member | `faculty@antimbench.example.com` | `Faculty123!` | Teacher/faculty account. |
-| Teacher | `teacher@antimbench.example.com` | `Teacher123!` | Standard teacher account. |
-| Substitute teacher | `substitute@antimbench.example.com` | `Teacher123!` | Use to test schedule overrides. |
-| Parent | `parent@antimbench.example.com` | `Parent123!` | Parent/guardian account. |
-| Student 1 | `student1@antimbench.example.com` | `Student123!` | Seeded student account. |
-| Student 2 | `student2@antimbench.example.com` | `Student123!` | Seeded student account. |
-| Student 3 | `student3@antimbench.example.com` | `Student123!` | Seeded student account. |
-| Student 4 | `student4@antimbench.example.com` | `Student123!` | Seeded student account. |
 | Routine verification student | `routine.student.verify@example.com` | `Verify123!` | Assigned to the live routine-verification section. |
 
 ## Bulk-import accounts
