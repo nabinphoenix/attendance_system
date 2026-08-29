@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { FormEvent, useState } from "react";
 import { useRouter } from "next/navigation";
 import api from "@/lib/api";
@@ -78,7 +77,7 @@ export default function LoginPage() {
       <p className="rounded-lg bg-slate-950/70 px-3 py-2 text-xs leading-5 text-slate-400">On a phone, use the college Wi-Fi and the AntimBench address provided by your administrator.</p>
       <div className="flex flex-col gap-1 text-sm sm:flex-row sm:items-center sm:justify-between sm:gap-3"><span className="text-slate-500">Need access help?</span><span className="text-slate-300">Contact your college administrator</span></div>
       <Button type="submit" size="lg" loading={loading} disabled={invalid} className="w-full">{loading ? "Signing in…" : "Sign in"}</Button>
-      <p className="text-center text-sm text-slate-400">New student? <Link href="/signup" className="interactive-link">Create your account</Link></p>
+      <p className="text-center text-sm text-slate-400">Account access is managed by your college administrator.</p>
     </form>
   </AuthMain>;
 }

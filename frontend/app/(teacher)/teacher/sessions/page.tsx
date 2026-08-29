@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import api from "@/lib/api";
 import { getBestFreshPosition, hasSecureDeviceContext, locationFailureReason } from "@/lib/geolocation";
@@ -24,6 +24,7 @@ export default function Page() {
   const [loading, setLoading] = useState(true);
   const [pendingStart, setPendingStart] = useState<PendingSessionStart | null>(null);
   const [radiusInput, setRadiusInput] = useState("150");
+  const [filters, setFilters] = useState({ query: "", module: "", section: "", classType: "", day: "" });
 
   async function load() {
     setError("");
@@ -44,15 +45,14 @@ export default function Page() {
 
   useEffect(() => { void load(); }, []);
 
-  const find = (key: string, id: number) => data[key]?.find((item) => item.id === id);
-  const text = (key: string, id: number) => {
-    const item = find(key, id);
+  const text = useCallback((key: string, id: number) => {
+    const item = data[key]?.find((entry) => entry.id === id);
     if (!item) return String(id);
     if (key === "modules") return `${item.code} — ${item.title}`;
     if (key === "time-slots") return `${item.start_time?.slice(0, 5)}–${item.end_time?.slice(0, 5)}`;
-    if (key === "rooms") return `${find("blocks", item.block_id)?.name ?? ""} / ${item.name}`;
+    if (key === "rooms") return `${data.blocks?.find((entry) => entry.id === item.block_id)?.name ?? ""} / ${item.name}`;
     return item.name || item.code;
-  };
+  }, [data]);
 
   async function start(routineId: number) {
     if (!hasSecureDeviceContext()) {
@@ -109,8 +109,30 @@ export default function Page() {
     }
   }
 
-  const today = occurrences.filter((item) => item.date === localDate());
-  const next = occurrences.find((item) => !item.cancelled);
+  const filteredRows = useMemo(() => rows.filter((row) => {
+    if (filters.module && String(row.module_id) !== filters.module) return false;
+    if (filters.classType && String(row.class_type_id) !== filters.classType) return false;
+    if (filters.day && String(row.day_of_week) !== filters.day) return false;
+    if (filters.section && !(row.section_names || []).some((section: string) => section.toLowerCase().includes(filters.section.toLowerCase()))) return false;
+    if (filters.query) {
+      const haystack = [text("modules", row.module_id), row.section_names?.join(" "), text("rooms", row.room_id)].join(" ").toLowerCase();
+      if (!haystack.includes(filters.query.toLowerCase())) return false;
+    }
+    return true;
+  }), [filters, rows, text]);
+  const filteredOccurrences = useMemo(() => occurrences.filter((item) => {
+    if (filters.module && String(item.module_id) !== filters.module) return false;
+    if (filters.classType && String(item.class_type_id) !== filters.classType) return false;
+    if (filters.day && String((new Date(`${item.date}T12:00:00`).getDay() + 6) % 7) !== filters.day) return false;
+    if (filters.section && !item.section_names.some((section: string) => section.toLowerCase().includes(filters.section.toLowerCase()))) return false;
+    if (filters.query) {
+      const haystack = [text("modules", item.module_id), item.section_names.join(" "), item.room].join(" ").toLowerCase();
+      if (!haystack.includes(filters.query.toLowerCase())) return false;
+    }
+    return true;
+  }), [filters, occurrences, text]);
+  const today = filteredOccurrences.filter((item) => item.date === localDate());
+  const next = filteredOccurrences.find((item) => !item.cancelled);
   const occurrenceCard = (item: any) => <article key={`${item.routine_id}-${item.date}`} className={`panel p-5 ${item.cancelled ? "border-red-500/40 bg-red-500/5" : ""}`}>
     <div className="flex items-start justify-between gap-3"><p className="text-lg font-semibold text-slate-100">{item.start_time.slice(0, 5)}–{item.end_time.slice(0, 5)}</p><Badge tone={item.cancelled?"danger":"info"}>{item.cancelled?"Cancelled":text("class-types", item.class_type_id)}</Badge></div>
     <h3 className="mt-3 text-lg font-semibold">{text("modules", item.module_id)}</h3>
@@ -121,11 +143,21 @@ export default function Page() {
   </article>;
 
   return <div>
-    <PageHeader title="My classes" description="View your teaching schedule and start today’s attendance session from the classroom."/>
+    <PageHeader title="My classes" description="Filter your teaching schedule, then start today’s attendance session from the classroom."/>
+    <section className="panel mb-6 p-5">
+      <div className="mb-4 flex flex-wrap items-end justify-between gap-3"><div><h2 className="text-lg font-semibold">Schedule filters</h2><p className="mt-1 text-sm text-slate-400">Filters apply to today, your next class, and the full timetable.</p></div><Button type="button" variant="ghost" onClick={() => setFilters({ query: "", module: "", section: "", classType: "", day: "" })}>Clear filters</Button></div>
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+        <label><span className="field-label">Search</span><input placeholder="Course, section, or room" value={filters.query} onChange={(event) => setFilters((current) => ({ ...current, query: event.target.value }))} /></label>
+        <label><span className="field-label">Module</span><select value={filters.module} onChange={(event) => setFilters((current) => ({ ...current, module: event.target.value }))}><option value="">All modules</option>{(data.modules || []).map((entry) => <option key={entry.id} value={entry.id}>{entry.code} — {entry.title}</option>)}</select></label>
+        <label><span className="field-label">Section</span><input placeholder="Any section" value={filters.section} onChange={(event) => setFilters((current) => ({ ...current, section: event.target.value }))} /></label>
+        <label><span className="field-label">Class type</span><select value={filters.classType} onChange={(event) => setFilters((current) => ({ ...current, classType: event.target.value }))}><option value="">All class types</option>{(data["class-types"] || []).map((entry) => <option key={entry.id} value={entry.id}>{entry.name}</option>)}</select></label>
+        <label><span className="field-label">Timetable day</span><select value={filters.day} onChange={(event) => setFilters((current) => ({ ...current, day: event.target.value }))}><option value="">All days</option>{days.map((day, index) => <option key={day} value={index}>{day}</option>)}</select></label>
+      </div>
+    </section>
     {startStatus && <p className="mb-3 rounded border border-emerald-800 bg-emerald-950/30 p-3 text-emerald-300">{startStatus}</p>}
     {error&&<div className="mb-4"><ErrorState title="Unable to continue" description={error} onRetry={()=>void load()}/></div>}
     {loading?<LoadingState label="Loading teaching schedule"/>:<><section><h2 className="mb-3 text-lg font-semibold">Today&apos;s classes</h2><div className="grid gap-4 md:grid-cols-2">{today.map(occurrenceCard)}{!today.length&&<div className="panel md:col-span-2"><EmptyState title="No classes scheduled today" description="Your next scheduled class will appear below."/></div>}</div></section>
     <section className="mt-8"><h2 className="mb-3 text-xl font-semibold">Next Class</h2>{next ? <div><p className="mb-2 text-slate-400">{next.date}</p>{occurrenceCard(next)}</div> : <p className="text-slate-400">No upcoming class.</p>}</section>
-    <section className="mt-8"><h2 className="mb-3 text-lg font-semibold">Full timetable</h2><div className="table-wrap"><table><thead><tr><th>Day &amp; time</th><th>Module</th><th>Type</th><th>Sections</th><th>Room</th></tr></thead><tbody>{[...rows].sort((a,b)=>a.day_of_week-b.day_of_week).map(row=><tr key={row.id}><td><b className="text-slate-200">{days[row.day_of_week]}</b><br/><span className="text-slate-400">{text("time-slots",row.time_slot_id)}</span></td><td>{text("modules",row.module_id)}</td><td><Badge>{text("class-types",row.class_type_id)}</Badge></td><td>{row.section_names?.join(" + ")}</td><td>{text("rooms",row.room_id)}</td></tr>)}</tbody></table></div></section></>}
+    <section className="mt-8"><h2 className="mb-3 text-lg font-semibold">Full timetable</h2><div className="table-wrap"><table><thead><tr><th>Day &amp; time</th><th>Module</th><th>Type</th><th>Sections</th><th>Room</th></tr></thead><tbody>{[...filteredRows].sort((a,b)=>a.day_of_week-b.day_of_week).map(row=><tr key={row.id}><td><b className="text-slate-200">{days[row.day_of_week]}</b><br/><span className="text-slate-400">{text("time-slots",row.time_slot_id)}</span></td><td>{text("modules",row.module_id)}</td><td><Badge>{text("class-types",row.class_type_id)}</Badge></td><td>{row.section_names?.join(" + ")}</td><td>{text("rooms",row.room_id)}</td></tr>)}</tbody></table></div></section></>}
   </div>;
 }

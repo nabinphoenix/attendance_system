@@ -1,0 +1,2 @@
+-- Never store database credentials in project files.
+-- Set local PostgreSQL credentials through your password manager or environment.

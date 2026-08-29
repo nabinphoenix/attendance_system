@@ -16,6 +16,23 @@ function Notice({ message, tone = "success" }: { message: string; tone?: "succes
   return <div role={tone === "error" ? "alert" : "status"} className={`rounded-xl border p-3 text-sm ${tone === "error" ? "border-red-500/30 bg-red-500/10 text-red-600" : "border-emerald-500/30 bg-emerald-500/10 text-emerald-700"}`}>{message}</div>;
 }
 
+async function uploadFailure(response: Response) {
+  const fallback = `The server could not upload this image (HTTP ${response.status}).`;
+  try {
+    const body = await response.json();
+    if (typeof body?.detail === "string") return body.detail;
+    if (Array.isArray(body?.detail)) {
+      const messages = body.detail.map((item: unknown) => (
+        typeof item === "object" && item !== null && "msg" in item && typeof item.msg === "string" ? item.msg : ""
+      )).filter(Boolean);
+      return messages.join(" ") || fallback;
+    }
+  } catch {
+    // A proxy or server error may not have a JSON response body.
+  }
+  return fallback;
+}
+
 function SettingsScreen({ initialUser }: { initialUser: User }) {
   const { theme, setTheme } = useTheme();
   const [user, setUser] = useState(initialUser);
@@ -58,14 +75,22 @@ function SettingsScreen({ initialUser }: { initialUser: User }) {
     setProfileError(""); setProfileMessage("");
     if (!new Set(["image/jpeg", "image/png", "image/webp"]).has(image.type)) { setProfileError("Choose a JPG, PNG, or WEBP image."); return; }
     if (image.size > 5 * 1024 * 1024) { setProfileError("Choose an image smaller than 5 MB."); return; }
-    const formData = new FormData(); formData.append("image", image);
+    const formData = new FormData(); formData.append("image", image, image.name);
     setUploading(true);
     try {
-      const response = await api.post<User>("/api/v1/auth/me/avatar", formData);
-      announceProfile(response.data);
+      // Upload through the Next.js proxy so the browser always sends the
+      // current same-origin session cookie and sets the multipart boundary.
+      const response = await fetch("/api/v1/auth/me/avatar", {
+        method: "POST",
+        body: formData,
+        credentials: "same-origin",
+        headers: { Accept: "application/json" },
+      });
+      if (!response.ok) throw new Error(await uploadFailure(response));
+      announceProfile(await response.json() as User);
       setProfileMessage("Your profile photo has been updated.");
-    } catch (error: any) {
-      setProfileError(error.response?.data?.detail ?? "We could not upload that image. Please try again.");
+    } catch (error: unknown) {
+      setProfileError(error instanceof Error ? error.message : "We could not upload that image. Please try again.");
     } finally { setUploading(false); }
   }
 

@@ -100,5 +100,8 @@ def history(user:Annotated[User,Depends(require_roles("teacher","admin"))],db:Db
     result=[]
     for s in db.scalars(q.order_by(ClassSession.session_date.desc())).all():
         source=resolve_session_schedule(s);name=source.module.title if s.routine_entry_id else source.subject.name
-        result.append(SessionHistory(id=s.id,session_date=s.session_date,subject_name=name,effective_teacher_id=s.effective_teacher_id,effective_room=s.effective_room,status=s.status.value,finalized_at=s.finalized_at))
+        if s.routine_entry_id:
+            effective=resolve_effective_class(db,source,s.session_date);section_names=sorted(db.scalars(select(Section.name).where(Section.id.in_(effective.section_ids))).all())
+        else:section_names=[source.section.name]
+        result.append(SessionHistory(id=s.id,session_date=s.session_date,subject_name=name,section_names=section_names,effective_teacher_id=s.effective_teacher_id,effective_room=s.effective_room,status=s.status.value,finalized_at=s.finalized_at))
     return result

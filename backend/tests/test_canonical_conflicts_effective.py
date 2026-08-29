@@ -87,7 +87,7 @@ def test_effective_override_conflicts_cancellation_and_start_session():
     a1_occurrences=client.get(f"/api/v1/academic/routines/me/occurrences?{date_query}",headers=auth(client,"student-a1@example.com"));assert a1_occurrences.status_code==200 and a1_occurrences.json()[0]["cancelled"] is True
     a3_occurrences=client.get(f"/api/v1/academic/routines/me/occurrences?{date_query}",headers=auth(client,"student-a3@example.com"));assert a3_occurrences.status_code==200 and a3_occurrences.json()[0]["room"]=="Annapurna"
     teacher_occurrences=client.get(f"/api/v1/academic/teachers/me/occurrences?{date_query}",headers=chandra);assert teacher_occurrences.status_code==200 and any(row["routine_id"]==later_id and row["can_start"] for row in teacher_occurrences.json())
-    admin_occurrences=client.get(f"/api/v1/academic/routine-occurrences?{date_query}",headers=admin);assert admin_occurrences.status_code==200 and any(row["cancelled"] for row in admin_occurrences.json())
+    admin_occurrences=client.get(f"/api/v1/academic/routine-occurrences?{date_query}",headers=admin);assert admin_occurrences.status_code==200 and any(row["cancelled"] for row in admin_occurrences.json());assert any(row["occupancy_status"]=="empty" for row in admin_occurrences.json());assert any(row["occupancy_status"]=="occupied" for row in admin_occurrences.json());assert any(row["routine_id"]==second_id and row["override_id"] and row["occupancy_status"]=="occupied" for row in admin_occurrences.json())
     app.dependency_overrides.clear()
 
 

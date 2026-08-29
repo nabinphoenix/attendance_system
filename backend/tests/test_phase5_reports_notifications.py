@@ -29,6 +29,16 @@ def auth(client,email):return {"Authorization":f"Bearer {client.post('/api/v1/au
 def test_student_export_scope_csv_and_pdf():
     Session,own,other=setup_phase5();client=TestClient(app);headers=auth(client,"student50@example.com");start=(date.today()-timedelta(days=7)).isoformat();end=date.today().isoformat();csv=client.get(f"/api/v1/exports/attendance.csv?student_id={own}&date_from={start}&date_to={end}",headers=headers);assert csv.status_code==200 and "Student 0" in csv.text and csv.headers["content-disposition"].endswith('attendance_report.csv"');assert client.get(f"/api/v1/exports/attendance.csv?student_id={other}&date_from={start}&date_to={end}",headers=headers).status_code==403;pdf=client.get(f"/api/v1/exports/attendance.pdf?student_id={own}&date_from={start}&date_to={end}",headers=headers);assert pdf.status_code==200 and pdf.content.startswith(b"%PDF")
     app.dependency_overrides.clear()
+def test_student_attendance_report_supports_date_range_and_day_subject_status():
+    Session,own,_=setup_phase5();client=TestClient(app);headers=auth(client,"student50@example.com");start=(date.today()-timedelta(days=1)).isoformat();end=date.today().isoformat()
+    response=client.get(f"/api/v1/analytics/my-attendance?date_from={start}&date_to={end}",headers=headers)
+    assert response.status_code==200
+    payload=response.json();assert payload["present"]==1 and payload["absent"]==1 and payload["total"]==2 and payload["overall_percentage"]==50
+    assert [day["date"] for day in payload["days"]]==[end,start]
+    assert payload["days"][0]["records"][0]["status"]=="present" and payload["days"][1]["records"][0]["status"]=="absent"
+    assert payload["days"][0]["records"][0]["subject_name"]=="Architecture"
+    assert client.get(f"/api/v1/analytics/my-attendance?date_from={end}&date_to={start}",headers=headers).status_code==422
+    app.dependency_overrides.clear()
 def test_risk_case_queues_guardian_notification():
     Session,own,_=setup_phase5();client=TestClient(app);headers=auth(client,"admin5@example.com");response=client.post("/api/v1/analytics/risk-evaluations/run",headers=headers);assert response.status_code==200 and response.json()["created"]==1
     with Session() as db:

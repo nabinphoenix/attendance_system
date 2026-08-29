@@ -25,7 +25,7 @@ export default function Home() {
         <p className="landing-lede">AntimBench gives students, teachers, and college teams one thoughtful place to manage attendance, routines, and early academic support.</p>
         <div className="landing-cta">
           <Link className="landing-primary" href="/login">Open your workspace <span aria-hidden="true">→</span></Link>
-          <Link className="landing-secondary" href="/signup">Create student account</Link>
+          <span className="landing-secondary">Account access by administrator</span>
         </div>
         <div className="landing-trust" aria-label="Key benefits"><span>Role-based access</span><span>Mobile-ready check-in</span><span>Built for college teams</span></div>
       </div>

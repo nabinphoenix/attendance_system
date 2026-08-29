@@ -1,5 +1,5 @@
 from datetime import UTC, date, datetime, time, timedelta
-from typing import Annotated
+from typing import Annotated, Literal
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import func, or_, select
@@ -61,7 +61,7 @@ class RoutineConflict(BaseModel):
 class RoutineAvailability(BaseModel):
  available:bool;conflicts:list[RoutineConflict]=[]
 class EffectiveRoutineRead(BaseModel):
- routine_id:int;date:date;start_time:time;end_time:time;teacher_id:int;original_teacher_id:int;room:str;original_room:str;section_ids:list[int];section_names:list[str];module_id:int;class_type_id:int;cancelled:bool;override_id:int|None;can_start:bool=False
+ routine_id:int;date:date;start_time:time;end_time:time;teacher_id:int;original_teacher_id:int;room:str;original_room:str;section_ids:list[int];section_names:list[str];module_id:int;class_type_id:int;cancelled:bool;override_id:int|None;occupancy_status:Literal["occupied","empty"];can_start:bool=False
 
 
 @student_router.get("/catalog")
@@ -437,7 +437,9 @@ def decide_routine_override(routine_id:int,override_id:int,p:RoutineOverrideDeci
 
 def effective_routine_read(db,effective:EffectiveClass)->EffectiveRoutineRead:
  entry=effective.routine_entry;sections=[db.get(Section,section_id) for section_id in sorted(effective.section_ids)]
- return EffectiveRoutineRead(routine_id=entry.id,date=effective.date,start_time=effective.start_time,end_time=effective.end_time,teacher_id=effective.teacher_id,original_teacher_id=entry.teacher_id,room=effective.room,original_room=entry.room.name,section_ids=list(sorted(effective.section_ids)),section_names=[section.name for section in sections if section],module_id=entry.module_id,class_type_id=entry.class_type_id,cancelled=effective.cancelled,override_id=effective.override_id)
+ section_names=[section.name for section in sections if section]
+ occupancy_status="occupied" if section_names and not effective.cancelled else "empty"
+ return EffectiveRoutineRead(routine_id=entry.id,date=effective.date,start_time=effective.start_time,end_time=effective.end_time,teacher_id=effective.teacher_id,original_teacher_id=entry.teacher_id,room=effective.room,original_room=entry.room.name,section_ids=list(sorted(effective.section_ids)),section_names=section_names,module_id=entry.module_id,class_type_id=entry.class_type_id, cancelled=effective.cancelled,override_id=effective.override_id,occupancy_status=occupancy_status)
 def effective_occurrences(db,entries:list[RoutineEntry],date_from:date,days:int)->list[EffectiveRoutineRead]:
  result=[]
  for offset in range(min(max(days,1),31)):

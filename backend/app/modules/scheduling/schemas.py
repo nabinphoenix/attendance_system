@@ -13,4 +13,4 @@ class SessionGeofenceCapture(BaseModel):
 class ClassSessionRead(ORM):
  id:int;timetable_entry_id:int|None=None;routine_entry_id:int|None=None;session_date:date;effective_teacher_id:int;effective_room:str;status:str;started_at:datetime
  geofence_radius_meters:float|None=None;teacher_location_accuracy_meters:float|None=None;geofence_captured_at:datetime|None=None
-class SessionHistory(BaseModel):id:int;session_date:date;subject_name:str;effective_teacher_id:int;effective_room:str;status:str;finalized_at:datetime|None
+class SessionHistory(BaseModel):id:int;session_date:date;subject_name:str;section_names:list[str];effective_teacher_id:int;effective_room:str;status:str;finalized_at:datetime|None

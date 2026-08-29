@@ -10,7 +10,7 @@ from app.modules.academic.models import AcademicModule,RoutineEntry,Section,Stud
 from app.modules.attendance.models import AttendanceRecord,AttendanceStatus
 from app.modules.identity.models import User
 from app.modules.scheduling.models import ClassSession,SessionStatus,TimetableEntry
-from .schemas import AtRiskStudent,CollegeSummary,RiskRunResult,SectionStudentSummary,SectionSummary,SelectiveCandidate,StudentSummary
+from .schemas import AtRiskStudent,CollegeSummary,RiskRunResult,SectionStudentSummary,SectionSummary,SelectiveCandidate,StudentAttendanceDay,StudentAttendanceRecord,StudentAttendanceReport,StudentSummary,SubjectAttendance
 from .service import PASSING,run_risk_evaluations,subject_stats
 from app.core.config import settings
 from app.modules.crm.models import CaseStatus,StudentCase
@@ -18,12 +18,37 @@ from app.modules.scheduling.models import OverrideStatus,ScheduleOverride
 from app.modules.course_completion.models import MakeupSuggestion,SuggestionStatus
 from app.modules.academic.student_profile_service import current_student_profile
 router=APIRouter(prefix="/analytics",tags=["analytics"])
+def student_display_name(student:Student)->str:
+    return student.user.name if student.user else student.name or student.roll_number
 def student_summary_response(db:DbSession,student:Student)->StudentSummary:
     stats=subject_stats(db,student.id);present=sum(x["present"] for x in stats);absent=sum(x["absent"] for x in stats);total=sum(x["total"] for x in stats)
     return StudentSummary(student_id=student.id,present=present,absent=absent,total=total,overall_percentage=round(100*present/total,2) if total else 0,subjects=stats,attendance_threshold_percent=settings.attendance_threshold_percent,minimum_observations=settings.minimum_observations)
+def student_attendance_report_response(db:DbSession,student:Student,date_from:date|None,date_to:date|None)->StudentAttendanceReport:
+    query=select(AttendanceRecord.class_session_id,AttendanceRecord.status,AttendanceRecord.check_in_time,ClassSession.session_date,TimetableEntry.subject_id,Subject.name,Subject.code,RoutineEntry.module_id,AcademicModule.title,AcademicModule.code).join(ClassSession,AttendanceRecord.class_session_id==ClassSession.id).outerjoin(TimetableEntry,ClassSession.timetable_entry_id==TimetableEntry.id).outerjoin(Subject,TimetableEntry.subject_id==Subject.id).outerjoin(RoutineEntry,ClassSession.routine_entry_id==RoutineEntry.id).outerjoin(AcademicModule,RoutineEntry.module_id==AcademicModule.id).where(AttendanceRecord.student_id==student.id,ClassSession.status==SessionStatus.COMPLETED)
+    if date_from:query=query.where(ClassSession.session_date>=date_from)
+    if date_to:query=query.where(ClassSession.session_date<=date_to)
+    rows=db.execute(query.order_by(ClassSession.session_date.desc(),AttendanceRecord.class_session_id.desc())).all()
+    subjects:dict[tuple[str,int],dict]={}; days:dict[date,dict]={}; records=[]
+    for session_id,status,check_in_time,session_date,subject_id,subject_name,subject_code,module_id,module_title,module_code in rows:
+        scope_id=module_id if module_id is not None else subject_id
+        if scope_id is None:continue
+        name=module_title or subject_name or "Unnamed subject"; code=module_code or subject_code; status_value=status.value if isinstance(status,AttendanceStatus) else str(status)
+        record=StudentAttendanceRecord(session_id=session_id,date=session_date,weekday=session_date.strftime("%A"),subject_id=scope_id,subject_name=name,subject_code=code,status=status_value,check_in_time=check_in_time);records.append(record)
+        key=("MODULE" if module_id is not None else "SUBJECT",scope_id);subject=subjects.setdefault(key,{"subject_id":scope_id,"subject_name":name,"present":0,"absent":0,"total":0});subject["total"]+=1
+        attended=status in PASSING
+        subject["present"]+=int(attended);subject["absent"]+=int(not attended)
+        day=days.setdefault(session_date,{"date":session_date,"weekday":session_date.strftime("%A"),"present":0,"absent":0,"total":0,"records":[]});day["total"]+=1;day["present"]+=int(attended);day["absent"]+=int(not attended);day["records"].append(record)
+    subject_items=[SubjectAttendance(**item,percentage=round(100*item["present"]/item["total"],2) if item["total"] else 0) for item in subjects.values()]
+    day_items=[StudentAttendanceDay(**item,percentage=round(100*item["present"]/item["total"],2) if item["total"] else 0) for item in sorted(days.values(),key=lambda item:item["date"],reverse=True)]
+    present=sum(item.present for item in subject_items);total=sum(item.total for item in subject_items);absent=total-present
+    return StudentAttendanceReport(student_id=student.id,date_from=date_from,date_to=date_to,present=present,absent=absent,total=total,overall_percentage=round(100*present/total,2) if total else 0,subjects=sorted(subject_items,key=lambda item:item.subject_name.lower()),days=day_items,attendance_threshold_percent=settings.attendance_threshold_percent,minimum_observations=settings.minimum_observations)
 @router.get("/my-attendance-summary",response_model=StudentSummary)
 def my_student_summary(user:Annotated[User,Depends(require_role("student"))],db:DbSession):
     return student_summary_response(db,current_student_profile(db,user))
+@router.get("/my-attendance",response_model=StudentAttendanceReport)
+def my_student_attendance(user:Annotated[User,Depends(require_role("student"))],db:DbSession,date_from:date|None=None,date_to:date|None=None):
+    if date_from and date_to and date_from>date_to:raise HTTPException(422,"date_from must be on or before date_to")
+    return student_attendance_report_response(db,current_student_profile(db,user),date_from,date_to)
 @router.get("/my-attendance-summary.csv")
 def my_student_summary_csv(user:Annotated[User,Depends(require_role("student"))],db:DbSession):
     summary=student_summary_response(db,current_student_profile(db,user));output=io.StringIO();writer=csv.writer(output)
@@ -40,7 +65,7 @@ def student_summary(id:int,user:Annotated[User,Depends(get_current_user)],db:DbS
 def section_summary(id:int,user:Annotated[User,Depends(require_roles("admin","teacher"))],db:DbSession):
     students=db.scalars(select(Student).where(Student.section_id==id)).all();items=[];all_present=all_total=0
     for student in students:
-        stats=subject_stats(db,student.id);present=sum(x["present"] for x in stats);total=sum(x["total"] for x in stats);all_present+=present;all_total+=total;items.append(SectionStudentSummary(student_id=student.id,student_name=student.user.name,percentage=round(100*present/total,2) if total else 0))
+        stats=subject_stats(db,student.id);present=sum(x["present"] for x in stats);total=sum(x["total"] for x in stats);all_present+=present;all_total+=total;items.append(SectionStudentSummary(student_id=student.id,student_name=student_display_name(student),percentage=round(100*present/total,2) if total else 0))
     return SectionSummary(section_id=id,overall_percentage=round(100*all_present/all_total,2) if all_total else 0,students=items)
 @router.get("/selective-absence",response_model=list[SelectiveCandidate])
 def selective(date:date,batch_id:int,user:Annotated[User,Depends(require_roles("admin","teacher"))],db:DbSession):
@@ -61,5 +86,5 @@ def at_risk(user:Annotated[User,Depends(require_role("admin"))],db:DbSession):
     for student in db.scalars(select(Student)).all():
         for stat in subject_stats(db,student.id):
             if stat["total"]>=settings.minimum_observations and stat["percentage"]<settings.attendance_threshold_percent:
-                case=db.scalar(select(StudentCase).where(StudentCase.student_id==student.id,StudentCase.scope_type==stat["scope_type"],StudentCase.scope_id==stat["scope_id"],StudentCase.status.in_([CaseStatus.OPEN,CaseStatus.IN_PROGRESS])));result.append(AtRiskStudent(student_id=student.id,student_name=student.user.name,subject_id=stat["scope_id"],subject_name=stat["subject_name"],attendance_percentage=stat["percentage"],observations=stat["total"],case_status=case.status.value if case else None))
+                case=db.scalar(select(StudentCase).where(StudentCase.student_id==student.id,StudentCase.scope_type==stat["scope_type"],StudentCase.scope_id==stat["scope_id"],StudentCase.status.in_([CaseStatus.OPEN,CaseStatus.IN_PROGRESS])));result.append(AtRiskStudent(student_id=student.id,student_name=student_display_name(student),subject_id=stat["scope_id"],subject_name=stat["subject_name"],attendance_percentage=stat["percentage"],observations=stat["total"],case_status=case.status.value if case else None))
     return result

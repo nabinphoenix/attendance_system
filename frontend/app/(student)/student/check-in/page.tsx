@@ -138,7 +138,7 @@ export default function Page() {
       <section className="panel mt-5 p-4 sm:p-6">
         <Button className="w-full" size="lg" onClick={() => void startCamera()} disabled={camera || busy}>{camera ? "Camera active…" : "Scan classroom QR"}</Button>
         {camera && <div id="attendance-qr-reader" className="mt-4 overflow-hidden rounded-lg bg-white" />}
-        <details className="mt-5 border-t border-slate-800 pt-4"><summary className="cursor-pointer text-sm font-medium text-slate-400 hover:text-slate-200">Camera unavailable? Enter the QR token manually</summary><form onSubmit={submit} className="mt-4 space-y-3"><label className="field-label" htmlFor="qr-token">QR token</label><textarea id="qr-token" value={token} onChange={(event) => setToken(event.target.value)} className="h-24 w-full" required /><Button variant="secondary" disabled={busy} className="w-full sm:w-auto">Verify and check in</Button></form></details>
+        <details className="mt-5 border-t border-slate-800 pt-4"><summary className="cursor-pointer text-sm font-medium text-slate-400 hover:text-slate-200">Camera unavailable? Enter the QR token manually</summary><form onSubmit={submit} className="mt-4 space-y-3"><label className="field-label" htmlFor="qr-token">QR token</label><textarea id="qr-token" value={token} onChange={(event) => setToken(event.target.value)} className="h-24 w-full" required /><Button type="submit" variant="secondary" disabled={busy} className="w-full sm:w-auto">Verify and check in</Button></form></details>
       </section>
     </>}
   </div>;

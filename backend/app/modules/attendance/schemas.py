@@ -1,4 +1,4 @@
-from datetime import datetime, time
+from datetime import date, datetime, time
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -45,6 +45,25 @@ class RosterItem(BaseModel):
     student_name: str
     roll_number: str
     status: str
+    check_in_time: datetime | None = None
+    distance_meters: float | None = None
+    allowed_radius_meters: float | None = None
+    location_accuracy_meters: float | None = None
+
+
+class TeacherAttendanceClass(BaseModel):
+    routine_id: int
+    session_id: int | None
+    date: date
+    module_code: str
+    module_title: str
+    section_names: list[str]
+    start_time: time
+    end_time: time
+    room: str
+    cancelled: bool
+    session_status: str | None
+    students: list[RosterItem]
 
 
 class CheckInExceptionRead(BaseModel):

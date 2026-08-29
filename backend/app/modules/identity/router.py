@@ -12,10 +12,9 @@ from sqlalchemy import func, select
 from app.core.dependencies import DbSession, get_current_user, require_role
 from app.modules.operations.service import log_audit
 from app.core.security import hash_password, verify_password
-from app.modules.academic.models import Batch, InvitationStatus, Section, Student, StudentInvitation
-from app.modules.academic.schemas import BatchRead, SectionRead
+from app.modules.academic.models import InvitationStatus, Student, StudentInvitation
 from app.modules.identity.models import User, UserRole
-from app.modules.identity.schemas import LoginRequest, PasswordChange, ProfileUpdate, SignupRequest, TokenResponse, UserRead, UserUpdate
+from app.modules.identity.schemas import LoginRequest, PasswordChange, ProfileUpdate, TokenResponse, UserRead, UserUpdate
 from app.modules.identity.service import authenticate, issue_token
 from app.core.config import settings
 
@@ -73,34 +72,6 @@ def login(payload: LoginRequest, response: Response, db: DbSession) -> TokenResp
     if not user.is_active:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account inactive. Contact an administrator.")
     return browser_session(response,user)
-
-@router.post("/auth/signup", response_model=TokenResponse, status_code=status.HTTP_201_CREATED)
-def signup(payload: SignupRequest, response: Response, db: DbSession) -> TokenResponse:
-    name = payload.name.strip()
-    email = str(payload.email).strip().lower()
-    if not name:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Full name is required")
-    if len(payload.password) < 8:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Password must be at least 8 characters")
-    if db.scalar(select(User.id).where(func.lower(User.email) == email)):
-        raise HTTPException(status.HTTP_409_CONFLICT, "An account with this email already exists")
-    section = db.get(Section, payload.section_id)
-    if not section or section.batch_id != payload.batch_id:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Select a valid section for the chosen batch")
-    user = User(name=name, email=email, password_hash=hash_password(payload.password), role=UserRole.STUDENT)
-    db.add(user); db.flush()
-    db.add(Student(user_id=user.id, section_id=section.id, roll_number=f"SELF-{user.id:05d}", name=name, email=email))
-    log_audit(db, user.id, "student.signup", "user", user.id, None, {"email": user.email, "role": user.role.value})
-    db.commit(); db.refresh(user)
-    return browser_session(response,user)
-
-@router.get("/public/academic/batches", response_model=list[BatchRead])
-def public_batches(db: DbSession):
-    return db.scalars(select(Batch).order_by(Batch.name)).all()
-
-@router.get("/public/academic/batches/{batch_id}/sections", response_model=list[SectionRead])
-def public_sections(batch_id: int, db: DbSession):
-    return db.scalars(select(Section).where(Section.batch_id == batch_id).order_by(Section.name)).all()
 
 @router.get("/auth/me", response_model=UserRead)
 def me(user: Annotated[User, Depends(get_current_user)]) -> User: return user

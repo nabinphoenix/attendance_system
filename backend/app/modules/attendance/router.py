@@ -1,19 +1,19 @@
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from app.core.config import settings
 from app.core.dependencies import DbSession, require_role, require_roles
-from app.modules.academic.models import Section, Student, StudentSubjectEnrollment, Teacher
+from app.modules.academic.models import RoutineEntry, Section, Student, StudentSubjectEnrollment, Teacher
 from app.modules.course_completion.models import CoursePlan
 from app.modules.identity.models import User
 from app.modules.operations.models import AuditLog
 from app.modules.operations.service import log_audit
-from app.modules.scheduling.models import ClassSession, SessionStatus
-from app.modules.scheduling.service import resolve_effective_class, resolve_session_schedule, session_section_ids
+from app.modules.scheduling.models import ClassSession, OverrideStatus, ScheduleOverride, SessionStatus
+from app.modules.scheduling.service import approved_routine_override, resolve_effective_class, resolve_session_schedule, session_section_ids
 
 from .models import (
     AttendanceChange,
@@ -32,6 +32,7 @@ from .schemas import (
     QRResponse,
     RosterItem,
     StatusChange,
+    TeacherAttendanceClass,
 )
 from .service import QRClaims, QRValidationError, distance_meters, issue_qr_token, utc, validate_qr_token
 
@@ -41,15 +42,7 @@ router = APIRouter(tags=["attendance"])
 def teacher_session(db, user: User, session_id: int) -> ClassSession:
     session = db.get(ClassSession, session_id)
     teacher = db.scalar(select(Teacher).where(Teacher.user_id == user.id))
-    if not session or not teacher:
-        raise HTTPException(403, "Not your class session")
-    allowed = {session.effective_teacher_id}
-    if session.routine_entry_id and session.routine_entry:
-        allowed.add(session.routine_entry.teacher_id)
-        allowed.add(resolve_effective_class(db, session.routine_entry, session.session_date).teacher_id)
-    elif session.timetable_entry:
-        allowed.add(session.timetable_entry.teacher_id)
-    if teacher.id not in allowed:
+    if not session or not teacher or session.effective_teacher_id != teacher.id:
         raise HTTPException(403, "Not your class session")
     return session
 
@@ -308,22 +301,37 @@ def session_students(session: ClassSession, db):
     ).all()
 
 
-def roster_rows(session: ClassSession, db) -> list[RosterItem]:
-    result = []
-    for student in session_students(session, db):
-        record = db.scalar(
-            select(AttendanceRecord).where(
-                AttendanceRecord.class_session_id == session.id,
-                AttendanceRecord.student_id == student.id,
+def effective_students(effective, db) -> list[Student]:
+    return db.scalars(
+        select(Student)
+        .where(Student.section_id.in_(effective.section_ids))
+        .order_by(Student.roll_number)
+    ).all()
+
+
+def roster_rows_for_students(session_id: int | None, students: list[Student], db) -> list[RosterItem]:
+    records = {}
+    attempts = {}
+    if session_id is not None:
+        records = {
+            record.student_id: record
+            for record in db.scalars(
+                select(AttendanceRecord).where(AttendanceRecord.class_session_id == session_id)
+            ).all()
+        }
+        for attempt in db.scalars(
+            select(CheckInAttempt)
+            .where(
+                CheckInAttempt.class_session_id == session_id,
             )
-        )
-        latest_attempt = db.scalar(
-            select(CheckInAttempt).where(
-                CheckInAttempt.class_session_id == session.id,
-                CheckInAttempt.student_id == student.id,
-                CheckInAttempt.status.in_([CheckInAttemptStatus.PENDING, CheckInAttemptStatus.REJECTED]),
-            ).order_by(CheckInAttempt.created_at.desc())
-        )
+            .order_by(CheckInAttempt.created_at.desc())
+        ).all():
+            if attempt.student_id not in attempts:
+                attempts[attempt.student_id] = attempt
+    result = []
+    for student in students:
+        record = records.get(student.id)
+        latest_attempt = attempts.get(student.id)
         attempt_status = latest_attempt.status.value if latest_attempt else "not_checked_in"
         result.append(
             RosterItem(
@@ -332,8 +340,232 @@ def roster_rows(session: ClassSession, db) -> list[RosterItem]:
                 student_name=student.user.name if student.user else student.name or student.roll_number,
                 roll_number=student.roll_number,
                 status=record.status.value if record else ("pending_verification" if attempt_status == "pending" else attempt_status),
+                check_in_time=record.check_in_time if record else None,
+                distance_meters=latest_attempt.distance_meters if latest_attempt else None,
+                allowed_radius_meters=latest_attempt.allowed_radius_meters if latest_attempt else None,
+                location_accuracy_meters=latest_attempt.accuracy_meters if latest_attempt else None,
             )
         )
+    return result
+
+
+def roster_rows(session: ClassSession, db) -> list[RosterItem]:
+    return roster_rows_for_students(session.id, session_students(session, db), db)
+
+
+def teacher_profile(db, user: User) -> Teacher:
+    teacher = db.scalar(select(Teacher).where(Teacher.user_id == user.id))
+    if not teacher:
+        raise HTTPException(404, "Teacher profile not found")
+    return teacher
+
+
+def teacher_routine_occurrence(db, user: User, routine_id: int, attendance_date: date):
+    teacher = teacher_profile(db, user)
+    entry = db.get(RoutineEntry, routine_id)
+    if not entry:
+        raise HTTPException(404, "Routine entry not found")
+    override = approved_routine_override(db, routine_id, attendance_date)
+    if entry.day_of_week != attendance_date.weekday() and not (override and override.is_makeup):
+        raise HTTPException(409, "This routine is not scheduled on the selected date")
+    effective = resolve_effective_class(db, entry, attendance_date, override)
+    if effective.teacher_id != teacher.id:
+        raise HTTPException(403, "This class is assigned to another teacher")
+    if effective.cancelled:
+        raise HTTPException(409, "Class is cancelled")
+    return entry, effective
+
+
+def teacher_attendance_entries(db, teacher_id: int, attendance_date: date) -> list[tuple[RoutineEntry, object]]:
+    entries = db.scalars(
+        select(RoutineEntry).where(RoutineEntry.day_of_week == attendance_date.weekday())
+    ).unique().all()
+    makeup_ids = db.scalars(
+        select(ScheduleOverride.routine_entry_id).where(
+            ScheduleOverride.override_date == attendance_date,
+            ScheduleOverride.status == OverrideStatus.APPROVED,
+            ScheduleOverride.is_makeup.is_(True),
+        )
+    ).all()
+    if makeup_ids:
+        entries.extend(
+            db.scalars(select(RoutineEntry).where(RoutineEntry.id.in_(makeup_ids))).unique().all()
+        )
+    unique_entries = {entry.id: entry for entry in entries}
+    result = []
+    for entry in unique_entries.values():
+        effective = resolve_effective_class(db, entry, attendance_date)
+        if effective.teacher_id == teacher_id:
+            result.append((entry, effective))
+    return sorted(result, key=lambda item: (item[1].start_time, item[0].id))
+
+
+def manual_session(db, entry: RoutineEntry, effective, attendance_date: date, students: list[Student], user: User) -> ClassSession:
+    session = db.scalar(
+        select(ClassSession).where(
+            ClassSession.routine_entry_id == entry.id,
+            ClassSession.session_date == attendance_date,
+        )
+    )
+    today = datetime.now().date()
+    now = datetime.now(UTC)
+    if not session:
+        session = ClassSession(
+            routine_entry_id=entry.id,
+            session_date=attendance_date,
+            effective_teacher_id=effective.teacher_id,
+            effective_room=effective.room,
+            schedule_override_id=effective.override_id,
+            status=SessionStatus.COMPLETED if attendance_date < today else SessionStatus.ACTIVE,
+            started_at=now,
+            finalized_at=now if attendance_date < today else None,
+        )
+        db.add(session)
+        db.flush()
+        log_audit(
+            db,
+            user.id,
+            "class_session.manual_created",
+            "class_session",
+            session.id,
+            None,
+            {"routine_entry_id": entry.id, "session_date": attendance_date.isoformat()},
+        )
+    if attendance_date < today:
+        existing_ids = set(
+            db.scalars(
+                select(AttendanceRecord.student_id).where(AttendanceRecord.class_session_id == session.id)
+            ).all()
+        )
+        for student in students:
+            if student.id in existing_ids:
+                continue
+            leave = db.scalar(
+                select(LeaveRequest).where(
+                    LeaveRequest.student_id == student.id,
+                    LeaveRequest.leave_date == attendance_date,
+                    LeaveRequest.status == "approved",
+                )
+            )
+            db.add(
+                AttendanceRecord(
+                    class_session_id=session.id,
+                    student_id=student.id,
+                    status=AttendanceStatus.LEAVE if leave else AttendanceStatus.ABSENT,
+                    method=AttendanceMethod.FINALIZATION,
+                )
+            )
+        if session.status != SessionStatus.COMPLETED:
+            session.status = SessionStatus.COMPLETED
+            session.finalized_at = now
+            log_audit(db, user.id, "class_session.manual_finalized", "class_session", session.id, {"status": "active"}, {"status": "completed"})
+    return session
+
+
+@router.get("/teacher/attendance", response_model=list[TeacherAttendanceClass])
+def teacher_attendance(
+    user: Annotated[User, Depends(require_role("teacher"))],
+    db: DbSession,
+    attendance_date: date = Query(..., alias="date"),
+):
+    if attendance_date > datetime.now().date():
+        raise HTTPException(422, "Manual attendance is available for today and earlier dates only")
+    teacher = teacher_profile(db, user)
+    result = []
+    for entry, effective in teacher_attendance_entries(db, teacher.id, attendance_date):
+        session = db.scalar(
+            select(ClassSession).where(
+                ClassSession.routine_entry_id == entry.id,
+                ClassSession.session_date == attendance_date,
+            )
+        )
+        students = effective_students(effective, db)
+        section_names = list(db.scalars(select(Section.name).where(Section.id.in_(effective.section_ids))).all())
+        result.append(
+            TeacherAttendanceClass(
+                routine_id=entry.id,
+                session_id=session.id if session else None,
+                date=attendance_date,
+                module_code=entry.module.code,
+                module_title=entry.module.title,
+                section_names=sorted(section_names),
+                start_time=effective.start_time,
+                end_time=effective.end_time,
+                room=effective.room,
+                cancelled=effective.cancelled,
+                session_status=session.status.value if session else None,
+                students=roster_rows_for_students(session.id if session else None, students, db),
+            )
+        )
+    return result
+
+
+def apply_manual_status(db, session: ClassSession, student: Student, status: str, reason: str, user: User) -> RosterItem:
+    if not reason.strip():
+        raise HTTPException(422, "Reason is required")
+    try:
+        new_status = AttendanceStatus(status.lower())
+    except ValueError as exc:
+        raise HTTPException(422, "Invalid status") from exc
+
+    record = db.scalar(
+        select(AttendanceRecord).where(
+            AttendanceRecord.class_session_id == session.id,
+            AttendanceRecord.student_id == student.id,
+        )
+    )
+    if record:
+        old_status = record.status
+        record.status = new_status
+        record.method = AttendanceMethod.MANUAL
+        db.add(AttendanceChange(attendance_record_id=record.id, before_status=old_status, after_status=new_status, reason=reason, actor_id=user.id))
+        log_audit(db, user.id, "attendance.status_changed", "attendance_record", record.id, {"status": old_status.value}, {"status": new_status.value, "reason": reason})
+    else:
+        record = AttendanceRecord(class_session_id=session.id, student_id=student.id, status=new_status, method=AttendanceMethod.MANUAL)
+        db.add(record)
+        db.flush()
+        log_audit(db, user.id, "attendance.status_recorded", "attendance_record", record.id, None, {"status": new_status.value, "reason": reason, "class_session_id": session.id})
+
+    pending_status = CheckInAttemptStatus.CONFIRMED if new_status in (AttendanceStatus.PRESENT, AttendanceStatus.LATE) else CheckInAttemptStatus.REJECTED
+    for attempt in db.scalars(
+        select(CheckInAttempt).where(
+            CheckInAttempt.class_session_id == session.id,
+            CheckInAttempt.student_id == student.id,
+            CheckInAttempt.status == CheckInAttemptStatus.PENDING,
+        )
+    ).all():
+        attempt.status = pending_status
+        attempt.reviewed_by = user.id
+        attempt.reviewed_at = datetime.now(UTC)
+        attempt.decision_reason = reason
+    return RosterItem(
+        attendance_id=record.id,
+        student_id=student.id,
+        student_name=student.user.name if student.user else student.name or student.roll_number,
+        roll_number=student.roll_number,
+        status=record.status.value,
+    )
+
+
+@router.put("/teacher/attendance/{routine_id}/{student_id}", response_model=RosterItem)
+def set_teacher_attendance(
+    routine_id: int,
+    student_id: int,
+    p: StatusChange,
+    user: Annotated[User, Depends(require_role("teacher"))],
+    db: DbSession,
+    attendance_date: date = Query(..., alias="date"),
+):
+    if attendance_date > datetime.now().date():
+        raise HTTPException(422, "Manual attendance is available for today and earlier dates only")
+    entry, effective = teacher_routine_occurrence(db, user, routine_id, attendance_date)
+    students = effective_students(effective, db)
+    student = next((item for item in students if item.id == student_id), None)
+    if not student:
+        raise HTTPException(404, "Student is not enrolled in this class")
+    session = manual_session(db, entry, effective, attendance_date, students, user)
+    result = apply_manual_status(db, session, student, p.status, p.reason, user)
+    db.commit()
     return result
 
 
@@ -497,6 +729,53 @@ def finalize(id: int, user: Annotated[User, Depends(require_role("teacher"))], d
     log_audit(db, user.id, "class_session.finalized", "class_session", session.id, {"status": "active"}, {"status": "completed"})
     db.commit()
     return roster_rows(session, db)
+
+
+@router.put("/sessions/{id}/attendance/{student_id}", response_model=RosterItem)
+def set_session_student_attendance(
+    id: int,
+    student_id: int,
+    p: StatusChange,
+    user: Annotated[User, Depends(require_role("teacher"))],
+    db: DbSession,
+):
+    if not p.reason.strip():
+        raise HTTPException(422, "Reason is required")
+    session = teacher_session(db, user, id)
+    student = next((item for item in session_students(session, db) if item.id == student_id), None)
+    if not student:
+        raise HTTPException(404, "Student is not enrolled in this class session")
+    try:
+        new_status = AttendanceStatus(p.status.lower())
+    except ValueError as exc:
+        raise HTTPException(422, "Invalid status") from exc
+
+    record = db.scalar(
+        select(AttendanceRecord).where(
+            AttendanceRecord.class_session_id == session.id,
+            AttendanceRecord.student_id == student.id,
+        )
+    )
+    if record:
+        old_status = record.status
+        record.status = new_status
+        record.method = AttendanceMethod.MANUAL
+        db.add(AttendanceChange(attendance_record_id=record.id, before_status=old_status, after_status=new_status, reason=p.reason, actor_id=user.id))
+        log_audit(db, user.id, "attendance.status_changed", "attendance_record", record.id, {"status": old_status.value}, {"status": new_status.value, "reason": p.reason})
+    else:
+        record = AttendanceRecord(class_session_id=session.id, student_id=student.id, status=new_status, method=AttendanceMethod.MANUAL)
+        db.add(record)
+        db.flush()
+        log_audit(db, user.id, "attendance.status_recorded", "attendance_record", record.id, None, {"status": new_status.value, "reason": p.reason, "class_session_id": session.id})
+
+    pending_status = CheckInAttemptStatus.CONFIRMED if new_status in (AttendanceStatus.PRESENT, AttendanceStatus.LATE) else CheckInAttemptStatus.REJECTED
+    for attempt in db.scalars(select(CheckInAttempt).where(CheckInAttempt.class_session_id == session.id, CheckInAttempt.student_id == student.id, CheckInAttempt.status == CheckInAttemptStatus.PENDING)).all():
+        attempt.status = pending_status
+        attempt.reviewed_by = user.id
+        attempt.reviewed_at = datetime.now(UTC)
+        attempt.decision_reason = p.reason
+    db.commit()
+    return RosterItem(attendance_id=record.id, student_id=student.id, student_name=student.user.name if student.user else student.name or student.roll_number, roll_number=student.roll_number, status=record.status.value)
 
 
 @router.patch("/attendance/{id}", response_model=RosterItem)
