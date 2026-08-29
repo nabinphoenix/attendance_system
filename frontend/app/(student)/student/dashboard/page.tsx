@@ -31,6 +31,8 @@ type AttendanceRecord = {
   subject_id: number;
   subject_name: string;
   subject_code: string | null;
+  class_type_id: number | null;
+  class_type_name: string | null;
   status: string;
   check_in_time: string | null;
 };
@@ -52,6 +54,15 @@ type AttendanceDay = {
   total: number;
   percentage: number;
   records: AttendanceRecord[];
+};
+
+type AttendanceClassType = {
+  key: string;
+  name: string;
+  present: number;
+  absent: number;
+  total: number;
+  percentage: number;
 };
 
 type AttendanceReport = {
@@ -123,6 +134,7 @@ export default function Page() {
   const [dateFrom, setDateFrom] = useState(initialDateFrom);
   const [dateTo, setDateTo] = useState(initialDateTo);
   const [subjectFilter, setSubjectFilter] = useState("");
+  const [classTypeFilter, setClassTypeFilter] = useState("");
   const [dayFilter, setDayFilter] = useState("");
   const [analysisMode, setAnalysisMode] = useState<AnalysisMode>("day");
   const [period, setPeriod] = useState<Period>("last-30");
@@ -200,11 +212,12 @@ export default function Page() {
   );
 
   const view = useMemo(() => {
-    if (!attendance) return { records: [], days: [], subjects: [], present: 0, absent: 0, total: 0, overall: 0 };
+    if (!attendance) return { records: [], days: [], subjects: [], classTypes: [] as AttendanceClassType[], present: 0, absent: 0, total: 0, overall: 0 };
     const includesRecord = (record: AttendanceRecord) =>
-      (!subjectFilter || String(record.subject_id) === subjectFilter) && (!dayFilter || record.date === dayFilter);
+      (!subjectFilter || String(record.subject_id) === subjectFilter) && (!classTypeFilter || String(record.class_type_id ?? "legacy") === classTypeFilter) && (!dayFilter || record.date === dayFilter);
     const records = attendance.days.flatMap((day) => day.records).filter(includesRecord);
     const subjects = new Map<number, AttendanceSubject>();
+    const classTypes = new Map<string, AttendanceClassType>();
     const days = attendance.days
       .map((day) => {
         const dayRecords = day.records.filter(includesRecord);
@@ -219,10 +232,17 @@ export default function Page() {
       else item.absent += 1;
       item.percentage = (100 * item.present) / item.total;
       subjects.set(record.subject_id, item);
+      const typeKey = String(record.class_type_id ?? "legacy");
+      const classType = classTypes.get(typeKey) ?? { key: typeKey, name: record.class_type_name ?? "Other class type", present: 0, absent: 0, total: 0, percentage: 0 };
+      classType.total += 1;
+      if (attended(record.status)) classType.present += 1;
+      else classType.absent += 1;
+      classType.percentage = (100 * classType.present) / classType.total;
+      classTypes.set(typeKey, classType);
     });
     const present = records.filter((record) => attended(record.status)).length;
-    return { records, days, subjects: [...subjects.values()].sort((left, right) => left.subject_name.localeCompare(right.subject_name)), present, absent: records.length - present, total: records.length, overall: records.length ? (100 * present) / records.length : 0 };
-  }, [attendance, dayFilter, subjectFilter]);
+    return { records, days, subjects: [...subjects.values()].sort((left, right) => left.subject_name.localeCompare(right.subject_name)), classTypes: [...classTypes.values()].sort((left, right) => left.name.localeCompare(right.name)), present, absent: records.length - present, total: records.length, overall: records.length ? (100 * present) / records.length : 0 };
+  }, [attendance, classTypeFilter, dayFilter, subjectFilter]);
 
   function applyDateFilter(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -254,11 +274,13 @@ export default function Page() {
     if (!attendance) return;
     setExportError("");
     const selectedSubject = attendance.subjects.find((subject) => String(subject.subject_id) === subjectFilter)?.subject_name ?? "All subjects";
+    const selectedClassType = attendance.days.flatMap((day) => day.records).find((record) => String(record.class_type_id ?? "legacy") === classTypeFilter)?.class_type_name ?? "All class types";
     const rows: (string | number | null | undefined)[][] = [
       ["Attendance analysis"],
       ["Period", rangeLabel(attendance.date_from, attendance.date_to)],
       ["Day filter", dayFilter ? formatDate(dayFilter) : "All days"],
       ["Subject filter", selectedSubject],
+      ["Class type filter", selectedClassType],
       [],
       ["Attendance rate", percentage(view.overall)],
       ["Present / late", view.present],
@@ -296,11 +318,16 @@ export default function Page() {
   }, [attendance, subjectFilter]);
 
   useEffect(() => {
+    if (classTypeFilter && attendance && !attendance.days.flatMap((day) => day.records).some((record) => String(record.class_type_id ?? "legacy") === classTypeFilter)) setClassTypeFilter("");
+  }, [attendance, classTypeFilter]);
+
+  useEffect(() => {
     if (dayFilter && attendance && !attendance.days.some((day) => day.date === dayFilter)) setDayFilter("");
   }, [attendance, dayFilter]);
 
   const overallTone = attendance && view.total >= attendance.minimum_observations && view.overall < attendance.attendance_threshold_percent ? "danger" : "success";
   const overallLabel = attendance && view.total < attendance.minimum_observations ? "Building baseline" : view.overall < (attendance?.attendance_threshold_percent ?? 0) ? "Needs attention" : "On track";
+  const mostMissedClassType = view.classTypes.toSorted((left, right) => left.percentage - right.percentage)[0];
 
   return (
     <div>
@@ -363,17 +390,19 @@ export default function Page() {
             <div className="flex flex-wrap gap-2"><Button type="button" size="sm" variant="outline" onClick={exportFilteredAttendance}>Export filtered CSV</Button><Button type="button" size="sm" variant="outline" onClick={() => void exportAllTimeAnalysis()}>All-time analysis CSV</Button></div>
           </div>
           {exportError && <p className="mt-3 text-sm text-red-300" role="alert">{exportError}</p>}
-          <div className="mt-4 grid gap-4 sm:grid-cols-2">
+          <div className="mt-4 grid gap-4 sm:grid-cols-3">
             <label><span className="field-label">Subject</span><select aria-label="Filter attendance by subject" value={subjectFilter} onChange={(event) => setSubjectFilter(event.target.value)} className="w-full"><option value="">All subjects</option>{attendance.subjects.map((subject) => <option key={subject.subject_id} value={subject.subject_id}>{subject.subject_name}</option>)}</select></label>
+            <label><span className="field-label">Class type</span><select aria-label="Filter attendance by class type" value={classTypeFilter} onChange={(event) => setClassTypeFilter(event.target.value)} className="w-full"><option value="">All class types</option>{[...new Map(attendance.days.flatMap((day) => day.records).map((record) => [String(record.class_type_id ?? "legacy"), record.class_type_name ?? "Other class type"]))].map(([key, name]) => <option key={key} value={key}>{name}</option>)}</select></label>
             <label><span className="field-label">Specific day</span><input aria-label="Filter attendance by day" type="date" value={dayFilter} onChange={(event) => setDayFilter(event.target.value)} className="w-full" /></label>
           </div>
-          {(subjectFilter || dayFilter) && <button type="button" onClick={() => { setSubjectFilter(""); setDayFilter(""); }} className="mt-3 text-sm font-semibold text-emerald-300 hover:text-emerald-200">Clear subject and day filters</button>}
+          {(subjectFilter || classTypeFilter || dayFilter) && <button type="button" onClick={() => { setSubjectFilter(""); setClassTypeFilter(""); setDayFilter(""); }} className="mt-3 text-sm font-semibold text-emerald-300 hover:text-emerald-200">Clear attendance filters</button>}
 
-          <div className="mt-4 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+          <div className="mt-4 grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
             <div className="panel p-4"><p className="text-sm text-slate-400">Attendance rate</p><p className={`mt-2 text-3xl font-semibold ${overallTone === "danger" ? "text-red-300" : "text-emerald-300"}`}>{percentage(view.overall)}</p><p className="mt-2 text-xs text-slate-400">Target: {percentage(attendance.attendance_threshold_percent)}</p></div>
             <div className="panel p-4"><p className="text-sm text-slate-400">Present / late</p><p className="mt-2 text-3xl font-semibold text-slate-50">{view.present}</p><p className="mt-2 text-xs text-slate-400">Classes attended</p></div>
             <div className="panel p-4"><p className="text-sm text-slate-400">Absent / other</p><p className="mt-2 text-3xl font-semibold text-slate-50">{view.absent}</p><p className="mt-2 text-xs text-slate-400">Absent, leave, or bunk</p></div>
             <div className="panel p-4"><p className="text-sm text-slate-400">Completed classes</p><p className="mt-2 text-3xl font-semibold text-slate-50">{view.total}</p><p className="mt-2 text-xs text-slate-400">Across {view.days.length} day{view.days.length === 1 ? "" : "s"}</p></div>
+            <div className="panel p-4"><p className="text-sm text-slate-400">Most missed class type</p><p className="mt-2 truncate text-xl font-semibold text-slate-50">{mostMissedClassType?.name ?? "No data"}</p><p className="mt-2 text-xs text-slate-400">{mostMissedClassType ? `${percentage(mostMissedClassType.percentage)} attendance` : "Complete classes to see insight"}</p></div>
           </div>
 
           {!view.total ? <div className="panel mt-5"><EmptyState title="No completed classes in this range" description="Try widening the date range or choose another subject." /></div> : <>

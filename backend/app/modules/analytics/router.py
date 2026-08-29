@@ -6,11 +6,11 @@ from fastapi import APIRouter,Depends,HTTPException
 from fastapi.responses import StreamingResponse
 from sqlalchemy import func,select
 from app.core.dependencies import DbSession,get_current_user,require_role,require_roles
-from app.modules.academic.models import AcademicModule,RoutineEntry,Section,Student,Subject
+from app.modules.academic.models import AcademicModule,ClassType,RoutineEntry,RoutineEntrySection,Section,Student,Subject,Teacher
 from app.modules.attendance.models import AttendanceRecord,AttendanceStatus
 from app.modules.identity.models import User
 from app.modules.scheduling.models import ClassSession,SessionStatus,TimetableEntry
-from .schemas import AtRiskStudent,CollegeSummary,RiskRunResult,SectionStudentSummary,SectionSummary,SelectiveCandidate,StudentAttendanceDay,StudentAttendanceRecord,StudentAttendanceReport,StudentSummary,SubjectAttendance
+from .schemas import AttendanceClassType,AtRiskStudent,CollegeSummary,RiskRunResult,SectionStudentSummary,SectionSummary,SelectiveCandidate,StudentAttendanceDay,StudentAttendanceRecord,StudentAttendanceReport,StudentSummary,SubjectAttendance,TeacherAnalysisScope,TeacherAnalysisStudent,TeacherAttendanceAnalysis
 from .service import PASSING,run_risk_evaluations,subject_stats
 from app.core.config import settings
 from app.modules.crm.models import CaseStatus,StudentCase
@@ -24,16 +24,16 @@ def student_summary_response(db:DbSession,student:Student)->StudentSummary:
     stats=subject_stats(db,student.id);present=sum(x["present"] for x in stats);absent=sum(x["absent"] for x in stats);total=sum(x["total"] for x in stats)
     return StudentSummary(student_id=student.id,present=present,absent=absent,total=total,overall_percentage=round(100*present/total,2) if total else 0,subjects=stats,attendance_threshold_percent=settings.attendance_threshold_percent,minimum_observations=settings.minimum_observations)
 def student_attendance_report_response(db:DbSession,student:Student,date_from:date|None,date_to:date|None)->StudentAttendanceReport:
-    query=select(AttendanceRecord.class_session_id,AttendanceRecord.status,AttendanceRecord.check_in_time,ClassSession.session_date,TimetableEntry.subject_id,Subject.name,Subject.code,RoutineEntry.module_id,AcademicModule.title,AcademicModule.code).join(ClassSession,AttendanceRecord.class_session_id==ClassSession.id).outerjoin(TimetableEntry,ClassSession.timetable_entry_id==TimetableEntry.id).outerjoin(Subject,TimetableEntry.subject_id==Subject.id).outerjoin(RoutineEntry,ClassSession.routine_entry_id==RoutineEntry.id).outerjoin(AcademicModule,RoutineEntry.module_id==AcademicModule.id).where(AttendanceRecord.student_id==student.id,ClassSession.status==SessionStatus.COMPLETED)
+    query=select(AttendanceRecord.class_session_id,AttendanceRecord.status,AttendanceRecord.check_in_time,ClassSession.session_date,TimetableEntry.subject_id,Subject.name,Subject.code,RoutineEntry.module_id,AcademicModule.title,AcademicModule.code,ClassType.id,ClassType.name,TimetableEntry.class_type).join(ClassSession,AttendanceRecord.class_session_id==ClassSession.id).outerjoin(TimetableEntry,ClassSession.timetable_entry_id==TimetableEntry.id).outerjoin(Subject,TimetableEntry.subject_id==Subject.id).outerjoin(RoutineEntry,ClassSession.routine_entry_id==RoutineEntry.id).outerjoin(AcademicModule,RoutineEntry.module_id==AcademicModule.id).outerjoin(ClassType,RoutineEntry.class_type_id==ClassType.id).where(AttendanceRecord.student_id==student.id,ClassSession.status==SessionStatus.COMPLETED)
     if date_from:query=query.where(ClassSession.session_date>=date_from)
     if date_to:query=query.where(ClassSession.session_date<=date_to)
     rows=db.execute(query.order_by(ClassSession.session_date.desc(),AttendanceRecord.class_session_id.desc())).all()
     subjects:dict[tuple[str,int],dict]={}; days:dict[date,dict]={}; records=[]
-    for session_id,status,check_in_time,session_date,subject_id,subject_name,subject_code,module_id,module_title,module_code in rows:
+    for session_id,status,check_in_time,session_date,subject_id,subject_name,subject_code,module_id,module_title,module_code,class_type_id,class_type_name,legacy_class_type in rows:
         scope_id=module_id if module_id is not None else subject_id
         if scope_id is None:continue
         name=module_title or subject_name or "Unnamed subject"; code=module_code or subject_code; status_value=status.value if isinstance(status,AttendanceStatus) else str(status)
-        record=StudentAttendanceRecord(session_id=session_id,date=session_date,weekday=session_date.strftime("%A"),subject_id=scope_id,subject_name=name,subject_code=code,status=status_value,check_in_time=check_in_time);records.append(record)
+        record=StudentAttendanceRecord(session_id=session_id,date=session_date,weekday=session_date.strftime("%A"),subject_id=scope_id,subject_name=name,subject_code=code,class_type_id=class_type_id,class_type_name=class_type_name or legacy_class_type,status=status_value,check_in_time=check_in_time);records.append(record)
         key=("MODULE" if module_id is not None else "SUBJECT",scope_id);subject=subjects.setdefault(key,{"subject_id":scope_id,"subject_name":name,"present":0,"absent":0,"total":0});subject["total"]+=1
         attended=status in PASSING
         subject["present"]+=int(attended);subject["absent"]+=int(not attended)
@@ -42,6 +42,138 @@ def student_attendance_report_response(db:DbSession,student:Student,date_from:da
     day_items=[StudentAttendanceDay(**item,percentage=round(100*item["present"]/item["total"],2) if item["total"] else 0) for item in sorted(days.values(),key=lambda item:item["date"],reverse=True)]
     present=sum(item.present for item in subject_items);total=sum(item.total for item in subject_items);absent=total-present
     return StudentAttendanceReport(student_id=student.id,date_from=date_from,date_to=date_to,present=present,absent=absent,total=total,overall_percentage=round(100*present/total,2) if total else 0,subjects=sorted(subject_items,key=lambda item:item.subject_name.lower()),days=day_items,attendance_threshold_percent=settings.attendance_threshold_percent,minimum_observations=settings.minimum_observations)
+
+
+def teacher_attendance_analysis_response(
+    db: DbSession,
+    teacher: Teacher,
+    *,
+    module_id: int | None,
+    section_id: int | None,
+    class_type_id: int | None,
+    date_from: date | None,
+    date_to: date | None,
+) -> TeacherAttendanceAnalysis:
+    """Summarise completed attendance for only classes a teacher is assigned to."""
+    routines = db.scalars(select(RoutineEntry).where(RoutineEntry.teacher_id == teacher.id)).all()
+    module_cache: dict[int, AcademicModule | None] = {}
+    section_cache: dict[int, Section | None] = {}
+    type_cache: dict[int, ClassType | None] = {}
+    scopes: dict[tuple[int, int], TeacherAnalysisScope] = {}
+    valid_class_types: set[int] = set()
+
+    for routine in routines:
+        module = module_cache.setdefault(routine.module_id, db.get(AcademicModule, routine.module_id))
+        class_type = type_cache.setdefault(routine.class_type_id, db.get(ClassType, routine.class_type_id))
+        valid_class_types.add(routine.class_type_id)
+        routine_section_ids = {routine.section_id}
+        routine_section_ids.update(db.scalars(select(RoutineEntrySection.section_id).where(RoutineEntrySection.routine_entry_id == routine.id)).all())
+        for routine_section_id in routine_section_ids:
+            section = section_cache.setdefault(routine_section_id, db.get(Section, routine_section_id))
+            if module and section:
+                scopes[(module.id, section.id)] = TeacherAnalysisScope(
+                    module_id=module.id,
+                    module_name=module.title,
+                    module_code=module.code,
+                    section_id=section.id,
+                    section_name=section.name,
+                )
+
+    if module_id is not None and not any(scope.module_id == module_id for scope in scopes.values()):
+        raise HTTPException(403, "This module is not assigned to you")
+    if section_id is not None and not any(scope.section_id == section_id for scope in scopes.values()):
+        raise HTTPException(403, "This section is not assigned to you")
+    if module_id is not None and section_id is not None and (module_id, section_id) not in scopes:
+        raise HTTPException(403, "This module is not assigned to the selected section")
+    if class_type_id is not None and class_type_id not in valid_class_types:
+        raise HTTPException(403, "This class type is not assigned to you")
+
+    session_query = select(ClassSession).where(
+        ClassSession.effective_teacher_id == teacher.id,
+        ClassSession.status == SessionStatus.COMPLETED,
+        ClassSession.routine_entry_id.is_not(None),
+    )
+    if date_from:
+        session_query = session_query.where(ClassSession.session_date >= date_from)
+    if date_to:
+        session_query = session_query.where(ClassSession.session_date <= date_to)
+
+    selected_sessions: list[ClassSession] = []
+    selected_routines: dict[int, RoutineEntry] = {}
+    for session in db.scalars(session_query.order_by(ClassSession.session_date.desc())).all():
+        routine = next((item for item in routines if item.id == session.routine_entry_id), None)
+        if not routine:
+            continue
+        if module_id is not None and routine.module_id != module_id:
+            continue
+        if class_type_id is not None and routine.class_type_id != class_type_id:
+            continue
+        if section_id is not None:
+            routine_section_ids = {routine.section_id}
+            routine_section_ids.update(db.scalars(select(RoutineEntrySection.section_id).where(RoutineEntrySection.routine_entry_id == routine.id)).all())
+            if section_id not in routine_section_ids:
+                continue
+        selected_sessions.append(session)
+        selected_routines[session.id] = routine
+
+    available_class_types = [
+        AttendanceClassType(class_type_id=type_id, class_type_name=type_cache[type_id].name if type_cache[type_id] else "Unnamed class type", present=0, absent=0, total=0, percentage=0)
+        for type_id in sorted(valid_class_types, key=lambda value: (type_cache[value].name if type_cache[value] else "").lower())
+    ]
+    if not selected_sessions:
+        return TeacherAttendanceAnalysis(
+            teacher_id=teacher.id, date_from=date_from, date_to=date_to, present=0, absent=0, total=0, overall_percentage=0,
+            scopes=sorted(scopes.values(), key=lambda scope: (scope.module_name.lower(), scope.section_name.lower())),
+            available_class_types=available_class_types, students=[], class_types=[],
+            attendance_threshold_percent=settings.attendance_threshold_percent, minimum_observations=settings.minimum_observations,
+        )
+
+    records = db.execute(
+        select(AttendanceRecord, Student)
+        .join(Student, AttendanceRecord.student_id == Student.id)
+        .where(AttendanceRecord.class_session_id.in_([session.id for session in selected_sessions]))
+    ).all()
+    students: dict[int, dict] = {}
+    class_types: dict[int, dict] = {}
+    for record, student in records:
+        if section_id is not None and student.section_id != section_id:
+            continue
+        routine = selected_routines[record.class_session_id]
+        attended = record.status in PASSING
+        student_item = students.setdefault(student.id, {
+            "student_id": student.id, "student_name": student_display_name(student), "roll_number": student.roll_number,
+            "present": 0, "absent": 0, "total": 0,
+        })
+        student_item["present" if attended else "absent"] += 1
+        student_item["total"] += 1
+        type_item = class_types.setdefault(routine.class_type_id, {
+            "class_type_id": routine.class_type_id,
+            "class_type_name": type_cache[routine.class_type_id].name if type_cache[routine.class_type_id] else "Unnamed class type",
+            "present": 0, "absent": 0, "total": 0,
+        })
+        type_item["present" if attended else "absent"] += 1
+        type_item["total"] += 1
+
+    student_items: list[TeacherAnalysisStudent] = []
+    for item in students.values():
+        item["percentage"] = round(100 * item["present"] / item["total"], 2) if item["total"] else 0
+        item["attendance_status"] = "building_baseline" if item["total"] < settings.minimum_observations else ("regular" if item["percentage"] >= settings.attendance_threshold_percent else "needs_attention")
+        student_items.append(TeacherAnalysisStudent(**item))
+    class_type_items = [
+        AttendanceClassType(**item, percentage=round(100 * item["present"] / item["total"], 2) if item["total"] else 0)
+        for item in class_types.values()
+    ]
+    present = sum(item.present for item in student_items)
+    total = sum(item.total for item in student_items)
+    return TeacherAttendanceAnalysis(
+        teacher_id=teacher.id, date_from=date_from, date_to=date_to, present=present, absent=total - present, total=total,
+        overall_percentage=round(100 * present / total, 2) if total else 0,
+        scopes=sorted(scopes.values(), key=lambda scope: (scope.module_name.lower(), scope.section_name.lower())),
+        available_class_types=available_class_types,
+        students=sorted(student_items, key=lambda item: (item.percentage, item.student_name.lower())),
+        class_types=sorted(class_type_items, key=lambda item: item.class_type_name.lower()),
+        attendance_threshold_percent=settings.attendance_threshold_percent, minimum_observations=settings.minimum_observations,
+    )
 @router.get("/my-attendance-summary",response_model=StudentSummary)
 def my_student_summary(user:Annotated[User,Depends(require_role("student"))],db:DbSession):
     return student_summary_response(db,current_student_profile(db,user))
@@ -49,6 +181,12 @@ def my_student_summary(user:Annotated[User,Depends(require_role("student"))],db:
 def my_student_attendance(user:Annotated[User,Depends(require_role("student"))],db:DbSession,date_from:date|None=None,date_to:date|None=None):
     if date_from and date_to and date_from>date_to:raise HTTPException(422,"date_from must be on or before date_to")
     return student_attendance_report_response(db,current_student_profile(db,user),date_from,date_to)
+@router.get("/teacher-attendance-analysis",response_model=TeacherAttendanceAnalysis)
+def teacher_attendance_analysis(user:Annotated[User,Depends(require_role("teacher"))],db:DbSession,module_id:int|None=None,section_id:int|None=None,class_type_id:int|None=None,date_from:date|None=None,date_to:date|None=None):
+    if date_from and date_to and date_from>date_to:raise HTTPException(422,"date_from must be on or before date_to")
+    teacher=db.scalar(select(Teacher).where(Teacher.user_id==user.id))
+    if not teacher:raise HTTPException(404,"Teacher profile not found")
+    return teacher_attendance_analysis_response(db,teacher,module_id=module_id,section_id=section_id,class_type_id=class_type_id,date_from=date_from,date_to=date_to)
 @router.get("/my-attendance-summary.csv")
 def my_student_summary_csv(user:Annotated[User,Depends(require_role("student"))],db:DbSession):
     summary=student_summary_response(db,current_student_profile(db,user));output=io.StringIO();writer=csv.writer(output)

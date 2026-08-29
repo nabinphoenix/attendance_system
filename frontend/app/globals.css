@@ -45,7 +45,11 @@ html[data-theme="dark"] {
   body { @apply min-h-screen overflow-x-hidden antialiased; background-color: rgb(var(--background)); color: rgb(var(--text)); background-image: radial-gradient(circle at 100% 0%, rgb(var(--primary) / .10), transparent 32rem); }
   h1, h2, h3 { @apply tracking-tight; color: rgb(var(--text)); }
   button, a, input, select, textarea { @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 focus-visible:ring-offset-2; }
-  input:not([type="checkbox"]):not([type="radio"]):not([type="file"]), select, textarea { @apply min-h-10 rounded-lg px-3 py-2 text-sm shadow-sm transition disabled:cursor-not-allowed disabled:opacity-60; border-color: rgb(var(--border)); background: rgb(var(--surface)); color: rgb(var(--text)); }
+  /* Form controls must shrink inside responsive grid columns. Without these
+     constraints a long native <option> can make its select overflow into the
+     next field (for example, Module over Section in schedule filters). */
+  label { min-width: 0; }
+  input:not([type="checkbox"]):not([type="radio"]):not([type="file"]), select, textarea { @apply min-h-10 w-full min-w-0 rounded-lg px-3 py-2 text-sm shadow-sm transition disabled:cursor-not-allowed disabled:opacity-60; border-color: rgb(var(--border)); background: rgb(var(--surface)); color: rgb(var(--text)); }
   input[type="checkbox"], input[type="radio"] { @apply h-4 w-4 accent-emerald-500; }
   table { @apply w-full text-left text-sm; }
   thead { @apply text-xs font-semibold uppercase tracking-wider; background: rgb(var(--surface-muted)); color: rgb(var(--text-muted)); }

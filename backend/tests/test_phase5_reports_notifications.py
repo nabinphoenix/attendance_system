@@ -37,6 +37,8 @@ def test_student_attendance_report_supports_date_range_and_day_subject_status():
     assert [day["date"] for day in payload["days"]]==[end,start]
     assert payload["days"][0]["records"][0]["status"]=="present" and payload["days"][1]["records"][0]["status"]=="absent"
     assert payload["days"][0]["records"][0]["subject_name"]=="Architecture"
+    assert payload["days"][0]["records"][0]["class_type_id"] is None
+    assert payload["days"][0]["records"][0]["class_type_name"]=="lecture"
     assert client.get(f"/api/v1/analytics/my-attendance?date_from={end}&date_to={start}",headers=headers).status_code==422
     app.dependency_overrides.clear()
 def test_risk_case_queues_guardian_notification():
