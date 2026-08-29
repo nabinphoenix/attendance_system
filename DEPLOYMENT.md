@@ -39,6 +39,9 @@ values or put them in the GitHub workflow.
 | Property | Required | Purpose |
 | --- | --- | --- |
 | `DATABASE_URL` | Yes | `postgresql://<user>:<URL_ENCODED_PASSWORD>@<rds-endpoint>:5432/antimbench` |
+| `PROFILE_MEDIA_BUCKET` | No | Existing private S3 bucket used for durable profile-image storage. When unset, the single-instance service uses its managed local state directory. |
+| `PROFILE_MEDIA_PREFIX` | No | Object prefix for profile images; defaults to `profile-media`. |
+| `PROFILE_MEDIA_REGION` | No | Bucket region when it differs from the instance's region. |
 | `JWT_SECRET_KEY` | Yes | Backend signing key; use a strong unique value. |
 | `AUTH_COOKIE_SECURE` | Yes | Set `false` for plain HTTP; set `true` as soon as HTTPS is introduced. |
 | `FRONTEND_URL` | Yes | For plain HTTP, `http://<elastic-beanstalk-cname>`. |
@@ -55,6 +58,12 @@ The pre-deploy hook accepts a managed PostgreSQL URL and never performs local
 PostgreSQL initialisation, role changes, database creation, or ownership
 changes. It runs `python -m alembic upgrade head` using the deployment's
 prebuilt package tree and never echoes the database URL or password.
+
+Profile images are served through the authenticated application path. When
+`PROFILE_MEDIA_BUCKET` is configured, they are stored privately in that bucket;
+grant the environment instance profile only `s3:GetObject`, `s3:PutObject`, and
+`s3:DeleteObject` for the configured prefix. Without a bucket, the single
+Elastic Beanstalk instance stores them in its managed writable state directory.
 
 The browser uses relative `/api/...` requests by default. nginx proxies those
 requests to local FastAPI, so no `NEXT_PUBLIC_API_URL`, public backend URL, or

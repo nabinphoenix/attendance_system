@@ -73,7 +73,6 @@ function SettingsScreen({ initialUser }: { initialUser: User }) {
     event.target.value = "";
     if (!image) return;
     setProfileError(""); setProfileMessage("");
-    if (!new Set(["image/jpeg", "image/png", "image/webp"]).has(image.type)) { setProfileError("Choose a JPG, PNG, or WEBP image."); return; }
     if (image.size > 5 * 1024 * 1024) { setProfileError("Choose an image smaller than 5 MB."); return; }
     const formData = new FormData(); formData.append("image", image, image.name);
     setUploading(true);

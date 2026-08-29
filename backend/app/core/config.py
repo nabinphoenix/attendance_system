@@ -30,6 +30,10 @@ class Settings(BaseSettings):
     smtp_from_email: str = "notifications@antimbench.local"
     notification_worker_poll_seconds: float = 5
     notification_worker_batch_size: int = 100
+    profile_media_bucket: str | None = None
+    profile_media_prefix: str = "profile-media"
+    profile_media_region: str | None = None
+    profile_media_local_directory: str | None = None
     frontend_url: str = "http://localhost:3000"
     invitation_expire_hours: int = 168
     cors_origins: list[str] = ["http://localhost:3000"]

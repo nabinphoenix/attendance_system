@@ -5,7 +5,6 @@ from uuid import uuid4
 from datetime import UTC, datetime
 from typing import Annotated
 from fastapi import APIRouter, Depends, File, HTTPException, Response, UploadFile, status
-from fastapi.responses import FileResponse
 from PIL import Image, UnidentifiedImageError
 from pydantic import BaseModel
 from sqlalchemy import func, select
@@ -17,10 +16,25 @@ from app.modules.identity.models import User, UserRole
 from app.modules.identity.schemas import LoginRequest, PasswordChange, ProfileUpdate, TokenResponse, UserRead, UserUpdate
 from app.modules.identity.service import authenticate, issue_token
 from app.core.config import settings
+from app.core.profile_media import ProfileMediaNotFound, ProfileMediaStore, ProfileMediaUnavailable
 
 router = APIRouter(tags=["identity"])
 PROFILE_MEDIA_DIR = Path(__file__).resolve().parents[3] / "uploads" / "profiles"
 MAX_PROFILE_IMAGE_BYTES = 5 * 1024 * 1024
+PROFILE_IMAGE_TYPES = {
+    "JPEG": ("jpg", "image/jpeg"),
+    "PNG": ("png", "image/png"),
+    "WEBP": ("webp", "image/webp"),
+}
+
+
+def get_profile_media_store() -> ProfileMediaStore:
+    return ProfileMediaStore(
+        bucket=settings.profile_media_bucket,
+        prefix=settings.profile_media_prefix,
+        region=settings.profile_media_region,
+        local_directory=PROFILE_MEDIA_DIR,
+    )
 
 
 def browser_session(response: Response, user: User) -> TokenResponse:
@@ -107,8 +121,6 @@ async def upload_avatar(
     user: Annotated[User, Depends(get_current_user)],
     db: DbSession,
 ) -> User:
-    if image.content_type not in {"image/jpeg", "image/png", "image/webp"}:
-        raise HTTPException(415, "Upload a JPEG, PNG, or WEBP image")
     contents = await image.read()
     if not contents or len(contents) > MAX_PROFILE_IMAGE_BYTES:
         raise HTTPException(422, "Profile images must be between 1 byte and 5 MB")
@@ -121,31 +133,51 @@ async def upload_avatar(
             raise HTTPException(422, "Profile images must be no larger than 4096 pixels on either side")
     except (UnidentifiedImageError, OSError, SyntaxError, Image.DecompressionBombError) as exc:
         raise HTTPException(422, "The uploaded file is not a valid image") from exc
-    expected_format = {"image/jpeg": "JPEG", "image/png": "PNG", "image/webp": "WEBP"}[image.content_type]
-    if image_format != expected_format:
-        raise HTTPException(422, "The uploaded file does not match its image type")
-    suffix = {"image/jpeg": "jpg", "image/png": "png", "image/webp": "webp"}[image.content_type]
-    PROFILE_MEDIA_DIR.mkdir(parents=True, exist_ok=True)
+    if image_format not in PROFILE_IMAGE_TYPES:
+        raise HTTPException(415, "Upload a JPEG, PNG, or WEBP image")
+    suffix, media_type = PROFILE_IMAGE_TYPES[image_format]
     avatar_key = f"{uuid4().hex}.{suffix}"
-    (PROFILE_MEDIA_DIR / avatar_key).write_bytes(contents)
+    media_store = get_profile_media_store()
+    try:
+        media_store.save(avatar_key, contents, media_type)
+    except ProfileMediaUnavailable as exc:
+        raise HTTPException(503, str(exc)) from exc
     old_key = user.avatar_key
     user.avatar_key = avatar_key
     log_audit(db, user.id, "user.avatar_updated", "user", user.id, {"avatar_key": old_key}, {"avatar_key": avatar_key})
-    db.commit(); db.refresh(user)
+    try:
+        db.commit(); db.refresh(user)
+    except Exception:
+        db.rollback()
+        try:
+            media_store.delete(avatar_key)
+        except ProfileMediaUnavailable:
+            pass
+        raise
     if old_key:
-        old_file = PROFILE_MEDIA_DIR / old_key
-        if old_file.is_file():
-            old_file.unlink()
+        try:
+            media_store.delete(old_key)
+        except ProfileMediaUnavailable:
+            # The new image and database update are already durable. Keeping an
+            # old object is preferable to turning a successful upload into a 5xx.
+            pass
     return user
 
 @router.get("/profile-media/{avatar_key}")
-def profile_media(avatar_key: str) -> FileResponse:
+def profile_media(avatar_key: str, _: Annotated[User, Depends(get_current_user)]) -> Response:
     if Path(avatar_key).name != avatar_key:
         raise HTTPException(404, "Profile image not found")
-    image_file = PROFILE_MEDIA_DIR / avatar_key
-    if not image_file.is_file():
+    try:
+        image = get_profile_media_store().read(avatar_key)
+    except ProfileMediaNotFound as exc:
         raise HTTPException(404, "Profile image not found")
-    return FileResponse(image_file, headers={"Cache-Control": "public, max-age=31536000, immutable"})
+    except ProfileMediaUnavailable as exc:
+        raise HTTPException(503, str(exc)) from exc
+    return Response(
+        content=image.content,
+        media_type=image.media_type,
+        headers={"Cache-Control": "private, max-age=31536000, immutable"},
+    )
 
 @router.post("/auth/logout", status_code=status.HTTP_204_NO_CONTENT)
 def logout(response: Response) -> Response:
