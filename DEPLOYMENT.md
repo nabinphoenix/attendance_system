@@ -74,8 +74,9 @@ hard-coded Elastic Beanstalk hostname is required.
 The workflow is [.github/workflows/deploy.yml](.github/workflows/deploy.yml),
 named **AntimBench CI/CD**. It first runs backend migrations and tests against a
 throwaway PostgreSQL 15 service container, then runs `npm ci`, TypeScript,
-lint, and a production frontend build. Only after CI succeeds does the deploy
-job build a self-contained Elastic Beanstalk ZIP and update the environment.
+lint, and a production frontend build. After CI succeeds, it deploys the
+self-contained Elastic Beanstalk bundle and, when Vercel credentials are
+configured, deploys the production Vercel frontend too.
 
 Add these **GitHub Secrets**:
 
@@ -84,6 +85,9 @@ Add these **GitHub Secrets**:
 | `AWS_ACCESS_KEY_ID` | Temporary AWS access-key ID. |
 | `AWS_SECRET_ACCESS_KEY` | Matching temporary AWS secret access key. |
 | `AWS_SESSION_TOKEN` | Matching temporary AWS session token. |
+| `VERCEL_TOKEN` | Vercel account token with permission to deploy `antimbench-https-proxy`. |
+| `VERCEL_ORG_ID` | Vercel team or personal-account ID that owns the project. |
+| `VERCEL_PROJECT_ID` | Vercel project ID for `antimbench-https-proxy`. |
 
 Add these **GitHub Variables**:
 
@@ -93,6 +97,7 @@ Add these **GitHub Variables**:
 | `EB_APPLICATION_NAME` | `AntimBench`. |
 | `EB_ENVIRONMENT_NAME` | `AntimBench-Prod`. |
 | `EB_S3_BUCKET` | Existing bucket for application-version bundles. |
+| `VERCEL_DEPLOY_ENABLED` | Set to `true` after all three Vercel secrets are configured. |
 
 AWS Academy credentials expire. Refresh all three AWS secrets together before
 they expire; the workflow supports the required session token. The deployment
@@ -100,6 +105,12 @@ job validates its non-secret variables, uploads a uniquely named ZIP, waits for
 Elastic Beanstalk to process the application version and for the environment to
 be `Ready`, updates the existing environment, and then waits for `Ready` plus
 `Green` health. It does not create infrastructure.
+
+The Vercel job is skipped until all Vercel secrets are supplied. Create
+`VERCEL_TOKEN` in **Vercel Account Settings → Tokens**, then copy the team and
+project IDs from **Project Settings → General** into `VERCEL_ORG_ID` and
+`VERCEL_PROJECT_ID`. The project keeps its existing production environment
+variables, including `API_PROXY_TARGET`, when the workflow deploys it.
 
 ## Bundle and service behaviour
 
