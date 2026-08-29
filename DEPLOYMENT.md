@@ -2,14 +2,15 @@
 
 ## Demo architecture and limitations
 
-This repository targets **one Elastic Beanstalk instance** in `us-east-1`:
+This repository targets **one Elastic Beanstalk instance** and an existing
+Amazon RDS PostgreSQL instance in `us-east-1`:
 
 ```text
 Internet -> nginx (public port 80)
                |- /api/* and /health -> FastAPI (127.0.0.1:8000)
                `- all other requests -> Next.js (internal EB Node.js listener)
 
-PostgreSQL 15 -> 127.0.0.1:5432 only
+PostgreSQL -> Amazon RDS (private endpoint)
 ```
 
 Use the Node.js 22 Amazon Linux 2023 Elastic Beanstalk platform, application
@@ -19,15 +20,15 @@ is a `systemd` service created by the post-deploy hook. The Node.js platform
 supplies the internal listener port to Next.js (it defaults to port 3000 outside
 Elastic Beanstalk). FastAPI explicitly binds to `127.0.0.1:8000`.
 
-PostgreSQL runs on that same EC2 instance for this demonstration. It is **not** a
-highly available production database: terminating or replacing the instance can
-remove its data. Back up the database before an environment replacement. Do not
-open port 5432 in the security group; nginx is the only public application entry
-point. This design uses no RDS, Load Balancer, or Docker. S3 is used only to hold
-Elastic Beanstalk application-version bundles. The instance needs ordinary
-outbound HTTPS access to the Amazon Linux package repositories to install the
-small PostgreSQL and Python runtime packages; use a public subnet with an
-internet gateway or provide NAT when placing it in a private subnet.
+RDS owns the database lifecycle. Keep its deletion protection and backup
+retention enabled, and do not expose port 5432 publicly. The Elastic Beanstalk
+security group must be allowed to reach the RDS security group on port 5432.
+Deployments never create, replace, delete, or alter ownership of the RDS
+database; they only run Alembic upgrades against the configured database. S3 is
+used only to hold Elastic Beanstalk application-version bundles. The instance
+needs ordinary outbound HTTPS access to the Amazon Linux package repositories to
+install Python; use a public subnet with an internet gateway or provide NAT when
+placing it in a private subnet.
 
 ## Required Elastic Beanstalk environment properties
 
@@ -37,8 +38,7 @@ values or put them in the GitHub workflow.
 
 | Property | Required | Purpose |
 | --- | --- | --- |
-| `DATABASE_URL` | Yes | `postgresql://antimbench_app:<URL_ENCODED_PASSWORD>@127.0.0.1:5432/antimbench` |
-| `POSTGRES_PASSWORD` | Yes | Password applied to the local `antimbench_app` PostgreSQL role. |
+| `DATABASE_URL` | Yes | `postgresql://<user>:<URL_ENCODED_PASSWORD>@<rds-endpoint>:5432/antimbench` |
 | `JWT_SECRET_KEY` | Yes | Backend signing key; use a strong unique value. |
 | `AUTH_COOKIE_SECURE` | Yes | Set `false` for plain HTTP; set `true` as soon as HTTPS is introduced. |
 | `FRONTEND_URL` | Yes | For plain HTTP, `http://<elastic-beanstalk-cname>`. |
@@ -51,12 +51,10 @@ The backend Settings model also supports `JWT_ALGORITHM`,
 notification-worker polling settings, and `INVITATION_EXPIRE_HOURS`; their safe
 defaults are in `backend/app/core/config.py`.
 
-The pre-deploy hook initializes PostgreSQL 15 only once, sets
-`listen_addresses = '127.0.0.1'`, changes only the IPv4 and IPv6 loopback
-`pg_hba.conf` host rules to `scram-sha-256`, enables the service, waits for
-`pg_isready`, creates or updates `antimbench_app`, creates `antimbench` when
-needed, then runs `python -m alembic upgrade head` using the deployment's
-prebuilt package tree. It never echoes the database URL or password.
+The pre-deploy hook accepts a managed PostgreSQL URL and never performs local
+PostgreSQL initialisation, role changes, database creation, or ownership
+changes. It runs `python -m alembic upgrade head` using the deployment's
+prebuilt package tree and never echoes the database URL or password.
 
 The browser uses relative `/api/...` requests by default. nginx proxies those
 requests to local FastAPI, so no `NEXT_PUBLIC_API_URL`, public backend URL, or

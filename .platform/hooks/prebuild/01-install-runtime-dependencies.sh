@@ -8,11 +8,10 @@ set -euo pipefail
 APP_DIR="$(pwd)"
 BACKEND_DIR="${APP_DIR}/backend"
 
-# Amazon Linux 2023 provides PostgreSQL 15 through these versioned packages.
-# `python3.12` supplies the target interpreter for the prebuilt site-packages.
-# dnf safely reports packages as already installed on later deployments.
-dnf install -y --setopt=install_weak_deps=False \
-  postgresql15 postgresql15-server python3.12
+# PostgreSQL is managed by RDS in production. `python3.12` supplies the target
+# interpreter for the prebuilt site-packages; no local database server or client
+# is installed for an RDS deployment.
+dnf install -y --setopt=install_weak_deps=False python3.12
 
 if [[ ! -d "${BACKEND_DIR}/runtime-site-packages" ]]; then
   echo "The deployment bundle is missing the prebuilt backend runtime packages." >&2
