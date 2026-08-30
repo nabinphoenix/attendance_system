@@ -25,6 +25,7 @@ export default function Page() {
   const [workspace, setWorkspace] = useState<Workspace>("schedule");
   const [form, setForm] = useState<Record<string, string>>(blank);
   const [sectionIds, setSectionIds] = useState<number[]>([]);
+  const [sectionPicker, setSectionPicker] = useState("");
   const [filters, setFilters] = useState<Record<string, string>>(emptyFilters);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
@@ -95,6 +96,13 @@ export default function Page() {
   function setAcademic(key: string, value: string) {
     setForm((current) => ({ ...current, [key]: value, module_id: "" }));
     setSectionIds([]);
+    setSectionPicker("");
+  }
+  function addSection(sectionId: string) {
+    if (!sectionId) return;
+    const id = Number(sectionId);
+    setSectionIds((current) => current.includes(id) ? current : [...current, id]);
+    setSectionPicker("");
   }
   function changeFilter(key: string, value: string) {
     setFilters((current) => ({ ...current, [key]: value }));
@@ -125,7 +133,7 @@ export default function Page() {
     setSaving(true);
     try {
       await api.post("/api/v1/academic/routines", routinePayload);
-      setForm(blank); setSectionIds([]); setError(""); setWorkspace("schedule"); setPage(1); await loadRoutinePage(1);
+      setForm(blank); setSectionIds([]); setSectionPicker(""); setError(""); setWorkspace("schedule"); setPage(1); await loadRoutinePage(1);
     } catch (requestError: any) {
       setError(apiMessage(requestError, "Unable to create routine entry."));
     } finally {
@@ -142,13 +150,13 @@ export default function Page() {
     {workspace === "create" && <section className="panel p-5 sm:p-6"><div className="mb-6 flex flex-wrap items-start justify-between gap-3"><div><h2 className="text-xl font-semibold">Add a recurring class</h2><p className="mt-1 text-sm text-slate-400">The system checks lecturer, room, section, and active offering conflicts before saving.</p></div><Badge tone="info">Conflict checked</Badge></div><form onSubmit={submit} className="grid gap-4 md:grid-cols-3">
       <label><span className="field-label">Intake</span><select className="w-full" required value={form.intake_id} onChange={(event) => setAcademic("intake_id", event.target.value)}><option value="">Select intake</option>{(data.intakes || []).map((entry) => <option key={entry.id} value={entry.id}>{entry.code} — {entry.name}</option>)}</select></label>
       <label><span className="field-label">Semester</span><input className="w-full" required type="number" min="1" value={form.semester_number} onChange={(event) => setAcademic("semester_number", event.target.value)} /></label>
-      <fieldset><legend className="field-label">Participating sections</legend><div className="flex min-h-10 flex-wrap gap-x-4 gap-y-2 rounded-lg border border-slate-700 bg-slate-950 p-3">{sections.map((entry) => <label key={entry.id} className="flex items-center gap-2 text-sm"><input type="checkbox" checked={sectionIds.includes(entry.id)} onChange={(event) => setSectionIds((current) => event.target.checked ? [...current, entry.id] : current.filter((id) => id !== entry.id))} />{entry.name}</label>)}</div></fieldset>
+      <div><span className="field-label">Section</span><select className="w-full" value={sectionPicker} onChange={(event) => addSection(event.target.value)} disabled={!form.intake_id || !form.semester_number}><option value="">{form.intake_id && form.semester_number ? "Select section" : "Select intake and semester first"}</option>{sections.filter((entry) => !sectionIds.includes(entry.id)).map((entry) => <option key={entry.id} value={entry.id}>{entry.name}</option>)}</select>{Boolean(form.intake_id && form.semester_number && !sections.length) && <span className="mt-1 block text-sm text-amber-300">No sections are configured for this intake and semester.</span>}{sectionIds.length > 0 && <span className="mt-2 flex flex-wrap gap-2">{sectionIds.map((id) => <button key={id} type="button" className="rounded-full border border-emerald-500/40 bg-emerald-500/10 px-3 py-1 text-sm text-emerald-200" onClick={() => setSectionIds((current) => current.filter((currentId) => currentId !== id))}>{label("sections", id)} <span aria-hidden="true">×</span><span className="sr-only">Remove {label("sections", id)}</span></button>)}</span>}<span className="mt-1 block text-sm text-slate-400">Choose each participating section from the list. Select a chip to remove it.</span></div>
       <label><span className="field-label">Module</span><select className="w-full" required value={form.module_id} onChange={(event) => setForm((current) => ({ ...current, module_id: event.target.value }))}><option value="">Select offered module</option>{offerings.map((entry) => <option key={entry.id} value={entry.academic_module_id}>{entry.module_code} — {entry.module_title}</option>)}</select>{form.intake_id && form.semester_number && sectionIds.length > 0 && !offerings.length && <span className="mt-1 block text-sm text-amber-300">No active offering covers these sections. <Link className="interactive-link underline" href="/admin/academic/module-offerings">Update module offerings</Link>.</span>}</label>
       {formSelect("class_type_id", "Class type", "class-types")}{formSelect("teacher_id", "Lecturer", "teachers")}
       <label><span className="field-label">Day</span><select className="w-full" value={form.day_of_week} onChange={(event) => setForm((current) => ({ ...current, day_of_week: event.target.value }))}>{days.map((day, index) => <option key={day} value={index}>{day}</option>)}</select></label>
       {formSelect("time_slot_id", "Time", "time-slots")}{formSelect("block_id", "Block", "blocks")}{formSelect("room_id", "Room", "rooms", rooms)}
       <div className="md:col-span-3"><p className="mb-2 text-xs font-semibold uppercase tracking-[.14em] text-slate-400">System feedback</p><ScheduleFeedback state={availability} /></div>
-      <div className="flex flex-wrap items-end gap-3 md:col-span-3"><Button loading={saving} disabled={availability.status === "checking" || availability.status === "conflict"}>{saving ? "Saving class…" : "Save recurring class"}</Button><Button type="button" variant="ghost" onClick={() => { setForm(blank); setSectionIds([]); }}>Clear</Button></div>
+      <div className="flex flex-wrap items-end gap-3 md:col-span-3"><Button loading={saving} disabled={availability.status === "checking" || availability.status === "conflict"}>{saving ? "Saving class…" : "Save recurring class"}</Button><Button type="button" variant="ghost" onClick={() => { setForm(blank); setSectionIds([]); setSectionPicker(""); }}>Clear</Button></div>
     </form></section>}
 
     {workspace === "import" && <SectionRoutineImportPanel />}

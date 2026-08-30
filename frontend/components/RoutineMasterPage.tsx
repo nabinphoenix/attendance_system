@@ -12,6 +12,7 @@ export type Field = {
   label: string;
   type?: "text" | "number" | "date" | "time";
   optionsEndpoint?: string;
+  options?: { value: string; label: string }[];
 };
 
 type MasterRecord = Record<string, unknown> & { id: number };
@@ -112,6 +113,7 @@ export default function RoutineMasterPage({
   }
 
   const display = (row: MasterRecord, field: Field) => {
+    if (field.options) return field.options.find((option) => option.value === String(row[field.key] ?? ""))?.label ?? String(row[field.key] ?? "—");
     if (!field.optionsEndpoint) return String(row[field.key] ?? "—");
     const match = options[field.optionsEndpoint]?.find((entry) => entry.id === row[field.key]);
     return String(match?.name ?? match?.code ?? "Not assigned");
@@ -120,7 +122,20 @@ export default function RoutineMasterPage({
   const formFields = (autoFocusFirst = false) => fields.map((field, index) => (
     <label key={field.key}>
       <span className="field-label">{field.label}</span>
-      {field.optionsEndpoint ? (
+      {field.options ? (
+        <select
+          autoFocus={autoFocusFirst && index === 0}
+          className="w-full"
+          required
+          value={form[field.key]}
+          onChange={(event) => setForm({ ...form, [field.key]: event.target.value })}
+        >
+          <option value="">Select {field.label.toLowerCase()}</option>
+          {field.options.map((option) => (
+            <option key={option.value} value={option.value}>{option.label}</option>
+          ))}
+        </select>
+      ) : field.optionsEndpoint ? (
         <select
           autoFocus={autoFocusFirst && index === 0}
           className="w-full"
