@@ -171,6 +171,64 @@ html[data-theme="light"] .border-slate-800, html[data-theme="light"] .border-sla
 html[data-theme="light"] .hover\:bg-slate-800:hover, html[data-theme="light"] .hover\:bg-slate-700:hover { background-color: rgb(var(--surface-muted)); }
 html[data-theme="light"] input:not([type="checkbox"]):not([type="radio"]):not([type="file"]), html[data-theme="light"] select, html[data-theme="light"] textarea { background-color: rgb(var(--surface)); color: rgb(var(--text)); border-color: rgb(var(--border)); }
 
+/* Several established screens use dark Tailwind utility colours directly.
+   Map those utilities to accessible light-theme equivalents in one place so
+   status banners, cards, tables, and buttons do not inherit dark-mode text
+   and backgrounds when the user selects light mode. */
+html[data-theme="light"] .bg-slate-950,
+html[data-theme="light"] .bg-slate-950\/15,
+html[data-theme="light"] .bg-slate-950\/20,
+html[data-theme="light"] .bg-slate-950\/30,
+html[data-theme="light"] .bg-slate-950\/40,
+html[data-theme="light"] .bg-slate-950\/45,
+html[data-theme="light"] .bg-slate-950\/50,
+html[data-theme="light"] .bg-slate-950\/60,
+html[data-theme="light"] .bg-slate-950\/70,
+html[data-theme="light"] .bg-slate-900,
+html[data-theme="light"] .bg-slate-900\/60,
+html[data-theme="light"] .bg-slate-900\/70,
+html[data-theme="light"] .bg-slate-900\/80,
+html[data-theme="light"] .bg-slate-900\/85 { background-color: rgb(var(--surface)); }
+
+html[data-theme="light"] .bg-slate-800,
+html[data-theme="light"] .bg-slate-800\/60,
+html[data-theme="light"] .bg-slate-800\/70,
+html[data-theme="light"] .bg-slate-700 { background-color: rgb(var(--surface-muted)); }
+
+html[data-theme="light"] .bg-emerald-950\/30,
+html[data-theme="light"] .bg-emerald-950\/70 { background-color: rgb(236 253 245); }
+html[data-theme="light"] .bg-red-950\/65 { background-color: rgb(254 242 242); }
+html[data-theme="light"] .bg-amber-950\/55 { background-color: rgb(255 251 235); }
+
+html[data-theme="light"] .text-emerald-100,
+html[data-theme="light"] .text-emerald-100\/80,
+html[data-theme="light"] .text-emerald-200,
+html[data-theme="light"] .text-emerald-300,
+html[data-theme="light"] .text-emerald-400 { color: rgb(4 120 87); }
+
+html[data-theme="light"] .text-red-100,
+html[data-theme="light"] .text-red-200,
+html[data-theme="light"] .text-red-200\/80,
+html[data-theme="light"] .text-red-200\/90,
+html[data-theme="light"] .text-red-300,
+html[data-theme="light"] .text-red-400 { color: rgb(185 28 28); }
+
+html[data-theme="light"] .text-amber-100,
+html[data-theme="light"] .text-amber-200,
+html[data-theme="light"] .text-amber-200\/90,
+html[data-theme="light"] .text-amber-300,
+html[data-theme="light"] .text-amber-400 { color: rgb(146 64 14); }
+
+html[data-theme="light"] .text-blue-200,
+html[data-theme="light"] .text-blue-300 { color: rgb(29 78 216); }
+html[data-theme="light"] .text-sky-200 { color: rgb(3 105 161); }
+html[data-theme="light"] .text-teal-200 { color: rgb(15 118 110); }
+html[data-theme="light"] .text-violet-200 { color: rgb(109 40 217); }
+html[data-theme="light"] .hover\:bg-slate-800\/60:hover { background-color: rgb(var(--surface-muted)); }
+html[data-theme="light"] .hover\:text-white:hover { color: rgb(var(--text)); }
+html[data-theme="light"] .hover\:text-emerald-200:hover,
+html[data-theme="light"] .hover\:text-emerald-300:hover { color: rgb(4 120 87); }
+
 @media (max-width: 860px) {
   .landing-hero { grid-template-columns: 1fr; gap: 2.25rem; padding-top: 2.5rem; }
   .landing-preview { max-width: 36rem; width: 100%; margin: auto; }
