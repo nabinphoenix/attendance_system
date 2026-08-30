@@ -318,6 +318,12 @@ export default function Page() {
   }, [attendance, subjectFilter]);
 
   useEffect(() => {
+    // The timetable's module IDs are the same IDs used by routine-session
+    // attendance records, so selecting a module also focuses the analytics.
+    setSubjectFilter(scheduleFilters.module);
+  }, [scheduleFilters.module]);
+
+  useEffect(() => {
     if (classTypeFilter && attendance && !attendance.days.flatMap((day) => day.records).some((record) => String(record.class_type_id ?? "legacy") === classTypeFilter)) setClassTypeFilter("");
   }, [attendance, classTypeFilter]);
 
@@ -328,6 +334,7 @@ export default function Page() {
   const overallTone = attendance && view.total >= attendance.minimum_observations && view.overall < attendance.attendance_threshold_percent ? "danger" : "success";
   const overallLabel = attendance && view.total < attendance.minimum_observations ? "Building baseline" : view.overall < (attendance?.attendance_threshold_percent ?? 0) ? "Needs attention" : "On track";
   const mostMissedClassType = view.classTypes.toSorted((left, right) => left.percentage - right.percentage)[0];
+  const selectedSubject = attendance?.subjects.find((subject) => String(subject.subject_id) === subjectFilter) ?? null;
 
   return (
     <div>
@@ -389,6 +396,7 @@ export default function Page() {
             <div><p className="text-sm text-slate-400">Showing {rangeLabel(attendance.date_from, attendance.date_to)}</p><p className="mt-1 text-xs text-slate-500">Filters update the cards, analysis, and exported CSV.</p></div>
             <div className="flex flex-wrap gap-2"><Button type="button" size="sm" variant="outline" onClick={exportFilteredAttendance}>Export filtered CSV</Button><Button type="button" size="sm" variant="outline" onClick={() => void exportAllTimeAnalysis()}>All-time analysis CSV</Button></div>
           </div>
+          {selectedSubject && <p className="mt-2 text-sm font-medium text-emerald-300">Showing attendance for: {selectedSubject.subject_name}</p>}
           {exportError && <p className="mt-3 text-sm text-red-300" role="alert">{exportError}</p>}
           <div className="mt-4 grid gap-4 sm:grid-cols-3">
             <label><span className="field-label">Subject</span><select aria-label="Filter attendance by subject" value={subjectFilter} onChange={(event) => setSubjectFilter(event.target.value)} className="w-full"><option value="">All subjects</option>{attendance.subjects.map((subject) => <option key={subject.subject_id} value={subject.subject_id}>{subject.subject_name}</option>)}</select></label>
