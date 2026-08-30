@@ -11,7 +11,7 @@ from sqlalchemy import func, select
 from app.core.dependencies import DbSession, get_current_user, require_role
 from app.modules.operations.service import log_audit
 from app.core.security import hash_password, verify_password
-from app.modules.academic.models import InvitationStatus, Student, StudentInvitation
+from app.modules.academic.models import InvitationPurpose, InvitationStatus, Student, StudentInvitation
 from app.modules.identity.models import User, UserRole
 from app.modules.identity.schemas import LoginRequest, PasswordChange, ProfileUpdate, TokenResponse, UserRead, UserUpdate
 from app.modules.identity.service import authenticate, issue_token
@@ -65,11 +65,20 @@ class ActivationRequest(BaseModel): token:str; password:str; name:str|None=None
 @router.get("/auth/activate/validate")
 def validate_activation(token:str,db:DbSession):
     invite=invitation_from_token(db,token);student=invite.student
-    return {"student_name":student.name,"email":student.email,"status":"valid"}
+    account = student.user if student.user_id else None
+    return {"student_name":student.name or (account.name if account else None),"email":account.email if account else student.email,"status":"valid","mode":invite.purpose.value,"account_exists":account is not None}
 @router.post("/auth/activate",response_model=TokenResponse)
 def activate(payload:ActivationRequest,response:Response,db:DbSession):
     if len(payload.password)<8:raise HTTPException(422,"Password must be at least 8 characters")
     invite=invitation_from_token(db,payload.token);student=invite.student
+    if invite.purpose == InvitationPurpose.PASSWORD_SETUP:
+        account = student.user if student.user_id else None
+        if not account:raise HTTPException(409,"The linked student account no longer exists")
+        if not account.is_active:raise HTTPException(403,"Account inactive. Contact an administrator.")
+        account.password_hash=hash_password(payload.password)
+        invite.status=InvitationStatus.ACTIVATED;invite.used_at=datetime.now(UTC)
+        log_audit(db,account.id,"student.password_setup_completed","student",student.id,None,{"invitation_id":invite.id});db.commit();db.refresh(account)
+        return browser_session(response,account)
     if student.user_id:raise HTTPException(409,"Student already has an account")
     email=(student.email or "").lower()
     if not email:raise HTTPException(422,"Student profile has no email")

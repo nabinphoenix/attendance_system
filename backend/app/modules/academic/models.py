@@ -229,12 +229,19 @@ class InvitationStatus(str, enum.Enum):
     ACTIVATED = "activated"
     REVOKED = "revoked"
 
+class InvitationPurpose(str, enum.Enum):
+    ACTIVATION = "activation"
+    PASSWORD_SETUP = "password_setup"
+
 class StudentInvitation(Base):
     __tablename__ = "student_invitations"
     id: Mapped[int] = mapped_column(primary_key=True)
     student_id: Mapped[int] = mapped_column(ForeignKey("students.id", ondelete="CASCADE"))
     token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     status: Mapped[InvitationStatus] = mapped_column(Enum(InvitationStatus), default=InvitationStatus.SENT)
+    purpose: Mapped[InvitationPurpose] = mapped_column(
+        Enum(InvitationPurpose), default=InvitationPurpose.ACTIVATION
+    )
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

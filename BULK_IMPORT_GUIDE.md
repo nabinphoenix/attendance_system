@@ -260,29 +260,29 @@ The current student bulk import makes a user account for every student that is
 imported successfully. The starting password is currently `Welcome123!`.
 
 The bulk student import does **not** send an activation email automatically.
-For a real college system, it is safer to change this later to an
-email-invitation or password-reset system before sharing accounts with students.
-Do not post the starting password on a public website.
+Use the Student onboarding page to send each imported student a secure,
+single-use password-setup link before sharing accounts with students. Do not
+post the starting password on a public website.
 
-### Send an activation email to one or more students
+### Send account setup emails to one or more students
 
 Open **Admin → Students** and use the **Student onboarding** area.
 
 1. Filter by intake or section if needed.
-2. You can choose to show only students who do not have accounts.
-3. Select one student to send one email, select many students, or invite all
+2. Enable **Unregistered only** when you want to send only new-account
+   activation links. Leave it disabled to include existing imported accounts.
+3. Select one student to send one email, select many students, or email all
    students shown in the filtered list.
-4. Send the invitation.
+4. Review the activation/password-setup totals and confirm the action.
 
-The email has a link. The student opens the link, creates a password, and then
-can sign in. The link normally expires after seven days.
+Each email contains a hashed, single-use link that normally expires after seven
+days. A student without an account activates a new account. An imported student
+with an existing account uses the same page to replace the temporary password;
+their student ID, account, attendance, and reporting data remain unchanged.
 
-> Important current limit: the email invitation screen sends emails only to
-> students who do **not** already have an account. Because the student CSV
-> import creates accounts, students imported from that file cannot receive these
-> activation emails through that screen. If you need activation emails for a
-> new intake, ask for an invitation-based bulk import before you import the
-> students.
+Sending another setup email immediately revokes the student's previous unused
+setup link. The password changes only after the student opens the newest link
+and submits a new password.
 
 ### Make sure email sending works
 

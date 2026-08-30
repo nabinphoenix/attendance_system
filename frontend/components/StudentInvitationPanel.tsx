@@ -6,8 +6,9 @@ import { StatusBadge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { EmptyState, LoadingState } from "@/components/ui/States";
+import { SystemFeedback } from "@/components/ui/SystemFeedback";
 
-type Student = { id: number; name: string; email: string; section_id: number; section_name: string; account_status: string };
+type Student = { id: number; name: string; email: string; section_id: number; section_name: string; has_account: boolean; account_status: string };
 type Section = { id: number; name: string; intake_id: number | null };
 type Intake = { id: number; name: string; code: string };
 
@@ -64,6 +65,12 @@ export default function StudentInvitationPanel() {
     () => selected.length ? selected : students.map((student) => student.id),
     [selected, students],
   );
+  const targetStudents = useMemo(
+    () => students.filter((student) => targets.includes(student.id)),
+    [students, targets],
+  );
+  const passwordSetupCount = targetStudents.filter((student) => student.has_account).length;
+  const activationCount = targetStudents.length - passwordSetupCount;
   const allSelected = students.length > 0 && selected.length === students.length;
   const selectionText = selected.length ? `${selected.length} selected` : `All ${students.length} shown`;
 
@@ -83,7 +90,7 @@ export default function StudentInvitationPanel() {
         section_id: sectionId ? Number(sectionId) : null,
         only_without_accounts: onlyUnregistered,
       });
-      setSummary(`Invitations queued: ${response.data.sent}, ${response.data.already_registered} already registered, ${response.data.failed} failed.`);
+      setSummary(`Account emails queued: ${response.data.sent} (${response.data.activation_sent} activation, ${response.data.password_setup_sent} password setup), ${response.data.failed} failed.`);
       setSelected([]);
       await load();
     } catch (requestError: any) {
@@ -94,15 +101,15 @@ export default function StudentInvitationPanel() {
     }
   }
 
-  const requestSend = () => targets.length > 20 ? setConfirmOpen(true) : void send();
+  const requestSend = () => setConfirmOpen(true);
 
   return <section className="mt-8 panel overflow-hidden">
     <div className="border-b border-slate-800 p-4 sm:p-6">
       <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
         <div>
           <p className="text-xs font-semibold uppercase tracking-[.14em] text-emerald-400">Student onboarding</p>
-          <h2 className="mt-1 text-xl font-semibold">Send account invitations</h2>
-          <p className="mt-1 max-w-2xl text-sm leading-6 text-slate-400">Filter by intake or section, then choose specific students or invite everyone currently shown.</p>
+          <h2 className="mt-1 text-xl font-semibold">Send account setup emails</h2>
+          <p className="mt-1 max-w-2xl text-sm leading-6 text-slate-400">Send activation links to new profiles and secure password-setup links to existing accounts.</p>
         </div>
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
           <label className="flex min-h-10 items-center gap-2 rounded-lg border border-slate-700 bg-slate-950 px-3 text-sm text-slate-300">
@@ -122,7 +129,7 @@ export default function StudentInvitationPanel() {
           <button type="button" role="switch" aria-checked={onlyUnregistered} onClick={() => setOnlyUnregistered((value) => !value)} className={`inline-flex min-h-10 items-center justify-between gap-3 rounded-lg border px-3 text-sm font-medium transition ${onlyUnregistered ? "border-emerald-500/50 bg-emerald-500/10 text-emerald-200" : "border-slate-700 bg-slate-950 text-slate-300"}`}>
             <span>Unregistered only</span><span aria-hidden="true" className={`h-5 w-9 rounded-full p-0.5 transition ${onlyUnregistered ? "bg-emerald-400" : "bg-slate-700"}`}><span className={`block h-4 w-4 rounded-full bg-white transition ${onlyUnregistered ? "translate-x-4" : "translate-x-0"}`} /></span>
           </button>
-          <Button loading={sending} disabled={!targets.length || loading} onClick={requestSend} className="w-full sm:w-auto">{selected.length ? `Send ${selected.length} invitation${selected.length === 1 ? "" : "s"}` : "Invite all shown"}</Button>
+          <Button loading={sending} disabled={!targets.length || loading} onClick={requestSend} className="w-full sm:w-auto">{selected.length ? `Email ${selected.length} selected` : "Email all shown"}</Button>
         </div>
       </div>
       <div className="mt-4 flex flex-col gap-3 rounded-lg bg-slate-950/60 px-3 py-3 sm:flex-row sm:items-center sm:justify-between">
@@ -131,8 +138,8 @@ export default function StudentInvitationPanel() {
       </div>
     </div>
 
-    {summary && <p className="mx-4 mt-4 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-200 sm:mx-6" role="status">{summary}</p>}
-    {error && <p className="mx-4 mt-4 rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-200 sm:mx-6" role="alert">{error}</p>}
+    {summary && <SystemFeedback className="mx-4 mt-4 sm:mx-6" tone="success" title="Account emails queued" description={summary} />}
+    {error && <SystemFeedback className="mx-4 mt-4 sm:mx-6" tone="danger" title="Unable to send account emails" description={error} />}
 
     <div className="p-4 sm:p-6">
       {loading ? <LoadingState label="Loading students" /> : !students.length ? <EmptyState title="No matching students" description="There are no students waiting for an invitation." /> : <>
@@ -146,6 +153,6 @@ export default function StudentInvitationPanel() {
         <div className="hidden md:block table-wrap"><table><thead><tr><th><input aria-label="Select all students" type="checkbox" checked={allSelected} onChange={toggleAll} /></th><th>Name</th><th>Email</th><th>Section</th><th>Status</th></tr></thead><tbody>{students.map((student) => <tr key={student.id}><td><input aria-label={`Select ${student.name}`} type="checkbox" checked={selected.includes(student.id)} onChange={() => toggle(student.id)} /></td><td className="font-medium text-slate-100">{student.name}</td><td>{student.email}</td><td>{student.section_name}</td><td><StatusBadge status={student.account_status} /></td></tr>)}</tbody></table></div>
       </>}
     </div>
-    <ConfirmDialog open={confirmOpen} title={`Invite ${targets.length} students?`} description="AntimBench will send an account invitation to every selected student." confirmLabel="Send invitations" onClose={() => setConfirmOpen(false)} onConfirm={send} />
+    <ConfirmDialog open={confirmOpen} title={`Email ${targets.length} student${targets.length === 1 ? "" : "s"}?`} description={`${activationCount} activation link${activationCount === 1 ? "" : "s"} and ${passwordSetupCount} secure password-setup link${passwordSetupCount === 1 ? "" : "s"} will be queued. A password changes only when the student opens the link and saves a new one.`} confirmLabel="Send account emails" onClose={() => setConfirmOpen(false)} onConfirm={send} />
   </section>;
 }

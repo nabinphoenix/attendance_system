@@ -98,7 +98,7 @@ Browser logins now establish a `HttpOnly`, `SameSite=Lax` session cookie; the fr
 
 ## Phase 3 operations
 
-Admins can create and approve dated schedule overrides at `/admin/overrides`. An approved substitute assignment completely transfers start/manage access for that date: the original teacher cannot start or manage the overridden session, while original and effective teacher/room values remain recorded separately. Bulk student CSV onboarding is available at `/admin/imports`; expected headers are `name,email,batch_name,section_name,phone`. Successful accounts receive the temporary password `Welcome123!`, which must be replaced with a reset-token flow before production use. Each row uses a database savepoint, so invalid rows do not roll back valid accounts. Teachers can review their session history from `/teacher/sessions` and open completed roster summaries.
+Admins can create and approve dated schedule overrides at `/admin/overrides`. An approved substitute assignment completely transfers start/manage access for that date: the original teacher cannot start or manage the overridden session, while original and effective teacher/room values remain recorded separately. Bulk student CSV onboarding is available at `/admin/imports`; expected headers are `name,email,batch_name,section_name,phone`. Successful imports create accounts with the temporary password `Welcome123!`; admins can send a hashed, single-use password-setup link from `/admin/students` so each student replaces it securely. Each row uses a database savepoint, so invalid rows do not roll back valid accounts. Teachers can review their session history from `/teacher/sessions` and open completed roster summaries.
 
 ## Phase 4 intervention workflow
 
