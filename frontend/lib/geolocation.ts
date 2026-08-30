@@ -1,5 +1,9 @@
-const LOCATION_TIMEOUT_MS = 12_000;
-const EARLY_ACCEPT_ACCURACY_METERS = 30;
+// A fresh GPS fix can take longer than the browser's usual short default,
+// especially indoors or immediately after opening the app on a phone.
+const LOCATION_TIMEOUT_MS = 30_000;
+// This matches the most restrictive accepted accuracy for a teacher-created
+// session geofence. The server still validates every submitted reading.
+const EARLY_ACCEPT_ACCURACY_METERS = 50;
 
 export type LocationFailureReason = "LOCATION_DENIED" | "LOCATION_TIMEOUT" | "LOCATION_UNAVAILABLE";
 
@@ -22,8 +26,9 @@ export function getBestFreshPosition(): Promise<GeolocationPosition> {
       return;
     }
     let best: GeolocationPosition | undefined;
+    let lastError: GeolocationPositionError | undefined;
     let settled = false;
-    let watchId: number;
+    let watchId: number | undefined;
     const finish = (position?: GeolocationPosition, error?: GeolocationPositionError) => {
       if (settled) return;
       settled = true;
@@ -34,7 +39,7 @@ export function getBestFreshPosition(): Promise<GeolocationPosition> {
     };
     const timer = window.setTimeout(() => {
       const timeoutError = Object.assign(new Error("Location request timed out"), { code: 3 });
-      finish(best, timeoutError as unknown as GeolocationPositionError);
+      finish(best, lastError ?? (timeoutError as unknown as GeolocationPositionError));
     }, LOCATION_TIMEOUT_MS);
     watchId = navigator.geolocation.watchPosition(
       (position) => {
@@ -44,7 +49,9 @@ export function getBestFreshPosition(): Promise<GeolocationPosition> {
       (error) => {
         if (error.code === error.PERMISSION_DENIED) finish(undefined, error);
         else if (best) finish(best);
-        else finish(undefined, error);
+        // POSITION_UNAVAILABLE is often temporary while the device obtains a
+        // first fix. Keep the watcher alive until the overall timeout.
+        else lastError = error;
       },
       { enableHighAccuracy: true, maximumAge: 0, timeout: LOCATION_TIMEOUT_MS },
     );

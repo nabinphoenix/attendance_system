@@ -24,11 +24,13 @@ export default function Page() {
   const [startStatus, setStartStatus] = useState("");
   const [loading, setLoading] = useState(true);
   const [pendingStart, setPendingStart] = useState<PendingSessionStart | null>(null);
+  const [locationRetryRoutineId, setLocationRetryRoutineId] = useState<number | null>(null);
   const [radiusInput, setRadiusInput] = useState("150");
   const [filters, setFilters] = useState({ query: "", module: "", section: "", classType: "", day: "" });
 
   async function load() {
     setError("");
+    setLocationRetryRoutineId(null);
     try {
       const today = localDate();
       const [routineResponse, catalogResponse, occurrenceResponse] = await Promise.all([
@@ -62,14 +64,17 @@ export default function Page() {
     }
     setStartingId(routineId);
     setError("");
-    setStartStatus("Getting your classroom location…");
+    setLocationRetryRoutineId(null);
+    setStartStatus("Getting your classroom location (this can take up to 30 seconds)…");
     try {
       const position = await getBestFreshPosition();
       setPendingStart({ routineId, latitude: position.coords.latitude, longitude: position.coords.longitude, accuracy: position.coords.accuracy });
+      setLocationRetryRoutineId(null);
       setStartStatus(`Location captured with +/-${Math.round(position.coords.accuracy)}m accuracy. Choose the attendance boundary, then start the QR session.`);
       setStartingId(null);
       return;
     } catch (requestError: any) {
+      setLocationRetryRoutineId(routineId);
       const detail = requestError.response?.data?.detail;
       if (detail) setError(detail);
       else {
@@ -77,8 +82,8 @@ export default function Page() {
         setError(reason === "LOCATION_DENIED"
           ? "Location permission is required to create the classroom geofence. Allow location access and retry."
           : reason === "LOCATION_TIMEOUT"
-            ? "A fresh classroom location could not be obtained in time. Move near a window and retry."
-            : "Classroom location is unavailable on this device. Check location services and retry.");
+            ? "A fresh classroom location could not be obtained within 30 seconds. Check that location services are on, allow location for this site, then retry."
+            : "Classroom location is unavailable on this device. Check location services and the browser permission, then retry.");
       }
       setStartStatus("");
       setStartingId(null);
@@ -94,6 +99,7 @@ export default function Page() {
     }
     setStartingId(pendingStart.routineId);
     setError("");
+    setLocationRetryRoutineId(null);
     setStartStatus("Creating the QR attendance session…");
     try {
       const response = await api.post(`/api/v1/routine-sessions/${pendingStart.routineId}/start`, {
@@ -104,9 +110,14 @@ export default function Page() {
       });
       router.push(`/teacher/sessions/${response.data.id}`);
     } catch (requestError: any) {
-      setError(requestError.response?.data?.detail ?? "Unable to start this attendance session.");
+      const detail = requestError.response?.data?.detail ?? "Unable to start this attendance session.";
+      setError(detail);
       setStartStatus("");
       setStartingId(null);
+      if (String(detail).toLowerCase().includes("location accuracy")) {
+        setPendingStart(null);
+        setLocationRetryRoutineId(pendingStart.routineId);
+      }
     }
   }
 
@@ -156,7 +167,7 @@ export default function Page() {
       </div>
     </section>
     {startStatus && <p className="mb-3 rounded border border-emerald-800 bg-emerald-950/30 p-3 text-emerald-300">{startStatus}</p>}
-    {error&&<div className="mb-4"><ErrorState title="Unable to continue" description={error} onRetry={()=>void load()}/></div>}
+    {error&&<div className="mb-4"><ErrorState title="Unable to continue" description={error} onRetry={()=>locationRetryRoutineId!==null?void start(locationRetryRoutineId):void load()}/></div>}
     {loading?<LoadingState label="Loading teaching schedule"/>:<><section><h2 className="mb-3 text-lg font-semibold">Today&apos;s classes</h2><div className="grid gap-4 md:grid-cols-2">{today.map(occurrenceCard)}{!today.length&&<div className="panel md:col-span-2"><EmptyState title="No classes scheduled today" description="Your next scheduled class will appear below."/></div>}</div></section>
     <section className="mt-8"><h2 className="mb-3 text-xl font-semibold">Next Class</h2>{next ? <div><p className="mb-2 text-slate-400">{next.date}</p>{occurrenceCard(next)}</div> : <p className="text-slate-400">No upcoming class.</p>}</section>
     <section className="mt-8"><h2 className="mb-3 text-lg font-semibold">Full timetable</h2><RoutineScheduleCards rows={filteredRows} colorRows={rows} days={days} colorBy="room_id" colorMeaning="Classroom" time={(row) => text("time-slots", row.time_slot_id)} title={(row) => text("modules", row.module_id)} classType={(row) => text("class-types", row.class_type_id)} details={(row) => [{ label: "Sections", value: row.section_names?.join(" + ") || "Not assigned" }, { label: "Room", value: text("rooms", row.room_id) }]} /></section></>}
