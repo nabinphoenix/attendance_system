@@ -256,13 +256,11 @@ There are two different ways student accounts can exist in the app.
 
 ### Students imported from the student CSV
 
-The current student bulk import makes a user account for every student that is
-imported successfully. The starting password is currently `Welcome123!`.
-
-The bulk student import does **not** send an activation email automatically.
-Use the Student onboarding page to send each imported student a secure,
-single-use password-setup link before sharing accounts with students. Do not
-post the starting password on a public website.
+The student bulk import makes a user account for every student imported
+successfully and automatically queues a welcome email. The email gives the
+student's sign-in email address and a secure, single-use password-setup link.
+The student must choose their own password before they can sign in; no reusable
+password is stored or sent by email.
 
 ### Send account setup emails to one or more students
 
@@ -275,9 +273,9 @@ Open **Admin → Students** and use the **Student onboarding** area.
    students shown in the filtered list.
 4. Review the activation/password-setup totals and confirm the action.
 
-Each email contains a hashed, single-use link that normally expires after seven
-days. A student without an account activates a new account. An imported student
-with an existing account uses the same page to replace the temporary password;
+Each email contains a single-use link that normally expires after seven days.
+A student without an account activates a new account. An imported student with
+an existing account uses the same page to choose or replace their password;
 their student ID, account, attendance, and reporting data remain unchanged.
 
 Sending another setup email immediately revokes the student's previous unused

@@ -38,8 +38,17 @@ def test_override_substitute_and_original_denied():
 def test_mixed_csv_import_creates_student_account():
     Session,_,_,_=setup_db();client=TestClient(app);admin=auth(client,"admin@example.com");csv=b"name,email,batch_name,section_name,phone\nValid Student,valid@example.com,2026,A,9800000000\nMissing Email,,2026,A,\nWrong Section,wrong@example.com,2026,Z,\n"
     response=client.post("/api/v1/imports/students",headers=admin,files={"file":("students.csv",io.BytesIO(csv),"text/csv")});assert response.status_code==200,response.text;data=response.json();assert(data["success_count"],data["failed_count"])==(1,2);messages=" ".join(x["error_message"] for x in data["errors"]);assert "email is required" in messages and "does not exist" in messages
-    students=client.get("/api/v1/academic/students",headers=admin).json();assert any(x["email"]=="valid@example.com" and x["account_status"]=="Activated" for x in students)
-    login=client.post("/api/v1/auth/login",json={"email":"valid@example.com","password":"Welcome123!"});assert login.status_code==200,login.text
+    students=client.get("/api/v1/academic/students",headers=admin).json();assert any(x["email"]=="valid@example.com" and x["account_status"]=="Password Setup Queued" for x in students)
+    with Session() as db:
+        student=next(item for item in db.scalars(select(Student)).all() if item.email=="valid@example.com")
+        invitation=db.scalar(select(StudentInvitation).where(StudentInvitation.student_id==student.id).order_by(StudentInvitation.id.desc()))
+        notification=db.scalar(select(Notification).where(Notification.recipient_id==student.id).order_by(Notification.id.desc()))
+        assert invitation and invitation.purpose==InvitationPurpose.PASSWORD_SETUP
+        assert notification and notification.subject=="Your AntimBench student account is ready" and "Sign-in email: valid@example.com" in notification.body
+        token=parse_qs(urlparse(notification.body.rsplit(" ",1)[-1]).query)["token"][0]
+    assert client.post("/api/v1/auth/login",json={"email":"valid@example.com","password":"Welcome123!"}).status_code==401
+    assert client.post("/api/v1/auth/activate",json={"token":token,"password":"NewPassword123!"}).status_code==200
+    login=client.post("/api/v1/auth/login",json={"email":"valid@example.com","password":"NewPassword123!"});assert login.status_code==200,login.text
     app.dependency_overrides.clear()
 
 def test_registered_student_can_receive_password_setup_invitation():
@@ -61,8 +70,8 @@ def test_registered_student_can_receive_password_setup_invitation():
     assert refreshed["account_status"]=="Password Setup Queued" and refreshed["has_account"] is True
 
     with Session() as db:
-        invitation=db.scalar(select(StudentInvitation).where(StudentInvitation.student_id==student["id"]))
-        notification=db.scalar(select(Notification).where(Notification.related_entity=="student_invitation"))
+        invitation=db.scalar(select(StudentInvitation).where(StudentInvitation.student_id==student["id"]).order_by(StudentInvitation.id.desc()))
+        notification=db.scalar(select(Notification).where(Notification.related_entity=="student_invitation").order_by(Notification.id.desc()))
         assert invitation and invitation.purpose==InvitationPurpose.PASSWORD_SETUP
         assert notification and notification.subject=="Set your AntimBench password"
         token=parse_qs(urlparse(notification.body.rsplit(" ",1)[-1]).query)["token"][0]
@@ -75,7 +84,7 @@ def test_registered_student_can_receive_password_setup_invitation():
 
     with Session() as db:
         stored_student=db.get(Student,student["id"])
-        stored_invitation=db.scalar(select(StudentInvitation).where(StudentInvitation.student_id==student["id"]))
+        stored_invitation=db.scalar(select(StudentInvitation).where(StudentInvitation.student_id==student["id"]).order_by(StudentInvitation.id.desc()))
         assert stored_student.user_id==original_user_id
         assert stored_invitation.status==InvitationStatus.ACTIVATED
     assert client.post("/api/v1/auth/login",json={"email":"existing@example.com","password":"Welcome123!"}).status_code==401

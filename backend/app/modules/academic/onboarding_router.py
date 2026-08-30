@@ -1,15 +1,14 @@
 import hashlib
-import secrets
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, EmailStr
 from sqlalchemy import select
-from app.core.config import settings
 from app.core.dependencies import DbSession, require_role
 from app.modules.identity.models import User
-from app.modules.operations.service import log_audit, queue_notification
+from app.modules.operations.service import log_audit
 from .models import InvitationPurpose, InvitationStatus, Section, Student, StudentInvitation
+from .invitation_service import issue_student_invitation
 
 router = APIRouter(prefix="/academic", tags=["student onboarding"])
 
@@ -38,7 +37,7 @@ def students(db:DbSession,intake_id:int|None=None,section_id:int|None=None,only_
     if only_without_accounts:q=q.where(Student.user_id.is_(None))
     records=[]
     for student in db.scalars(q.order_by(Student.id)).all():
-        invite=db.scalar(select(StudentInvitation).where(StudentInvitation.student_id==student.id).order_by(StudentInvitation.created_at.desc()))
+        invite=db.scalar(select(StudentInvitation).where(StudentInvitation.student_id==student.id).order_by(StudentInvitation.id.desc()))
         records.append(read_student(student,invite))
     return records
 class InvitationRequest(BaseModel):
@@ -58,22 +57,12 @@ def send_invitations(payload:InvitationRequest,actor:Annotated[User,Depends(requ
         requested+=1
         try:
             account = student.user if student.user_id else None
-            email = account.email if account else student.email
-            if not email:raise ValueError("Student has no email address")
             purpose = InvitationPurpose.PASSWORD_SETUP if account else InvitationPurpose.ACTIVATION
-            for old in db.scalars(select(StudentInvitation).where(StudentInvitation.student_id==student.id,StudentInvitation.status==InvitationStatus.SENT)).all():old.status=InvitationStatus.REVOKED
-            token=secrets.token_urlsafe(32);digest=hashlib.sha256(token.encode()).hexdigest()
-            invite=StudentInvitation(student_id=student.id,token_hash=digest,status=InvitationStatus.SENT,purpose=purpose,expires_at=datetime.now(UTC)+timedelta(hours=settings.invitation_expire_hours));db.add(invite);db.flush()
-            url=f"{settings.frontend_url.rstrip('/')}/activate?token={token}"
+            issue_student_invitation(db, student, account)
             if purpose == InvitationPurpose.PASSWORD_SETUP:
-                subject = "Set your AntimBench password"
-                body = f"Hello {student.name or account.name or 'Student'}, set a new password for your existing AntimBench account by opening this secure link before it expires: {url}"
                 password_setup_sent += 1
             else:
-                subject = "Activate your AntimBench account"
-                body = f"Hello {student.name or 'Student'}, activate your account by opening this link before it expires: {url}"
                 activation_sent += 1
-            queue_notification(db,"student",student.id,subject,body,"student_invitation",invite.id)
             sent+=1
         except Exception as exc:failed+=1;errors.append({"student_id":student.id,"message":str(exc)})
     log_audit(db,actor.id,"student.invitations_sent","student_invitation",0,None,{"requested":requested,"sent":sent,"activation_sent":activation_sent,"password_setup_sent":password_setup_sent,"failed":failed});db.commit()

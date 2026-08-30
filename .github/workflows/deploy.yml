@@ -354,6 +354,7 @@ jobs:
           SMTP_FROM_EMAIL: ${{ vars.SMTP_FROM_EMAIL }}
           SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          FRONTEND_URL: ${{ vars.FRONTEND_URL || 'https://antimbench-https-proxy.vercel.app' }}
         run: |
           set -euo pipefail
 
@@ -382,12 +383,14 @@ jobs:
               --arg username "${SMTP_USERNAME}" \
               --arg password "${SMTP_PASSWORD}" \
               --arg from_email "${smtp_from_email}" \
+              --arg frontend_url "${FRONTEND_URL}" \
               '[
                 {Namespace:"aws:elasticbeanstalk:application:environment",OptionName:"SMTP_HOST",Value:$host},
                 {Namespace:"aws:elasticbeanstalk:application:environment",OptionName:"SMTP_PORT",Value:$port},
                 {Namespace:"aws:elasticbeanstalk:application:environment",OptionName:"SMTP_USERNAME",Value:$username},
                 {Namespace:"aws:elasticbeanstalk:application:environment",OptionName:"SMTP_PASSWORD",Value:$password},
-                {Namespace:"aws:elasticbeanstalk:application:environment",OptionName:"SMTP_FROM_EMAIL",Value:$from_email}
+                {Namespace:"aws:elasticbeanstalk:application:environment",OptionName:"SMTP_FROM_EMAIL",Value:$from_email},
+                {Namespace:"aws:elasticbeanstalk:application:environment",OptionName:"FRONTEND_URL",Value:$frontend_url}
               ]' > "${smtp_settings_file}"
             update_args+=(--option-settings "file://${smtp_settings_file}")
             echo "Deploying with SMTP environment properties from GitHub production secrets."

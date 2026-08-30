@@ -47,6 +47,8 @@ def deliver_notification(db: Session, notification: Notification) -> None:
             if settings.smtp_username:
                 smtp.login(settings.smtp_username, settings.smtp_password or "")
             smtp.send_message(message)
+        if notification.related_entity == "student_invitation":
+            notification.body = "Secure student account setup email delivered."
         notification.status = NotificationStatus.SENT
         notification.sent_at = datetime.now(UTC)
     except Exception as exc:

@@ -9,6 +9,7 @@ from sqlalchemy.exc import IntegrityError
 from app.core.config import settings
 from app.core.dependencies import DbSession, require_role, require_roles
 from app.modules.academic.models import RoutineEntry, Section, Student, StudentSubjectEnrollment, Teacher
+from app.modules.analytics.service import run_risk_evaluations
 from app.modules.course_completion.models import CoursePlan
 from app.modules.identity.models import User
 from app.modules.operations.models import AuditLog
@@ -712,6 +713,8 @@ def set_teacher_attendance(
     session = manual_session(db, entry, effective, attendance_date, students, user)
     result = apply_manual_status(db, session, student, p.status, p.reason, user)
     db.commit()
+    if session.status == SessionStatus.COMPLETED:
+        run_risk_evaluations(db)
     return result
 
 
@@ -874,6 +877,7 @@ def finalize(id: int, user: Annotated[User, Depends(require_role("teacher"))], d
     session.finalized_at = datetime.now(UTC)
     log_audit(db, user.id, "class_session.finalized", "class_session", session.id, {"status": "active"}, {"status": "completed"})
     db.commit()
+    run_risk_evaluations(db)
     return roster_rows(session, db)
 
 
@@ -921,6 +925,8 @@ def set_session_student_attendance(
         attempt.reviewed_at = datetime.now(UTC)
         attempt.decision_reason = p.reason
     db.commit()
+    if session.status == SessionStatus.COMPLETED:
+        run_risk_evaluations(db)
     return RosterItem(attendance_id=record.id, student_id=student.id, student_name=student.user.name if student.user else student.name or student.roll_number, roll_number=student.roll_number, status=record.status.value)
 
 
@@ -942,5 +948,7 @@ def change_status(id: int, p: StatusChange, user: Annotated[User, Depends(requir
     record.status = new
     record.method = AttendanceMethod.MANUAL
     db.commit()
+    if db.get(ClassSession, record.class_session_id).status == SessionStatus.COMPLETED:
+        run_risk_evaluations(db)
     student = db.get(Student, record.student_id)
     return RosterItem(attendance_id=record.id, student_id=student.id, student_name=student.user.name, roll_number=student.roll_number, status=record.status.value)

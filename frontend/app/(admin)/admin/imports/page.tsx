@@ -38,7 +38,7 @@ export default function Page() {
     finally { setUploading(false); }
   }
 
-  const hint = kind === "students" ? "Required columns: name, email, batch_name, section_name, phone." : "Routine files accept MON–SUN or full day names. For a preview before publishing, use the Routine page import panel.";
+  const hint = kind === "students" ? "Required columns: name, email, batch_name, section_name, phone. Each successful student import automatically queues a secure account-setup email." : "Routine files accept MON–SUN or full day names. For a preview before publishing, use the Routine page import panel.";
   return <div className="max-w-6xl">
     <PageHeader title="Bulk imports" description="Bring student or routine data into AntimBench from a CSV or Excel workbook." />
     <form onSubmit={submit} className="panel p-5 sm:p-6">
@@ -58,6 +58,7 @@ export default function Page() {
     {result && <section className="mt-6 panel p-5 sm:p-6" aria-live="polite">
       <div className="flex flex-wrap items-center justify-between gap-3"><div><p className="text-sm text-slate-400">Latest import</p><h2 className="text-lg font-semibold">{result.file_name}</h2></div><Badge tone={result.failed_count ? "warning" : "success"}>{result.failed_count ? "Completed with errors" : "Completed"}</Badge></div>
       <div className="mt-5 grid grid-cols-3 gap-3">{[["Rows",result.total_rows,"text-slate-100"],["Succeeded",result.success_count,"text-emerald-300"],["Failed",result.failed_count,"text-red-300"]].map(([label,value,tone]) => <div key={String(label)} className="rounded-lg bg-slate-950/60 p-4"><p className="text-xs uppercase tracking-wider text-slate-500">{label}</p><p className={`mt-1 text-2xl font-semibold ${tone}`}>{value}</p></div>)}</div>
+      {result.upload_type === "students" && result.success_count > 0 && <p className="mt-5 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-100">Secure account-setup emails were queued for {result.success_count} newly created student account{result.success_count === 1 ? "" : "s"}. Students choose their own password before signing in.</p>}
       {!!result.errors.length && <div className="mt-5 table-wrap"><table><thead><tr><th>Row</th><th>What needs attention</th></tr></thead><tbody>{result.errors.map((item) => <tr key={item.row_number}><td>{item.row_number}</td><td className="text-red-300">{item.error_message}</td></tr>)}</tbody></table></div>}
     </section>}
 

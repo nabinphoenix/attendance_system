@@ -1,4 +1,4 @@
-import io,json
+import io,json,secrets
 from dataclasses import dataclass
 from datetime import UTC,date,datetime,time
 from typing import Annotated
@@ -13,6 +13,7 @@ from app.core.config import settings
 from app.core.dependencies import DbSession,get_current_user,require_role
 from app.core.security import hash_password
 from app.modules.academic.models import AcademicModule,Batch,Block,ClassType,Guardian,Intake,ModuleOffering,Room,RoutineEntry,RoutineEntrySection,RoutinePendingSection,Section,Student,Subject,Teacher,TimeSlot
+from app.modules.academic.invitation_service import issue_student_invitation
 from app.modules.academic.module_offering_service import offering_section_ids
 from app.modules.academic.routine_router import RoutineCreate,check_routine_conflicts,create_or_merge_routine_entry,create_routine_entry,matching_physical_routine,merge_routine_entry_sections,persist_pending_section_references,valid_routine
 from app.modules.attendance.models import AttendanceRecord,AttendanceStatus
@@ -24,7 +25,7 @@ from app.modules.scheduling.models import ClassSession,TimetableEntry
 from .models import AuditLog,ImportJob,Notification,NotificationStatus
 from .schemas import AuditPage,AuditRead,ImportError,ImportJobRead,NotificationRead
 from .service import log_audit
-router=APIRouter(tags=["operations"]);DEFAULT_PASSWORD="Welcome123!"
+router=APIRouter(tags=["operations"])
 
 TEACHER_TIMETABLE_COLUMNS=["intake_code","semester","sections","day","start_time","end_time","module_code","class_type","block","room"]
 SECTION_ROUTINE_COLUMNS=["day","start_time","end_time","sections","module_code","module_title","class_type","lecturer_email","block","room"]
@@ -191,9 +192,9 @@ async def import_students(user:Annotated[User,Depends(require_role("admin"))],db
                 section=db.scalar(select(Section).join(Batch).where(func.lower(Batch.name)==batch_name.lower(),func.lower(Section.name)==section_name.lower()))
                 if not section:raise ValueError("batch_name or section_name does not exist")
                 if db.scalar(select(Student).where(func.lower(Student.email)==email)):raise ValueError("student email is already imported")
-                account=User(name=name,email=email,password_hash=hash_password(DEFAULT_PASSWORD),role=UserRole.STUDENT)
+                account=User(name=name,email=email,password_hash=hash_password(secrets.token_urlsafe(32)),role=UserRole.STUDENT)
                 db.add(account);db.flush()
-                student=Student(user_id=account.id,section_id=section.id,roll_number=str(row.get("roll_number","")).strip() or f"IMP-{job.id}-{row_number}",name=name,email=email);db.add(student);db.flush();phone=str(row.get("phone","")).strip()
+                student=Student(user_id=account.id,section_id=section.id,roll_number=str(row.get("roll_number","")).strip() or f"IMP-{job.id}-{row_number}",name=name,email=email);db.add(student);db.flush();issue_student_invitation(db,student,account,welcome=True);phone=str(row.get("phone","")).strip()
                 if phone:db.add(Guardian(name=f"Guardian of {name}",student_id=student.id,phone=phone))
             job.success_count+=1
         except Exception as exc:errors.append({"row_number":row_number,"error_message":str(exc)});job.failed_count+=1

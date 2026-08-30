@@ -44,5 +44,14 @@ def test_student_attendance_report_supports_date_range_and_day_subject_status():
 def test_risk_case_queues_guardian_notification():
     Session,own,_=setup_phase5();client=TestClient(app);headers=auth(client,"admin5@example.com");response=client.post("/api/v1/analytics/risk-evaluations/run",headers=headers);assert response.status_code==200 and response.json()["created"]==1
     with Session() as db:
-        notification=db.scalar(select(Notification));assert notification and notification.recipient_type=="guardian" and "dropped below" in notification.body and "Architecture" in notification.body
+        notifications=list(db.scalars(select(Notification)).all());student_notification=next(item for item in notifications if item.recipient_type=="student");guardian_notification=next(item for item in notifications if item.recipient_type=="guardian");assert "dropped below" in student_notification.body and "Architecture" in student_notification.body and "ARC" in student_notification.body and "lecture" in student_notification.body;assert "dropped below" in guardian_notification.body and "Architecture" in guardian_notification.body
+    app.dependency_overrides.clear()
+
+def test_finalizing_a_class_automatically_queues_student_attendance_alert():
+    Session,own,_=setup_phase5();client=TestClient(app);teacher=auth(client,"teacher5@example.com")
+    with Session() as db:
+        entry=db.scalar(select(TimetableEntry));teacher_id=entry.teacher_id;session=ClassSession(timetable_entry_id=entry.id,session_date=date.today(),effective_teacher_id=teacher_id,effective_room="R1",status=SessionStatus.ACTIVE);db.add(session);db.commit();session_id=session.id
+    finalized=client.post(f"/api/v1/sessions/{session_id}/finalize",headers=teacher);assert finalized.status_code==200,finalized.text
+    with Session() as db:
+        notification=next(item for item in db.scalars(select(Notification)).all() if item.recipient_type=="student" and item.recipient_id==own);assert "ARC" in notification.body and "lecture" in notification.body and "dropped below" in notification.body
     app.dependency_overrides.clear()
