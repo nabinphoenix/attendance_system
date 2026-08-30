@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import api from "@/lib/api";
 import { StatusBadge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
@@ -24,21 +24,27 @@ export default function StudentInvitationPanel() {
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [sending, setSending] = useState(false);
   const [loading, setLoading] = useState(true);
+  const requestSequence = useRef(0);
 
   const load = useCallback(async () => {
+    const sequence = ++requestSequence.current;
     setLoading(true);
     setError("");
+    setStudents([]);
+    setSelected([]);
     try {
       const params = new URLSearchParams({ only_without_accounts: String(onlyUnregistered) });
       if (intakeId) params.set("intake_id", intakeId);
       if (sectionId) params.set("section_id", sectionId);
       const response = await api.get(`/api/v1/academic/students?${params.toString()}`);
+      if (sequence !== requestSequence.current) return;
       setStudents(response.data);
       setSelected((current) => current.filter((id) => response.data.some((student: Student) => student.id === id)));
     } catch (requestError: any) {
+      if (sequence !== requestSequence.current) return;
       setError(requestError.response?.data?.detail ?? "Unable to load students.");
     } finally {
-      setLoading(false);
+      if (sequence === requestSequence.current) setLoading(false);
     }
   }, [intakeId, onlyUnregistered, sectionId]);
 
