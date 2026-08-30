@@ -34,6 +34,27 @@ cd backend
 uv run python -m app.workers.worker
 ```
 
+In production, the Elastic Beanstalk deployment installs this worker as the
+always-on `antimbench-notification-worker` systemd service. Configure the
+GitHub `production` environment with these Actions secrets:
+
+- `SMTP_USERNAME`: the Gmail/Google Workspace sender address
+- `SMTP_PASSWORD`: a Google app password, never the normal account password
+
+The deployment uses `smtp.gmail.com` on port `587` by default. These optional
+GitHub Actions variables can override the defaults:
+
+- `SMTP_HOST`
+- `SMTP_PORT`
+- `SMTP_FROM_EMAIL` (defaults to `SMTP_USERNAME`)
+
+On each deployment, the workflow copies the configured values into Elastic
+Beanstalk environment properties and restarts the worker. GitHub Secrets store
+the credentials; the deployed systemd service is what continuously processes
+the durable email queue. Guardians without linked user accounts and real email
+addresses cannot receive attendance-support alerts and are recorded as failed
+deliveries rather than Gmail configuration failures.
+
 The API health endpoint is `http://localhost:8000/health`; interactive documentation is at `/docs`. Run tests with `uv run pytest` and create the initial database migration with `uv run alembic revision --autogenerate -m "initial schema"` once PostgreSQL is available.
 
 ## Frontend

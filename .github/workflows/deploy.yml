@@ -349,13 +349,53 @@ jobs:
         shell: bash
         env:
           VERSION_LABEL: ${{ steps.package.outputs.version_label }}
+          SMTP_HOST: ${{ vars.SMTP_HOST || 'smtp.gmail.com' }}
+          SMTP_PORT: ${{ vars.SMTP_PORT || '587' }}
+          SMTP_FROM_EMAIL: ${{ vars.SMTP_FROM_EMAIL }}
+          SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
         run: |
           set -euo pipefail
-          aws elasticbeanstalk update-environment \
-            --application-name "${EB_APPLICATION_NAME}" \
-            --environment-name "${EB_ENVIRONMENT_NAME}" \
-            --version-label "${VERSION_LABEL}" \
-            --region "${AWS_REGION}" >/dev/null
+
+          update_args=(
+            --application-name "${EB_APPLICATION_NAME}"
+            --environment-name "${EB_ENVIRONMENT_NAME}"
+            --version-label "${VERSION_LABEL}"
+            --region "${AWS_REGION}"
+          )
+
+          if [[ -n "${SMTP_USERNAME}" || -n "${SMTP_PASSWORD}" ]]; then
+            if [[ -z "${SMTP_USERNAME}" || -z "${SMTP_PASSWORD}" ]]; then
+              echo "::error title=Incomplete SMTP configuration::Set both SMTP_USERNAME and SMTP_PASSWORD as production GitHub secrets."
+              exit 1
+            fi
+            if [[ ! "${SMTP_PORT}" =~ ^[0-9]+$ ]]; then
+              echo "::error title=Invalid SMTP port::SMTP_PORT must be numeric."
+              exit 1
+            fi
+
+            smtp_from_email="${SMTP_FROM_EMAIL:-${SMTP_USERNAME}}"
+            smtp_settings_file="${RUNNER_TEMP}/antimbench-smtp-settings.json"
+            jq -n \
+              --arg host "${SMTP_HOST}" \
+              --arg port "${SMTP_PORT}" \
+              --arg username "${SMTP_USERNAME}" \
+              --arg password "${SMTP_PASSWORD}" \
+              --arg from_email "${smtp_from_email}" \
+              '[
+                {Namespace:"aws:elasticbeanstalk:application:environment",OptionName:"SMTP_HOST",Value:$host},
+                {Namespace:"aws:elasticbeanstalk:application:environment",OptionName:"SMTP_PORT",Value:$port},
+                {Namespace:"aws:elasticbeanstalk:application:environment",OptionName:"SMTP_USERNAME",Value:$username},
+                {Namespace:"aws:elasticbeanstalk:application:environment",OptionName:"SMTP_PASSWORD",Value:$password},
+                {Namespace:"aws:elasticbeanstalk:application:environment",OptionName:"SMTP_FROM_EMAIL",Value:$from_email}
+              ]' > "${smtp_settings_file}"
+            update_args+=(--option-settings "file://${smtp_settings_file}")
+            echo "Deploying with SMTP environment properties from GitHub production secrets."
+          else
+            echo "SMTP GitHub secrets are not set; retaining the Elastic Beanstalk environment's existing SMTP properties."
+          fi
+
+          aws elasticbeanstalk update-environment "${update_args[@]}" >/dev/null
 
       - name: Wait for a healthy Elastic Beanstalk environment
         shell: bash
