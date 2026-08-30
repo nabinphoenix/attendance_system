@@ -8,13 +8,16 @@ import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { EmptyState, LoadingState } from "@/components/ui/States";
 
 type Student = { id: number; name: string; email: string; section_id: number; section_name: string; account_status: string };
-type Section = { id: number; name: string };
+type Section = { id: number; name: string; intake_id: number | null };
+type Intake = { id: number; name: string; code: string };
 
 export default function StudentInvitationPanel() {
   const [students, setStudents] = useState<Student[]>([]);
   const [sections, setSections] = useState<Section[]>([]);
+  const [intakes, setIntakes] = useState<Intake[]>([]);
   const [selected, setSelected] = useState<number[]>([]);
   const [onlyUnregistered, setOnlyUnregistered] = useState(true);
+  const [intakeId, setIntakeId] = useState("");
   const [sectionId, setSectionId] = useState("");
   const [summary, setSummary] = useState("");
   const [error, setError] = useState("");
@@ -27,6 +30,7 @@ export default function StudentInvitationPanel() {
     setError("");
     try {
       const params = new URLSearchParams({ only_without_accounts: String(onlyUnregistered) });
+      if (intakeId) params.set("intake_id", intakeId);
       if (sectionId) params.set("section_id", sectionId);
       const response = await api.get(`/api/v1/academic/students?${params.toString()}`);
       setStudents(response.data);
@@ -36,14 +40,19 @@ export default function StudentInvitationPanel() {
     } finally {
       setLoading(false);
     }
-  }, [onlyUnregistered, sectionId]);
+  }, [intakeId, onlyUnregistered, sectionId]);
 
   useEffect(() => { void load(); }, [load]);
   useEffect(() => {
-    api.get("/api/v1/academic/sections")
-      .then((response) => setSections(response.data))
-      .catch(() => setSections([]));
+    Promise.all([api.get<Section[]>("/api/v1/academic/sections"), api.get<Intake[]>("/api/v1/academic/intakes")])
+      .then(([sectionResponse, intakeResponse]) => { setSections(sectionResponse.data); setIntakes(intakeResponse.data); })
+      .catch(() => { setSections([]); setIntakes([]); });
   }, []);
+
+  const visibleSections = useMemo(
+    () => intakeId ? sections.filter((section) => section.intake_id === Number(intakeId)) : sections,
+    [intakeId, sections],
+  );
 
   const targets = useMemo(
     () => selected.length ? selected : students.map((student) => student.id),
@@ -64,6 +73,7 @@ export default function StudentInvitationPanel() {
     try {
       const response = await api.post("/api/v1/academic/students/invitations", {
         student_ids: targets,
+        intake_id: intakeId ? Number(intakeId) : null,
         section_id: sectionId ? Number(sectionId) : null,
         only_without_accounts: onlyUnregistered,
       });
@@ -86,14 +96,21 @@ export default function StudentInvitationPanel() {
         <div>
           <p className="text-xs font-semibold uppercase tracking-[.14em] text-emerald-400">Student onboarding</p>
           <h2 className="mt-1 text-xl font-semibold">Send account invitations</h2>
-          <p className="mt-1 max-w-2xl text-sm leading-6 text-slate-400">Choose specific students or send invitations to everyone currently shown.</p>
+          <p className="mt-1 max-w-2xl text-sm leading-6 text-slate-400">Filter by intake or section, then choose specific students or invite everyone currently shown.</p>
         </div>
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+          <label className="flex min-h-10 items-center gap-2 rounded-lg border border-slate-700 bg-slate-950 px-3 text-sm text-slate-300">
+            <span className="sr-only">Filter by intake</span>
+            <select value={intakeId} onChange={(event) => { setIntakeId(event.target.value); setSectionId(""); setSelected([]); }} className="min-w-36 border-0 bg-transparent p-0 text-sm focus:ring-0">
+              <option value="">All intakes</option>
+              {intakes.map((intake) => <option key={intake.id} value={intake.id}>{intake.code} — {intake.name}</option>)}
+            </select>
+          </label>
           <label className="flex min-h-10 items-center gap-2 rounded-lg border border-slate-700 bg-slate-950 px-3 text-sm text-slate-300">
             <span className="sr-only">Filter by section</span>
             <select value={sectionId} onChange={(event) => { setSectionId(event.target.value); setSelected([]); }} className="min-w-36 border-0 bg-transparent p-0 text-sm focus:ring-0">
               <option value="">All sections</option>
-              {sections.map((section) => <option key={section.id} value={section.id}>{section.name}</option>)}
+              {visibleSections.map((section) => <option key={section.id} value={section.id}>{section.name}</option>)}
             </select>
           </label>
           <button type="button" role="switch" aria-checked={onlyUnregistered} onClick={() => setOnlyUnregistered((value) => !value)} className={`inline-flex min-h-10 items-center justify-between gap-3 rounded-lg border px-3 text-sm font-medium transition ${onlyUnregistered ? "border-emerald-500/50 bg-emerald-500/10 text-emerald-200" : "border-slate-700 bg-slate-950 text-slate-300"}`}>

@@ -29,6 +29,17 @@ class FakeS3:
         self.objects.pop((Bucket, Key), None)
 
 
+class UnavailableS3:
+    def put_object(self, **kwargs) -> None:
+        raise ClientError({"Error": {"Code": "AccessDenied"}}, "PutObject")
+
+    def get_object(self, *, Bucket: str, Key: str):
+        raise ClientError({"Error": {"Code": "AccessDenied"}}, "GetObject")
+
+    def delete_object(self, *, Bucket: str, Key: str) -> None:
+        raise ClientError({"Error": {"Code": "AccessDenied"}}, "DeleteObject")
+
+
 def test_s3_profile_media_store_uses_private_prefix(tmp_path: Path) -> None:
     client = FakeS3()
     store = ProfileMediaStore(
@@ -48,3 +59,19 @@ def test_s3_profile_media_store_uses_private_prefix(tmp_path: Path) -> None:
     store.delete("avatar.png")
     with pytest.raises(ProfileMediaNotFound):
         store.read("avatar.png")
+
+
+def test_profile_media_falls_back_to_managed_local_storage_when_s3_is_unavailable(tmp_path: Path) -> None:
+    store = ProfileMediaStore(
+        bucket="unavailable-profile-media-bucket",
+        prefix="profile-media",
+        local_directory=tmp_path,
+        s3_client=UnavailableS3(),
+    )
+
+    store.save("avatar.png", b"image-bytes", "image/png")
+
+    assert (tmp_path / "avatar.png").read_bytes() == b"image-bytes"
+    assert store.read("avatar.png").content == b"image-bytes"
+    store.delete("avatar.png")
+    assert not (tmp_path / "avatar.png").exists()

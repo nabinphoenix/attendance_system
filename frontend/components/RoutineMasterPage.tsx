@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/Button";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { EmptyState, ErrorState, LoadingState } from "@/components/ui/States";
+import { SystemFeedback } from "@/components/ui/SystemFeedback";
 
 export type Field = {
   key: string;
@@ -216,7 +217,7 @@ export default function RoutineMasterPage({
           <h2 id="edit-record-title" className="text-xl font-semibold">Edit {title.slice(0, -1)}</h2>
           <p className="mt-1 text-sm text-slate-400">Update the selected record, then save your changes.</p>
         </div>
-        {error && <p className="mb-4 rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-200" role="alert">{error}</p>}
+        {error && <SystemFeedback className="mb-4" tone="danger" title="Unable to save this record" description={error} />}
         <form onSubmit={submit} className="grid gap-4 md:grid-cols-2">
           {formFields(true)}
           <div className="flex justify-end gap-2 md:col-span-2">

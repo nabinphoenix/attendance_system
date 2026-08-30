@@ -1,4 +1,74 @@
 "use client";
-import{useEffect,useState}from"react";import api from"@/lib/api";import{Button}from"@/components/ui/Button";
-type A={id:number;actor_id:number;actor_name:string;action:string;entity_type:string;entity_id:number;details:string;created_at:string};
-export default function Page(){const[rows,setRows]=useState<A[]>([]),[total,setTotal]=useState(0),[page,setPage]=useState(1),[f,setF]=useState({actor_id:"",entity:"",date_from:"",date_to:""}),[error,setError]=useState("");async function load(p=page){try{const q=new URLSearchParams({page:String(p)});Object.entries(f).forEach(([k,v])=>v&&q.set(k,v));const{data}=await api.get(`/api/v1/audit-logs?${q}`);setRows(data.items);setTotal(data.total);setPage(p)}catch(e:any){setError(e.response?.data?.detail??"Unable to load audit logs")}}useEffect(()=>{load(1)},[f.actor_id,f.entity,f.date_from,f.date_to]);return <div className="max-w-7xl"><h1 className="mb-6 text-3xl font-bold">Audit log</h1><div className="mb-5 grid gap-3 md:grid-cols-4"><input className="rounded bg-slate-900 p-2" placeholder="Actor ID" value={f.actor_id} onChange={e=>setF({...f,actor_id:e.target.value})}/><input className="rounded bg-slate-900 p-2" placeholder="Entity type" value={f.entity} onChange={e=>setF({...f,entity:e.target.value})}/><input className="rounded bg-slate-900 p-2" type="date" value={f.date_from} onChange={e=>setF({...f,date_from:e.target.value})}/><input className="rounded bg-slate-900 p-2" type="date" value={f.date_to} onChange={e=>setF({...f,date_to:e.target.value})}/></div>{error&&<p className="mb-3 text-red-400">{error}</p>}<div className="overflow-x-auto"><table className="w-full text-left text-sm"><thead><tr className="border-b border-slate-700 text-slate-400"><th className="p-2">Timestamp</th><th className="p-2">Actor</th><th className="p-2">Action</th><th className="p-2">Entity</th><th className="p-2">Before / after</th></tr></thead><tbody>{rows.map(x=><tr key={x.id} className="border-b border-slate-800 align-top"><td className="p-2 whitespace-nowrap">{new Date(x.created_at).toLocaleString()}</td><td className="p-2">{x.actor_name}<br/><span className="text-slate-500">#{x.actor_id}</span></td><td className="p-2">{x.action}</td><td className="p-2">{x.entity_type} #{x.entity_id}</td><td className="max-w-md break-all p-2 text-slate-300">{x.details}</td></tr>)}{!rows.length&&<tr><td colSpan={5} className="p-5 text-center text-slate-400">No audit entries match the filters.</td></tr>}</tbody></table></div><div className="mt-4 flex items-center gap-3"><Button disabled={page===1} onClick={()=>load(page-1)}>Previous</Button><span>Page {page} · {total} entries</span><Button disabled={page*50>=total} onClick={()=>load(page+1)}>Next</Button></div></div>}
+
+import { useCallback, useEffect, useState } from "react";
+import api from "@/lib/api";
+import { HorizontalPagination } from "@/components/ui/HorizontalPagination";
+import { SystemFeedback } from "@/components/ui/SystemFeedback";
+
+type AuditEntry = {
+  id: number;
+  actor_id: number;
+  actor_name: string;
+  action: string;
+  entity_type: string;
+  entity_id: number;
+  details: string;
+  created_at: string;
+};
+
+type AuditResponse = { items: AuditEntry[]; total: number };
+
+export default function Page() {
+  const [rows, setRows] = useState<AuditEntry[]>([]);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(1);
+  const [filters, setFilters] = useState({ actor_id: "", entity: "", date_from: "", date_to: "" });
+  const [error, setError] = useState("");
+
+  const load = useCallback(async (nextPage = 1) => {
+    try {
+      const query = new URLSearchParams({ page: String(nextPage) });
+      Object.entries(filters).forEach(([key, value]) => value && query.set(key, value));
+      const { data } = await api.get<AuditResponse>(`/api/v1/audit-logs?${query}`);
+      setRows(data.items);
+      setTotal(data.total);
+      setPage(nextPage);
+      setError("");
+    } catch (requestError: any) {
+      setError(requestError.response?.data?.detail ?? "Unable to load audit logs.");
+    }
+  }, [filters]);
+
+  useEffect(() => { void load(); }, [load]);
+
+  function updateFilter(key: keyof typeof filters, value: string) {
+    setFilters((current) => ({ ...current, [key]: value }));
+  }
+
+  return <div className="max-w-7xl">
+    <h1 className="mb-6 text-3xl font-bold">Audit log</h1>
+    <div className="mb-5 grid gap-3 md:grid-cols-4">
+      <input placeholder="Actor ID" value={filters.actor_id} onChange={(event) => updateFilter("actor_id", event.target.value)} />
+      <input placeholder="Entity type" value={filters.entity} onChange={(event) => updateFilter("entity", event.target.value)} />
+      <input type="date" value={filters.date_from} onChange={(event) => updateFilter("date_from", event.target.value)} />
+      <input type="date" value={filters.date_to} onChange={(event) => updateFilter("date_to", event.target.value)} />
+    </div>
+    {error && <SystemFeedback className="mb-3" tone="danger" title="Unable to load audit log" description={error} />}
+    <div className="table-wrap">
+      <table>
+        <thead><tr><th>Timestamp</th><th>Actor</th><th>Action</th><th>Entity</th><th>Before / after</th></tr></thead>
+        <tbody>
+          {rows.map((entry) => <tr key={entry.id} className="align-top">
+            <td className="whitespace-nowrap">{new Date(entry.created_at).toLocaleString()}</td>
+            <td>{entry.actor_name}<br /><span className="text-slate-500">#{entry.actor_id}</span></td>
+            <td>{entry.action}</td>
+            <td>{entry.entity_type} #{entry.entity_id}</td>
+            <td className="max-w-md break-all text-slate-300">{entry.details}</td>
+          </tr>)}
+          {!rows.length && <tr><td colSpan={5} className="p-5 text-center text-slate-400">No audit entries match the filters.</td></tr>}
+        </tbody>
+      </table>
+      <HorizontalPagination page={page} total={total} pageSize={50} onPageChange={(nextPage) => void load(nextPage)} />
+    </div>
+  </div>;
+}

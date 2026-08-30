@@ -11,11 +11,12 @@ import { Badge, StatusBadge } from "@/components/ui/Badge";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { EmptyState } from "@/components/ui/States";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
+import { SystemFeedback } from "@/components/ui/SystemFeedback";
 
 type Row = { attendance_id: number | null; student_id: number; student_name: string; roll_number: string; status: string; check_in_time: string | null; distance_meters: number | null; allowed_radius_meters: number | null; location_accuracy_meters: number | null };
 type ExceptionRow = { id: number; student_name: string; roll_number: string; section_name: string; reason: string; distance_meters: number | null; allowed_radius_meters: number | null; accuracy_meters: number | null; created_at: string; status: string };
 type QRData = { token: string; expires_at: string; rotation_seconds: number; self_checkin_window_minutes: number; self_checkin_closes_at: string; module_title: string; section_names: string[]; room: string; start_time: string; end_time: string; geofence_radius_meters: number | null; teacher_location_accuracy_meters: number | null; classroom_code: string; challenge_id: number };
-type DialogAction = { kind: "finalize" } | { kind: "exception"; item: ExceptionRow; decision: "confirm" | "reject" } | { kind: "status"; row: Row; status: string };
+type DialogAction = { kind: "finalize" } | { kind: "challenge" } | { kind: "exception"; item: ExceptionRow; decision: "confirm" | "reject" } | { kind: "status"; row: Row; status: string };
 type RosterView = "grid" | "list";
 type RosterFilter = "all" | "present" | "absent";
 
@@ -48,6 +49,7 @@ export default function Page() {
   const [rows, setRows] = useState<Row[]>([]);
   const [exceptions, setExceptions] = useState<ExceptionRow[]>([]);
   const [message, setMessage] = useState("");
+  const [messageTone, setMessageTone] = useState<"success" | "danger">("success");
   const [completed, setCompleted] = useState(false);
   const [checkInClosed, setCheckInClosed] = useState(false);
   const [countdown, setCountdown] = useState(0);
@@ -102,27 +104,41 @@ export default function Page() {
   }, [rows, rosterFilter, search]);
 
   async function finalize() {
-    try { await api.post(`/api/v1/sessions/${id}/finalize`); setMessage("Session finalized successfully."); setCompleted(true); await refresh(); }
-    catch (error: any) { setMessage(error.response?.data?.detail ?? "Unable to finalize this session"); }
+    try { await api.post(`/api/v1/sessions/${id}/finalize`); setMessageTone("success"); setMessage("Session finalized successfully."); setCompleted(true); await refresh(); }
+    catch (error: any) { setMessageTone("danger"); setMessage(error.response?.data?.detail ?? "Unable to finalize this session"); }
   }
   async function decide(item: ExceptionRow, decision: "confirm" | "reject", reason: string) {
-    try { await api.patch(`/api/v1/sessions/${id}/check-in-exceptions/${item.id}`, { decision, reason }); setMessage(decision === "confirm" ? `${item.student_name} confirmed present.` : `${item.student_name}'s attempt was rejected.`); await refresh(); }
-    catch (error: any) { setMessage(error.response?.data?.detail ?? "Unable to review this attempt"); }
+    try { await api.patch(`/api/v1/sessions/${id}/check-in-exceptions/${item.id}`, { decision, reason }); setMessageTone("success"); setMessage(decision === "confirm" ? `${item.student_name} confirmed present.` : `${item.student_name}'s attempt was rejected.`); await refresh(); }
+    catch (error: any) { setMessageTone("danger"); setMessage(error.response?.data?.detail ?? "Unable to review this attempt"); }
   }
-  async function change(row: Row, status: string, reason: string) { await api.put(`/api/v1/sessions/${id}/attendance/${row.student_id}`, { status, reason }); setMessage(`${row.student_name}'s attendance was updated.`); await refresh(); }
+  async function change(row: Row, status: string, reason: string) {
+    try {
+      await api.put(`/api/v1/sessions/${id}/attendance/${row.student_id}`, { status, reason });
+      setMessageTone("success");
+      setMessage(`${row.student_name}'s attendance was updated.`);
+      await refresh();
+    } catch (error: any) {
+      setMessageTone("danger");
+      setMessage(error.response?.data?.detail ?? "Unable to update this attendance.");
+      throw error;
+    }
+  }
   async function regenerateChallenge() {
     try {
       const response = await api.post<QRData>(`/api/v1/sessions/${id}/challenge`);
       setQr(response.data);
+      setMessageTone("success");
       setMessage("A new QR and classroom code have been generated. The previous pair is no longer valid.");
       await refresh();
-    } catch (error: any) { setMessage(error.response?.data?.detail ?? "Unable to generate a new classroom challenge."); }
+    } catch (error: any) { setMessageTone("danger"); setMessage(error.response?.data?.detail ?? "Unable to generate a new classroom challenge."); }
   }
-  async function confirmAction(reason: string) { if (!dialog) return; if (dialog.kind === "finalize") await finalize(); else if (dialog.kind === "exception") await decide(dialog.item, dialog.decision, reason); else await change(dialog.row, dialog.status, reason); }
+  async function confirmAction(reason: string) { if (!dialog) return; if (dialog.kind === "finalize") await finalize(); else if (dialog.kind === "challenge") await regenerateChallenge(); else if (dialog.kind === "exception") await decide(dialog.item, dialog.decision, reason); else await change(dialog.row, dialog.status, reason); }
 
   const dialogInfo = dialog?.kind === "finalize"
     ? { title: "Finalize attendance?", description: "Students who have not checked in will be finalized using the attendance rules. Resolve pending verifications first.", label: "Finalize session", tone: "danger" as const, reason: false }
-    : dialog?.kind === "exception"
+    : dialog?.kind === "challenge"
+      ? { title: "Generate a new classroom challenge?", description: "The current QR and 5-digit code will stop working immediately. Students who have not completed verification must scan the new pair.", label: "Generate new challenge", tone: "primary" as const, reason: false }
+      : dialog?.kind === "exception"
       ? { title: dialog.decision === "confirm" ? `Confirm ${dialog.item.student_name} present?` : `Reject ${dialog.item.student_name}'s attempt?`, description: "This decision is recorded in the attendance audit trail.", label: dialog.decision === "confirm" ? "Confirm present" : "Reject attempt", tone: dialog.decision === "confirm" ? "primary" as const : "danger" as const, reason: true }
       : dialog?.kind === "status"
         ? { title: `Change ${dialog.row.student_name} to ${statusLabel(dialog.status)}?`, description: "Add a reason for this manual attendance correction.", label: "Save correction", tone: "primary" as const, reason: true }
@@ -135,11 +151,11 @@ export default function Page() {
 
   return <div>
     <PageHeader title={completed ? "Session summary" : checkInClosed ? "Self check-in closed" : "Live attendance session"} description={qr ? `${qr.module_title} - ${qr.section_names.join(" + ")}` : checkInClosed ? "The check-in deadline has passed. Manual attendance and finalization remain available." : "Attendance and location verification"} action={completed ? <Link href="/teacher/sessions" className="inline-flex min-h-10 items-center justify-center rounded-lg border border-emerald-400 bg-emerald-400 px-4 py-2 text-sm font-semibold text-slate-950 transition hover:border-emerald-300 hover:bg-emerald-300">Start another session</Link> : <Button variant="outline" onClick={() => setDialog({ kind: "finalize" })}>Finalize session</Button>} />
-    {message && <p role="status" className="mb-4 rounded-lg border border-emerald-500/20 bg-emerald-500/10 p-3 text-sm text-emerald-200">{message}</p>}
+    {message && <SystemFeedback className="mb-4" tone={messageTone} title={messageTone === "success" ? "Action completed" : "Action could not be completed"} description={message} />}
     {checkInClosed && <section className="my-6 rounded-xl border border-amber-500/35 bg-amber-500/10 p-5"><Badge tone="warning">Self check-in closed</Badge><h2 className="mt-3 text-xl font-semibold">QR attendance is no longer available</h2><p className="mt-2 text-sm text-slate-300">The configured check-in window has ended, so the QR and classroom code are hidden. You can still record manual attendance, review exceptions, or finalize this session.</p></section>}
     {qr && <section className="panel my-6 grid items-center gap-8 p-5 sm:p-7 lg:grid-cols-[minmax(300px,420px)_1fr]">
       <div><QRDisplay value={qr.token} /><div className="mx-auto mt-3 max-w-[380px]"><div className="h-1.5 overflow-hidden rounded-full bg-slate-800"><div className="h-full rounded-full bg-emerald-400 transition-[width]" style={{ width: `${Math.max(0, Math.min(100, (countdown / qr.rotation_seconds) * 100))}%` }} /></div><p className="mt-2 text-center text-sm font-medium text-emerald-300">QR and code change in {countdown} seconds</p><p className="mt-1 text-center text-sm font-semibold text-amber-300">Self check-in closes in {durationLabel(checkInSecondsRemaining)}</p></div></div>
-      <div><Badge tone="success">Session active</Badge><h2 className="mt-4 text-2xl font-semibold sm:text-3xl">{qr.module_title}</h2><p className="mt-2 text-lg text-slate-300">{qr.section_names.join(" + ")}</p><div className="mt-6 rounded-2xl border border-emerald-400/40 bg-emerald-400/10 p-5 text-center"><p className="text-xs font-semibold uppercase tracking-[0.2em] text-emerald-200">Announce this class code</p><p className="mt-2 font-mono text-5xl font-bold tracking-[0.3em] text-emerald-100">{qr.classroom_code}</p><p className="mt-3 text-sm text-slate-300">Students must enter this code after scanning the QR.</p><Button className="mt-4" variant="outline" onClick={() => void regenerateChallenge()}>Generate New Challenge</Button></div><dl className="mt-6 grid gap-4 sm:grid-cols-3"><div><dt className="text-xs uppercase tracking-wider text-slate-500">Time</dt><dd className="mt-1 font-medium">{qr.start_time.slice(0, 5)}-{qr.end_time.slice(0, 5)}</dd></div><div><dt className="text-xs uppercase tracking-wider text-slate-500">Room</dt><dd className="mt-1 font-medium">{qr.room}</dd></div><div><dt className="text-xs uppercase tracking-wider text-slate-500">Check-in window</dt><dd className="mt-1 font-medium">{qr.self_checkin_window_minutes} minutes</dd></div></dl>{qr.geofence_radius_meters != null ? <div className="mt-6 rounded-lg border border-emerald-500/25 bg-emerald-500/10 p-4"><p className="font-semibold text-emerald-300">Campus location check active</p><p className="mt-1 text-sm text-slate-400">Teacher location was captured with +/-{Math.round(qr.teacher_location_accuracy_meters ?? 0)}m accuracy.</p></div> : <p className="mt-6 rounded-lg border border-amber-500/25 bg-amber-500/10 p-4 text-amber-200">Historical session: location attempts require teacher verification.</p>}</div>
+      <div><Badge tone="success">Session active</Badge><h2 className="mt-4 text-2xl font-semibold sm:text-3xl">{qr.module_title}</h2><p className="mt-2 text-lg text-slate-300">{qr.section_names.join(" + ")}</p><div className="mt-6 rounded-2xl border border-emerald-400/40 bg-emerald-400/10 p-5 text-center"><p className="text-xs font-semibold uppercase tracking-[0.2em] text-emerald-200">Announce this class code</p><p className="mt-2 font-mono text-5xl font-bold tracking-[0.3em] text-emerald-100">{qr.classroom_code}</p><p className="mt-3 text-sm text-slate-300">Students must enter this code after scanning the QR.</p><Button className="mt-4" variant="outline" onClick={() => setDialog({ kind: "challenge" })}>Generate New Challenge</Button></div><dl className="mt-6 grid gap-4 sm:grid-cols-3"><div><dt className="text-xs uppercase tracking-wider text-slate-500">Time</dt><dd className="mt-1 font-medium">{qr.start_time.slice(0, 5)}-{qr.end_time.slice(0, 5)}</dd></div><div><dt className="text-xs uppercase tracking-wider text-slate-500">Room</dt><dd className="mt-1 font-medium">{qr.room}</dd></div><div><dt className="text-xs uppercase tracking-wider text-slate-500">Check-in window</dt><dd className="mt-1 font-medium">{qr.self_checkin_window_minutes} minutes</dd></div></dl>{qr.geofence_radius_meters != null ? <div className="mt-6 rounded-lg border border-emerald-500/25 bg-emerald-500/10 p-4"><p className="font-semibold text-emerald-300">Campus location check active</p><p className="mt-1 text-sm text-slate-400">Teacher location was captured with +/-{Math.round(qr.teacher_location_accuracy_meters ?? 0)}m accuracy.</p></div> : <p className="mt-6 rounded-lg border border-amber-500/25 bg-amber-500/10 p-4 text-amber-200">Historical session: location attempts require teacher verification.</p>}</div>
     </section>}
     <section aria-label="Attendance counts" className="mb-8 grid grid-cols-2 gap-3 lg:grid-cols-4">
       {[

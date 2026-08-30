@@ -6,6 +6,7 @@ import api from "@/lib/api";
 import { downloadFile } from "@/lib/download";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
+import { SystemFeedback } from "@/components/ui/SystemFeedback";
 
 const setupLinks = [
   ["Programs", "/admin/academic/programs"],
@@ -206,7 +207,7 @@ export default function SectionRoutineImportPanel() {
       <p className="mt-1 text-sm text-slate-300">These references are stored safely and will resolve when the section exists and is included in the active Module Offering.</p>
       <div className="mt-3 space-y-2">{pendingSections.map((item) => <div key={item.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-slate-950/50 px-3 py-2 text-sm"><span><span className="font-semibold text-amber-100">Pending section: {item.section_name}</span><span className="ml-2 text-slate-400">{item.module_code} · Routine #{item.routine_entry_id}</span></span><span className="text-slate-300">Action: create {item.section_name} or resolve later</span></div>)}</div>
     </section>}
-    {result && <p className="mt-4 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-200" role="status">{result}</p>}
-    {error && <p className="mt-4 rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-200" role="alert">{error}</p>}
+    {result && <SystemFeedback className="mt-4" tone="success" title="Routine imported" description={result} />}
+    {error && <SystemFeedback className="mt-4" tone="danger" title="Import could not be completed" description={error} />}
   </section>;
 }

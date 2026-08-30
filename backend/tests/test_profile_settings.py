@@ -31,22 +31,28 @@ def test_user_can_update_profile_password_and_avatar(tmp_path, monkeypatch):
 
         client = TestClient(app)
         assert client.post("/api/v1/auth/login", json={"email": "profile@example.com", "password": "Original123!"}).status_code == 200
-        profile = client.patch("/api/v1/auth/me", json={"name": "Updated Name"})
+        missing_password = client.patch("/api/v1/auth/me", json={"name": "Updated Name", "email": "updated@example.com"})
+        assert missing_password.status_code == 422
+
+        profile = client.patch("/api/v1/auth/me", json={"name": "Updated Name", "email": "updated@example.com", "current_password": "Original123!"})
         assert profile.status_code == 200
         assert profile.json()["name"] == "Updated Name"
+        assert profile.json()["email"] == "updated@example.com"
 
         assert client.post("/api/v1/auth/me/password", json={"current_password": "wrong", "new_password": "NewPassword123!"}).status_code == 422
         assert client.post("/api/v1/auth/me/password", json={"current_password": "Original123!", "new_password": "NewPassword123!"}).status_code == 204
 
         image_stream = BytesIO()
         Image.new("RGB", (1, 1), "white").save(image_stream, format="PNG")
-        avatar = client.post("/api/v1/auth/me/avatar", files={"image": ("portrait.png", image_stream.getvalue(), "image/png")})
+        # Some browsers label image files as application/octet-stream. The
+        # server should validate the actual image data rather than reject it.
+        avatar = client.post("/api/v1/auth/me/avatar", files={"image": ("portrait.png", image_stream.getvalue(), "application/octet-stream")})
         assert avatar.status_code == 200
         assert avatar.json()["avatar_url"].startswith("/api/v1/profile-media/")
         assert client.get(avatar.json()["avatar_url"]).status_code == 200
 
         assert client.post("/api/v1/auth/logout").status_code == 204
         assert client.post("/api/v1/auth/login", json={"email": "profile@example.com", "password": "Original123!"}).status_code == 401
-        assert client.post("/api/v1/auth/login", json={"email": "profile@example.com", "password": "NewPassword123!"}).status_code == 200
+        assert client.post("/api/v1/auth/login", json={"email": "updated@example.com", "password": "NewPassword123!"}).status_code == 200
     finally:
         app.dependency_overrides.clear()

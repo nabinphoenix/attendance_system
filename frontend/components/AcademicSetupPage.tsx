@@ -6,6 +6,8 @@ import { Button } from "@/components/ui/Button";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { EmptyState, ErrorState, LoadingState } from "@/components/ui/States";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
+import { HorizontalPagination } from "@/components/ui/HorizontalPagination";
+import { SystemFeedback } from "@/components/ui/SystemFeedback";
 
 type Row = Record<string, string | number>;
 type Field = { name: string; label: string; type?: "text" | "email" | "password" | "number"; optionsEndpoint?: string };
@@ -183,13 +185,13 @@ export default function AcademicSetupPage({ config }: { config: AcademicSetupCon
       )}
     </div>
 
-    <div className="mt-4 flex items-center justify-between gap-3"><Button type="button" variant="outline" disabled={page === 1 || loading} onClick={() => void load(page - 1)}>Previous</Button><span className="text-sm text-slate-400">Page {page} of {Math.max(1, Math.ceil(total / size))}</span><Button type="button" variant="outline" disabled={page * size >= total || loading} onClick={() => void load(page + 1)}>Next</Button></div>
+    <HorizontalPagination page={page} total={total} pageSize={size} disabled={loading} onPageChange={(nextPage) => void load(nextPage)} />
 
     {edit && <div className="fixed inset-0 z-[70] grid place-items-center p-4" role="dialog" aria-modal="true" aria-labelledby="edit-academic-record-title">
       <button type="button" aria-label="Close edit dialog" className="absolute inset-0 bg-black/70" onClick={closeEdit} disabled={saving} />
       <section className="panel relative w-full max-w-xl p-6">
         <div className="mb-5"><h2 id="edit-academic-record-title" className="text-xl font-semibold">Edit {config.singular}</h2><p className="mt-1 text-sm text-slate-400">Update the selected record, then save your changes.</p></div>
-        {error && <p className="mb-4 rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-200" role="alert">{error}</p>}
+        {error && <SystemFeedback className="mb-4" tone="danger" title="Unable to save this record" description={error} />}
         <form onSubmit={submit} className="grid gap-4 md:grid-cols-2">
           {fields(true)}
           <div className="flex justify-end gap-2 md:col-span-2"><Button type="button" variant="ghost" onClick={closeEdit} disabled={saving}>Cancel</Button><Button type="submit" loading={saving}>Save changes</Button></div>

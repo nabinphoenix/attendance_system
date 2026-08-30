@@ -1,119 +1,117 @@
-# Bulk academic setup, imports, and student onboarding
+# Simple guide: set up data and import in bulk
 
-This guide is for an **administrator** setting up a new intake/semester in
-AntimBench. Follow the order in this document before importing students or a
-routine. Imports validate references against the data already in the database;
-they do not create programmes, modules, teachers, rooms, or time slots for you.
+This guide is for an **Admin**. It explains how to set up a new intake or new
+semester, add teachers, import students, import a routine, and send student
+emails.
 
-## The setup order at a glance
+Please do the setup in the order below. A CSV or Excel import file cannot
+create programmes, modules, teachers, rooms, or time slots by itself. Those
+items must be created in AntimBench first.
+
+## Simple order to follow
 
 ```text
 Programme
- ├─ Batch (the student cohort)
- └─ Intake (the admission period)
-      └─ Section = Batch + Intake + Semester
+   ├─ Batch
+   └─ Intake
+        └─ Section (Batch + Intake + Semester)
 
 Module + Intake + Batch + Semester = Module offering
-Module offering automatically includes the matching sections.
 ```
 
-For each new intake/semester, use this order:
+For every new intake or semester, do these steps in order:
 
 1. Create the programme.
-2. Create the batch for the cohort.
-3. Create the intake under the same programme.
-4. Create the sections for that batch, intake, and semester.
-5. Create the module catalogue entries.
-6. Create an active module offering for every module taught in that intake,
-   batch, and semester.
+2. Create the batch.
+3. Create the intake.
+4. Create the sections.
+5. Create the modules.
+6. Create module offerings.
 7. Create class types, blocks, rooms, and time slots.
-8. Create each teacher account.
-9. Import the routine and fix every invalid row.
-10. Bulk-import students.
-11. Send activation emails only to student profiles that do not already have
-    an account. See [Student accounts and invitation emails](#student-accounts-and-invitation-emails).
+8. Create teacher accounts.
+9. Import the routine.
+10. Import students.
+11. Send student activation emails when needed.
 
-> Important: an intake and a batch are separate records. Create both under the
-> same programme. A section is where they meet: for example, `2026` batch +
-> `JAN-2026` intake + semester `6` + section `A1`.
+> An **intake** and a **batch** are different things. Create both under the
+> same programme. A section joins them together. For example: batch `2026`,
+> intake `SEP-2026`, semester `1`, section `A1`.
 
-## 1. Create the academic master data
+## Step 1: Create the basic academic data
 
-Use the **Admin → Academic** menu. Complete the following records before using
-an import file.
+Open **Admin → Academic**. Create these items before you import students or a
+routine.
 
-| Create | Required information | Why it is needed |
+| What to create | What to enter | Why it is needed |
 | --- | --- | --- |
-| Programme | Programme name | The parent record for a batch and an intake. |
-| Batch | Batch name and programme | Students are imported into a batch and section. Use a cohort-specific name such as `2026` or `BSc CS 2026`. |
-| Intake | Name, unique code, start date, programme | Routine files identify the intake by its **code**, for example `JAN-2026`. The intake programme must match the batch programme. |
-| Section | Section name, batch, intake, semester | Create every teaching group, for example `A1`, `A2`, `A3`, and `A4`. Set the intake and semester; section-routine import checks both. |
-| Module | Unique module code, title, credits, semester number | The code and semester must match the routine file, for example `CT004-3-3`, semester `6`. |
-| Module offering | Module, intake, batch, semester, active status | This makes a catalogue module teachable to the cohort. It automatically uses sections belonging to the same intake, batch, and semester. Do **not** try to add sections manually to an offering. |
-| Class type | Name such as `Lecture`, `Tutorial`, or `Practical` | Routine rows must use an existing class type. |
-| Block and room | Block name; then room name within that block | Both names must already exist before routine import. A room is resolved inside its block. |
-| Time slot | Start and end time | Every routine row must exactly match an existing time slot. |
+| Programme | Programme name | The main course, for example BSc Computing. |
+| Batch | Batch name and programme | The group of students, for example `2026`. |
+| Intake | Name, unique code, start date, programme | The routine file uses the intake **code**, for example `SEP-2026`. Use the same programme as the batch. |
+| Section | Section name, batch, intake, semester | Create every group such as `A1`, `A2`, `A3`, and `A4`. Always choose the correct intake and semester. |
+| Module | Module code, module name, credits, semester number | The code and semester must be the same as the routine file. |
+| Module offering | Module, intake, batch, semester, active status | This says that the module is taught to this batch in this intake and semester. Make one active offering for each module. |
+| Class type | Names such as `Lecture`, `Tutorial`, `Practical` | The routine file can only use class types that already exist. |
+| Block and room | Block name, then room name inside that block | The block and room in the routine file must already exist. |
+| Time slot | Start time and end time | The times in the routine file must match a saved time slot exactly. |
 
-### New-semester example
+### Example for a new intake
 
-For a September 2026 semester, an administrator might create:
+For a new September 2026 intake, you may create:
 
 ```text
 Programme: BSc (Hons) Computing
 Batch: 2026
-Intake: SEP-2026 (under BSc (Hons) Computing)
-Sections: A1, A2, A3, A4 (Batch 2026, Intake SEP-2026, Semester 1)
-Modules: the Semester 1 module catalogue
-Offerings: one active offering per module for SEP-2026 + Batch 2026 + Semester 1
+Intake code: SEP-2026
+Sections: A1, A2, A3, A4
+Semester: 1
+Modules: all Semester 1 modules
+Module offerings: one active offering for every Semester 1 module
 ```
 
-Only after all of those records exist should the timetable or student file be
-uploaded.
+Do not upload a routine until all of these items are ready.
 
-### Create teacher accounts
+## Step 2: Create teacher accounts
 
-Go to **Admin → Academic → Teachers** and create every teacher individually.
-The current application requires:
+Open **Admin → Academic → Teachers**. Add teachers one by one.
 
-| Field | Requirement |
-| --- | --- |
-| Name | Required |
-| Email | Required and unique; this exact address is used by routine imports |
-| Password | Required initial password |
-| Employee code | Required and unique |
-
-There is currently **no CSV/XLSX bulk teacher-account importer**. A teacher is
-assigned when a routine row uses that teacher's email, or when the teacher is
-selected while creating a routine manually. Do not put a teacher email in a
-routine file until that teacher account exists.
-
-## 2. Prepare the student bulk-import file
-
-Go to **Admin → Imports**, choose **Students**, and download the supplied
-template. The repository copy is
-[`import_templates/student_import_template.csv`](import_templates/student_import_template.csv).
-
-### Supported format
-
-- Upload a `.csv` or `.xlsx` file.
-- An XLSX upload must contain exactly one worksheet named **`Timetable`**. This
-  is a current application rule, including for student imports.
-- Use the column names below exactly as written: lower-case, with underscores.
-- The app does not dynamically map renamed headings. Extra columns are ignored;
-  they are not saved.
-
-### Student columns
-
-| Column | Required | Notes |
+| Field | Needed? | Notes |
 | --- | --- | --- |
-| `name` | Yes | Student's display name. |
-| `email` | Yes | Must be unique across both users and student records. Use the student's college email. |
-| `batch_name` | Yes | Must exactly identify an existing batch (matching is case-insensitive). |
-| `section_name` | Yes | Must identify an existing section within that batch (matching is case-insensitive). |
-| `phone` | No | When supplied, the system creates a guardian contact called `Guardian of <student name>` with this phone number. It does not create a guardian login. |
-| `roll_number` | No | If blank, the system generates an import roll number such as `IMP-<job>-<row>`. |
+| Name | Yes | Teacher's full name |
+| Email | Yes | Must be unique. Use this same email in the routine file. |
+| Password | Yes | The teacher uses this to sign in. |
+| Employee code | Yes | Must be unique. |
 
-Example:
+At the moment, AntimBench does **not** have a CSV/Excel bulk import for teacher
+accounts. Create the teacher account first. Then assign the teacher in the
+routine by using the same email address.
+
+## Step 3: Prepare the student bulk-import file
+
+Open **Admin → Imports**, choose **Students**, and download the template. You
+can also find it here:
+[student_import_template.csv](import_templates/student_import_template.csv).
+
+### File rules
+
+- You can upload a `.csv` or `.xlsx` file.
+- If you upload Excel (`.xlsx`), it must have only one sheet and the sheet name
+  must be **`Timetable`**. This is a current app rule, even for student files.
+- Write the column names exactly as shown below. Do not rename them.
+- The app does not understand new or custom column names.
+- Extra columns are ignored. They are not saved.
+
+### Student file columns
+
+| Column name | Needed? | Simple meaning |
+| --- | --- | --- |
+| `name` | Yes | Student's full name. |
+| `email` | Yes | Student's email. It must not already be used by another user or student. |
+| `batch_name` | Yes | An existing batch name, for example `2026`. |
+| `section_name` | Yes | An existing section name in that batch, for example `A1`. |
+| `phone` | No | If added, the app makes a guardian contact with this phone number. It does not make a guardian login. |
+| `roll_number` | No | Student roll number. If empty, the app creates one automatically. |
+
+Example student file:
 
 ```csv
 name,email,batch_name,section_name,phone,roll_number
@@ -123,43 +121,52 @@ Sita Rai,sita.raisep26@cps.edu.np,2026,A1,9800000001,SEP26-002
 
 ### Import students
 
-1. Confirm the batch and its sections already exist. For a new intake, make
-   the section records point to the correct intake and semester before upload.
-2. In **Admin → Imports**, select **Students** and upload the completed file.
-3. Start the import and review the import job result.
-4. Keep successful rows. Correct only the failed rows and upload those again.
+1. Check that the batch and section already exist.
+2. Check that the section is connected to the correct intake and semester.
+3. Open **Admin → Imports** and choose **Students**.
+4. Upload the completed file and start the import.
+5. Read the import result.
+6. Fix only the rows that failed, then upload only those rows again.
 
-The importer does not update an existing student. A duplicate email fails, so
-do not re-upload students that have already imported successfully.
+The student import does not update old students. If an email already exists,
+that row fails. Do not upload students who were already imported successfully.
 
-> Use an unambiguous batch/section combination. The current student importer
-> selects by batch name and section name, not by an intake-code column. A
-> cohort-specific batch name and sections correctly connected to the new intake
-> avoid importing a student into the wrong similarly named section.
+> Use a clear batch name and section name. For example, do not use the same
+> batch/section names for different groups if you can avoid it. The student
+> importer uses the batch name and section name; it does not use an intake code
+> in the student CSV.
 
-## 3. Import a routine
+## Step 4: Check everything before routine import
 
-Before importing, verify all of the following:
+Before importing a routine, make sure:
 
 - The intake code exists.
-- The sections exist for the intended batch, intake, and semester.
-- The module exists and its semester number matches the row.
-- There is an **active module offering** for the module, intake, batch, and
+- The sections exist for the correct batch, intake, and semester.
+- The module exists and is set to the same semester as the routine row.
+- There is an **active module offering** for that module, intake, batch, and
   semester.
-- The class type, block, room, and exact time slot exist.
-- Every teacher email belongs to an existing teacher account.
+- The class type, block, room, and time slot already exist.
+- The teacher account already exists.
+- The teacher email in the file is exactly the same as the teacher account
+  email.
 
-Use `HH:MM` or `HH:MM:SS` for times, such as `08:30` or `08:30:00`. The start
-and end pair must be exactly the same as a configured time slot. Supported day
-values are `MON` through `SUN` or full English names such as `Monday`.
+Write time as `HH:MM` or `HH:MM:SS`, for example `08:30` or `08:30:00`. The
+start time and end time must exactly match one saved time slot.
 
-### Recommended: import one section routine with preview
+You can write days as `MON` to `SUN`, or full names such as `Monday`.
 
-Go to **Admin → Routine → Import a section routine**. Select the target intake,
-semester, and section, download the fresh template from that screen, complete
-it, then select **Preview** before selecting **Import**.
+## Step 5: Import a routine for one section (best option)
 
-Use these template headings exactly:
+Open **Admin → Routine → Import a section routine**.
+
+1. Choose the intake, semester, and section.
+2. Download the template from that page.
+3. Fill in the file.
+4. Upload the file and click **Preview**.
+5. Fix all errors shown in Preview.
+6. When there are no invalid rows, click **Import**.
+
+Use these column names exactly:
 
 ```csv
 day,start_time,end_time,sections,module_code,module_title,class_type,lecturer_email,block,room
@@ -173,157 +180,156 @@ SUN,08:30,09:30,A1,CT004-3-3,Advanced Database Systems,Lecture,teacher@cps.edu.n
 MON,09:30,11:00,A1|A2,CT004-3-3,Advanced Database Systems,Practical,teacher@cps.edu.np,Block B,Machapuchare-L04
 ```
 
-Rules for this file:
+Important rules:
 
-- `sections` must include the selected section. Use a vertical bar (`|`) for a
-  combined class, for example `A1|A2`; do not use a comma inside the cell.
-- `module_title` should be the exact catalogue title. If provided, it is checked
-  against the module code.
-- `lecturer_email` must be the email of a previously created teacher.
-- The preview must have no invalid rows before the system permits the import.
-- Create every combined section and its active module offering first. Otherwise
-  an additional section can be recorded as a pending reference instead of a
-  ready timetable entry.
+- The `sections` value must contain the section you selected on the page.
+- For one class with two or more sections, use `|`, for example `A1|A2`.
+  Do not use a comma inside that cell.
+- Write the correct module title in `module_title`.
+- `lecturer_email` must be the email of a teacher account that already exists.
+- Create all sections and module offerings before importing a combined class.
+- Preview must show no invalid rows before you can import.
 
-### Alternative: import a teacher's timetable
+## Step 6: Import a routine for one teacher
 
-In the teacher management/timetable area, select a teacher first, then download
-the teacher timetable template, preview it, and import it. The teacher is
-chosen in the screen, so the file does **not** contain a lecturer email.
+You can also import a teacher's timetable from the teacher timetable page.
+
+1. Select the teacher first.
+2. Download the teacher timetable template.
+3. Upload the completed file and preview it.
+4. Fix errors, then import.
+
+The teacher is selected on the page, so this file does not need a teacher email
+column.
 
 ```csv
 intake_code,semester,sections,day,start_time,end_time,module_code,class_type,block,room
 NPT3F2509IT,SEM VI,A3|A4,SUN,08:30,09:30,CT004-3-3,Lecture,Block B,Machapuchare-L04
 ```
 
-`semester` accepts a number such as `6`, `SEM VI`, or `Semester 6`.
+For `semester`, you can write `6`, `SEM VI`, or `Semester 6`.
 
-### Alternative: global routine import
+## Step 7: Import many routine rows from one file
 
-Go to **Admin → Imports**, choose **Routines**, and use the repository template
-[`import_templates/routine_import_template.csv`](import_templates/routine_import_template.csv).
-This format is useful when one file contains entries for more than one section
-or teacher.
+Open **Admin → Imports**, choose **Routines**, and download the template:
+[routine_import_template.csv](import_templates/routine_import_template.csv).
 
-The supplied headers are:
+The normal template columns are:
 
 ```csv
 intake_code,semester_number,section_name,module_code,class_type,teacher_email,block_name,room_name,day_of_week,start_time,end_time
 ```
 
-The global importer also accepts these documented aliases; it does **not**
-support arbitrary or dynamic headers:
+The app also accepts these other names. These are the only supported changes;
+you cannot make your own column names.
 
-| Meaning | Accepted headings |
+| What it means | You can use either column name |
 | --- | --- |
 | Semester | `semester_number` or `semester` |
-| Section(s) | `section_name` or `sections` |
+| Section or sections | `section_name` or `sections` |
 | Teacher email | `teacher_email` or `lecturer_email` |
 | Block | `block_name` or `block` |
 | Room | `room_name` or `room` |
 | Day | `day_of_week` or `day` |
 
-For a combined class in this import, use `sections` and separate section names
-with `|`, for example `A1|A2`.
+For a class with more than one section, use the `sections` column and write
+the section names with `|`, for example `A1|A2`.
 
-The import job processes rows independently: valid rows are saved and invalid
-rows are reported. Review its error list, repair the failing rows, and import
-only those rows again.
+The app saves valid rows and shows errors for invalid rows. Read the error list,
+fix the bad rows, and import only those rows again.
 
-### Common routine errors
+### Common routine problems
 
-| Error area | What to check |
+| Problem | What to do |
 | --- | --- |
-| Unknown intake/module/type/teacher/block/room | Create the referenced master-data record first; then use its correct code, name, or email. |
-| Module semester mismatch | The module's configured semester must equal the routine row's semester. |
-| No active offering | Create an active offering for the exact module + intake + batch + semester. |
-| Section is not available | Check the section's batch, intake, and semester. |
-| Time slot not found | Create that exact start/end time-slot pair. |
-| Clash | Change a row that overlaps the same teacher, section, or room. |
-| Invalid day/time | Use an accepted day and `HH:MM`/`HH:MM:SS` time. |
+| Intake, module, class type, teacher, block, or room not found | Create it first, then check the spelling, code, name, or email in the file. |
+| Module semester is wrong | The module semester and file semester must be the same. |
+| Module offering not found | Create an active offering for that module, intake, batch, and semester. |
+| Section not found | Check the section's batch, intake, and semester. |
+| Time slot not found | Create a time slot with the exact same start and end time. |
+| Class clash | Change a time that overlaps the same teacher, section, or room. |
+| Day or time is wrong | Use an allowed day and `HH:MM` or `HH:MM:SS` time. |
 
-## Student accounts and invitation emails
+## Step 8: Student accounts and email invitations
 
-There are two different account states in the current application. It is
-important not to mix them up.
+There are two different ways student accounts can exist in the app.
 
-### Accounts created by the student bulk importer
+### Students imported from the student CSV
 
-The current **Students** bulk importer creates a linked user account for every
-successful row. Its initial password is currently the application default
-`Welcome123!`. It does **not** automatically send an email invitation.
+The current student bulk import makes a user account for every student that is
+imported successfully. The starting password is currently `Welcome123!`.
 
-For a real production rollout, change this default-account workflow to a
-password-reset or invitation-only flow before giving credentials to students.
-Do not publish a shared initial password on a public page.
+The bulk student import does **not** send an activation email automatically.
+For a real college system, it is safer to change this later to an
+email-invitation or password-reset system before sharing accounts with students.
+Do not post the starting password on a public website.
 
-### Sending individual or bulk activation invitations
+### Send an activation email to one or more students
 
-Go to **Admin → Students** and use the **Student onboarding** panel:
+Open **Admin → Students** and use the **Student onboarding** area.
 
-1. Filter the list by intake and/or section.
-2. Optionally enable **only students without accounts**.
-3. Select one student for an individual email, select multiple students, or use
-   the option to invite all currently filtered eligible students.
-4. Send the invitations and check the result shown by the panel.
+1. Filter by intake or section if needed.
+2. You can choose to show only students who do not have accounts.
+3. Select one student to send one email, select many students, or invite all
+   students shown in the filtered list.
+4. Send the invitation.
 
-An invitation contains an activation link. The student opens it, chooses a
-password, and signs in. Links expire after the configured invitation lifetime
-(the default is seven days).
+The email has a link. The student opens the link, creates a password, and then
+can sign in. The link normally expires after seven days.
 
-**Current limitation:** the onboarding screen only invites student records that
-do **not** have a linked user account. Because the existing bulk student
-importer already creates an account, newly bulk-imported students will not be
-eligible for these activation emails. If email activation is required for a new
-cohort, use/create pre-account student profiles through the approved data setup
-process and then send invitations, or request an invitation-based bulk-import
-enhancement before importing them.
+> Important current limit: the email invitation screen sends emails only to
+> students who do **not** already have an account. Because the student CSV
+> import creates accounts, students imported from that file cannot receive these
+> activation emails through that screen. If you need activation emails for a
+> new intake, ask for an invitation-based bulk import before you import the
+> students.
 
-### Email delivery checklist
+### Make sure email sending works
 
-Sending an invitation creates a notification record, but email is delivered
-only when the backend mail configuration and worker are available.
+For emails to arrive, the backend must have these settings:
 
-- Configure `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, and
-  `SMTP_FROM_EMAIL` in the backend deployment environment.
-- Set `FRONTEND_URL` to the public site students use. For the current Vercel
-  deployment, this is normally `https://antimbench-https-proxy.vercel.app`.
-- Run the notification worker with `uv run python -m app.workers.worker` (or
-  ensure its production worker service is running).
-- Send one test invitation first and verify that it arrives and that the link
-  opens the public frontend.
+- `SMTP_HOST`
+- `SMTP_PORT`
+- `SMTP_USERNAME`
+- `SMTP_PASSWORD`
+- `SMTP_FROM_EMAIL`
+- `FRONTEND_URL`
 
-Do not put SMTP passwords or cloud keys in this guide, in CSV files, or in the
-Git repository. Store them as deployment secrets.
+`FRONTEND_URL` must be the website students open, for example:
+`https://antimbench-https-proxy.vercel.app`.
 
-## Reusable new-intake checklist
+The background email worker must also be running:
 
-Before uploading data for a new semester, confirm:
+```text
+uv run python -m app.workers.worker
+```
+
+First send one test email. Check that it arrives and that its link opens the
+correct public website.
+
+Never put SMTP passwords, AWS keys, or other secret values in a CSV file, this
+guide, or GitHub. Save them as deployment secrets.
+
+## Checklist before you upload
 
 - [ ] Programme exists.
-- [ ] Batch and intake exist under the same programme.
-- [ ] Every section has the correct batch, intake, and semester.
-- [ ] Modules have the correct unique code, title, and semester.
-- [ ] Every taught module has an active offering for this intake, batch, and
-      semester.
-- [ ] Class types, blocks, rooms, and all time slots exist.
-- [ ] Every teacher account exists and its email matches the routine file.
-- [ ] CSV/XLSX headers match the downloaded template exactly.
-- [ ] XLSX has one worksheet named `Timetable`.
-- [ ] Routine preview has no invalid rows, or the import-job errors have been
-      repaired.
-- [ ] Student emails are unique and batch/section names resolve correctly.
-- [ ] Mail settings and the notification worker have been tested if sending
-      activation invitations.
+- [ ] Batch and intake are under the same programme.
+- [ ] Sections have the correct batch, intake, and semester.
+- [ ] Modules have the correct code, name, and semester.
+- [ ] Every module has an active module offering.
+- [ ] Class types, blocks, rooms, and time slots exist.
+- [ ] Teacher accounts exist and their emails match the routine file.
+- [ ] File headers are exactly like the template headers.
+- [ ] Excel files have one sheet named `Timetable`.
+- [ ] Routine Preview has no errors.
+- [ ] Student emails are unique.
+- [ ] Email settings and email worker are ready if you want to send invitations.
 
-## Practical import habits
+## Good habits
 
-- Always download the current template before starting a new file; do not
-  rename its headers.
-- Test a file with one or two rows before uploading an entire intake.
-- Save a copy of the source CSV/XLSX and the import result for audit purposes.
-- Correct and re-import only failed rows. Avoid re-uploading successful student
-  rows because duplicate email addresses are rejected.
-- Treat programme, batch, intake, sections, module offerings, rooms, and time
-  slots as the foundation. Routine imports are the final scheduling step, not
-  a replacement for academic setup.
+- Download a fresh template before making a new file.
+- Test with one or two rows first.
+- Keep a copy of every CSV/Excel file and its import result.
+- Fix and upload only failed rows.
+- Finish the basic setup first. Import the routine only after the programme,
+  batch, intake, sections, modules, rooms, teachers, and time slots are ready.

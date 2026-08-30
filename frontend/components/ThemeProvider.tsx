@@ -16,10 +16,11 @@ const storageKey = "antimbench-theme";
 function applyTheme(theme: Theme) {
   document.documentElement.dataset.theme = theme;
   document.documentElement.style.colorScheme = theme;
+  document.documentElement.classList.toggle("dark", theme === "dark");
 }
 
 export function ThemeScript() {
-  const script = `try { const stored = localStorage.getItem('${storageKey}'); const theme = stored === 'light' || stored === 'dark' ? stored : (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'); document.documentElement.dataset.theme = theme; document.documentElement.style.colorScheme = theme; } catch (_) { document.documentElement.dataset.theme = 'light'; }`;
+  const script = `try { const stored = localStorage.getItem('${storageKey}'); const theme = stored === 'light' || stored === 'dark' ? stored : (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'); const root = document.documentElement; root.dataset.theme = theme; root.style.colorScheme = theme; root.classList.toggle('dark', theme === 'dark'); } catch (_) { const root = document.documentElement; root.dataset.theme = 'light'; root.style.colorScheme = 'light'; root.classList.remove('dark'); }`;
   return <script dangerouslySetInnerHTML={{ __html: script }} />;
 }
 

@@ -19,7 +19,9 @@ from app.core.config import settings
 from app.core.profile_media import ProfileMediaNotFound, ProfileMediaStore, ProfileMediaUnavailable
 
 router = APIRouter(tags=["identity"])
-PROFILE_MEDIA_DIR = Path(__file__).resolve().parents[3] / "uploads" / "profiles"
+# Local development uses the repository folder. Production services can supply
+# a writable state directory when S3 storage has not been configured.
+PROFILE_MEDIA_DIR = Path(settings.profile_media_local_directory) if settings.profile_media_local_directory else Path(__file__).resolve().parents[3] / "uploads" / "profiles"
 MAX_PROFILE_IMAGE_BYTES = 5 * 1024 * 1024
 PROFILE_IMAGE_TYPES = {
     "JPEG": ("jpg", "image/jpeg"),
@@ -92,15 +94,38 @@ def me(user: Annotated[User, Depends(get_current_user)]) -> User: return user
 
 @router.patch("/auth/me", response_model=UserRead)
 def update_profile(payload: ProfileUpdate, user: Annotated[User, Depends(get_current_user)], db: DbSession) -> User:
-    name = payload.name.strip()
-    if not name:
+    name = payload.name.strip() if payload.name is not None else None
+    email = str(payload.email).lower() if payload.email is not None else None
+    if name is not None and not name:
         raise HTTPException(422, "Name is required")
-    before = {"name": user.name}
-    user.name = name
+
+    email_changed = email is not None and email != user.email.lower()
+    if email_changed:
+        if not payload.current_password or not verify_password(payload.current_password, user.password_hash):
+            raise HTTPException(422, "Enter your current password to change your sign-in email")
+        if db.scalar(select(User.id).where(func.lower(User.email) == email, User.id != user.id)):
+            raise HTTPException(409, "An account with this email already exists")
+
+    before: dict[str, str] = {}
+    after: dict[str, str] = {}
+    if name is not None and name != user.name:
+        before["name"] = user.name
+        after["name"] = name
+        user.name = name
+    if email_changed:
+        before["email"] = user.email
+        after["email"] = email
+        user.email = email
+    if not after:
+        raise HTTPException(422, "Provide a different name or email address")
+
     student = db.scalar(select(Student).where(Student.user_id == user.id))
     if student:
-        student.name = name
-    log_audit(db, user.id, "user.profile_updated", "user", user.id, before, {"name": name})
+        if "name" in after:
+            student.name = name
+        if "email" in after:
+            student.email = email
+    log_audit(db, user.id, "user.profile_updated", "user", user.id, before, after)
     db.commit(); db.refresh(user)
     return user
 

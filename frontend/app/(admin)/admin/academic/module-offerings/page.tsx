@@ -6,6 +6,8 @@ import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { EmptyState, ErrorState, LoadingState } from "@/components/ui/States";
+import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
+import { SystemFeedback } from "@/components/ui/SystemFeedback";
 
 const blank = { academic_module_id: "", intake_id: "", batch_id: "", semester_number: "", is_active: true };
 
@@ -18,6 +20,7 @@ export default function Page() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [togglingId, setTogglingId] = useState<number | null>(null);
+  const [pendingToggle, setPendingToggle] = useState<any | null>(null);
 
   async function load() {
     setLoading(true);
@@ -157,7 +160,7 @@ export default function Page() {
               <td>{row.intake_code}</td><td>{row.batch_name}</td><td>{row.semester_number}</td>
               <td>{row.section_names.length ? <span>{row.section_names.join(" + ")} <span className="text-slate-500">({row.section_names.length} total)</span></span> : <span className="text-slate-500">Awaiting sections</span>}</td>
               <td><Badge tone={row.is_active ? "success" : "neutral"}>{row.is_active ? "Active" : "Inactive"}</Badge></td>
-              <td><div className="flex justify-end gap-2"><Button type="button" size="sm" variant="ghost" onClick={() => selectForEdit(row)}>Edit</Button><Button type="button" size="sm" variant="outline" loading={togglingId === row.id} disabled={togglingId !== null} onClick={() => void toggle(row)}>{row.is_active ? "Deactivate" : "Activate"}</Button></div></td>
+              <td><div className="flex justify-end gap-2"><Button type="button" size="sm" variant="ghost" onClick={() => selectForEdit(row)}>Edit</Button><Button type="button" size="sm" variant="outline" loading={togglingId === row.id} disabled={togglingId !== null} onClick={() => setPendingToggle(row)}>{row.is_active ? "Deactivate" : "Activate"}</Button></div></td>
             </tr>)}</tbody>
           </table>
         </div>
@@ -168,12 +171,13 @@ export default function Page() {
       <button type="button" aria-label="Close edit dialog" className="absolute inset-0 bg-black/70" onClick={closeEdit} disabled={saving} />
       <section className="panel relative w-full max-w-3xl p-6">
         <div className="mb-5"><h2 id="edit-module-offering-title" className="text-xl font-semibold">Edit module offering</h2><p className="mt-1 text-sm text-slate-400">Update the cohort details and offering status, then save your changes.</p></div>
-        {error && <p className="mb-4 rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-200" role="alert">{error}</p>}
+        {error && <SystemFeedback className="mb-4" tone="danger" title="Unable to save this offering" description={error} />}
         <form onSubmit={submit} className="grid gap-4 md:grid-cols-3">
           {offeringFields(true)}
           <div className="flex justify-end gap-2 md:col-span-3"><Button type="button" variant="ghost" onClick={closeEdit} disabled={saving}>Cancel</Button><Button type="submit" loading={saving}>Save changes</Button></div>
         </form>
       </section>
     </div>}
+    <ConfirmDialog open={pendingToggle !== null} title={`${pendingToggle?.is_active ? "Deactivate" : "Activate"} this module offering?`} description={pendingToggle?.is_active ? "Sections will no longer be able to use this offering for new routine entries until it is activated again." : "Matching sections will be able to use this offering in routine and attendance workflows."} confirmLabel={pendingToggle?.is_active ? "Deactivate offering" : "Activate offering"} tone={pendingToggle?.is_active ? "danger" : "primary"} onClose={() => setPendingToggle(null)} onConfirm={async () => { if (pendingToggle) await toggle(pendingToggle); setPendingToggle(null); }} />
   </div>;
 }

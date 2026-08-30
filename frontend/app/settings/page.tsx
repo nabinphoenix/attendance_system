@@ -37,6 +37,8 @@ function SettingsScreen({ initialUser }: { initialUser: User }) {
   const { theme, setTheme } = useTheme();
   const [user, setUser] = useState(initialUser);
   const [name, setName] = useState(initialUser.name);
+  const [email, setEmail] = useState(initialUser.email);
+  const [emailChangePassword, setEmailChangePassword] = useState("");
   const [savingProfile, setSavingProfile] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [profileMessage, setProfileMessage] = useState("");
@@ -51,6 +53,7 @@ function SettingsScreen({ initialUser }: { initialUser: User }) {
   function announceProfile(nextUser: User) {
     setUser(nextUser);
     setName(nextUser.name);
+    setEmail(nextUser.email);
     window.dispatchEvent(new CustomEvent("antimbench-profile-updated", { detail: nextUser }));
   }
 
@@ -58,10 +61,19 @@ function SettingsScreen({ initialUser }: { initialUser: User }) {
     event.preventDefault();
     setProfileError(""); setProfileMessage("");
     if (!name.trim()) { setProfileError("Enter the name you would like to use."); return; }
+    const normalizedEmail = email.trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) { setProfileError("Enter a valid email address."); return; }
+    const emailChanged = normalizedEmail !== user.email.toLowerCase();
+    if (emailChanged && !emailChangePassword) { setProfileError("Enter your current password to change your sign-in email."); return; }
     setSavingProfile(true);
     try {
-      const response = await api.patch<User>("/api/v1/auth/me", { name: name.trim() });
+      const response = await api.patch<User>("/api/v1/auth/me", {
+        name: name.trim(),
+        email: normalizedEmail,
+        ...(emailChanged ? { current_password: emailChangePassword } : {}),
+      });
       announceProfile(response.data);
+      setEmailChangePassword("");
       setProfileMessage("Your profile details have been saved.");
     } catch (error: any) {
       setProfileError(error.response?.data?.detail ?? "We could not save your profile. Please try again.");
@@ -113,14 +125,14 @@ function SettingsScreen({ initialUser }: { initialUser: User }) {
     <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_minmax(20rem,.72fr)]">
       <div className="space-y-6">
         <section className="panel p-5 sm:p-6">
-          <div className="flex flex-wrap items-center gap-4"><ProfileAvatar name={user.name} src={user.avatar_url} className="h-20 w-20 text-2xl" /><div className="min-w-0 flex-1"><h2 className="text-lg font-semibold">Profile photo</h2><p className="app-caption mt-1 text-sm">Use a clear photo so your classmates and team can recognize you.</p></div><label className="inline-flex min-h-10 cursor-pointer items-center justify-center rounded-lg border border-emerald-600 bg-emerald-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-emerald-700"><input className="sr-only" type="file" accept="image/jpeg,image/png,image/webp" onChange={uploadPhoto} disabled={uploading} />{uploading ? "Uploading…" : "Upload photo"}</label></div>
+          <div className="flex flex-wrap items-center gap-4"><ProfileAvatar name={user.name} src={user.avatar_url} className="h-20 w-20 text-2xl" /><div className="min-w-0 flex-1"><h2 className="text-lg font-semibold">Profile photo</h2><p className="app-caption mt-1 text-sm">Use a clear photo so your classmates and team can recognize you.</p></div><label className="inline-flex min-h-10 cursor-pointer items-center justify-center rounded-lg border border-emerald-600 bg-emerald-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-emerald-700"><input className="sr-only" type="file" accept="image/jpeg,image/jpg,image/png,image/webp" onChange={uploadPhoto} disabled={uploading} />{uploading ? "Uploading…" : "Upload photo"}</label></div>
           <p className="app-caption mt-4 text-xs">JPG, PNG, or WEBP · Maximum file size 5 MB</p>
           {profileError && <div className="mt-4"><Notice message={profileError} tone="error" /></div>}{profileMessage && <div className="mt-4"><Notice message={profileMessage} /></div>}
         </section>
 
         <form onSubmit={saveProfile} className="panel p-5 sm:p-6">
-          <div className="mb-5"><h2 className="text-lg font-semibold">Profile details</h2><p className="app-caption mt-1 text-sm">This is the name shown across your AntimBench workspace.</p></div>
-          <div className="grid gap-4 sm:grid-cols-2"><label><span className="field-label">Display name</span><input value={name} maxLength={150} onChange={(event) => setName(event.target.value)} autoComplete="name" className="w-full" /></label><label><span className="field-label">College email</span><input value={user.email} readOnly className="w-full cursor-not-allowed opacity-70" aria-describedby="email-note" /><span id="email-note" className="helper-text">Contact an administrator to change your sign-in email.</span></label></div>
+          <div className="mb-5"><h2 className="text-lg font-semibold">Profile details</h2><p className="app-caption mt-1 text-sm">Update the name and email address used across your AntimBench workspace.</p></div>
+          <div className="grid gap-4 sm:grid-cols-2"><label><span className="field-label">Display name</span><input value={name} maxLength={150} onChange={(event) => setName(event.target.value)} autoComplete="name" className="w-full" /></label><label><span className="field-label">College email</span><input value={email} type="email" onChange={(event) => setEmail(event.target.value)} autoComplete="email" className="w-full" aria-describedby="email-note" /><span id="email-note" className="helper-text">Changing your sign-in email requires your current password.</span></label>{email.trim().toLowerCase() !== user.email.toLowerCase() && <label className="sm:col-span-2"><span className="field-label">Current password to confirm email change</span><PasswordInput value={emailChangePassword} onChange={(event) => setEmailChangePassword(event.target.value)} required autoComplete="current-password" className="w-full" /></label>}</div>
           <div className="mt-5 flex justify-end"><Button type="submit" loading={savingProfile}>{savingProfile ? "Saving…" : "Save profile"}</Button></div>
         </form>
 
