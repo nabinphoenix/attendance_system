@@ -16,7 +16,6 @@ class Settings(BaseSettings):
     auth_cookie_secure: bool = False
     geofence_radius_meters: float = 150
     geolocation_max_accuracy_meters: float = 100
-    teacher_location_max_accuracy_meters: float = 250
     attendance_window_minutes: int = 240
     attendance_self_checkin_window_minutes: int = 5
     attendance_challenge_rotation_seconds: int = Field(default=20, ge=1)

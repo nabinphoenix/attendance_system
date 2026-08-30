@@ -232,6 +232,17 @@ def test_teacher_start_accepts_coarse_campus_location_and_keeps_it_fixed(attenda
     assert check_in(client, auth, token).json()["status"] == "present"
 
 
+def test_teacher_start_does_not_block_on_low_gps_precision(attendance_env):
+    client, _, auth, ids, _ = attendance_env
+    response = client.post(
+        f"/api/v1/routine-sessions/{ids['routine']}/start",
+        headers=auth["teacher"],
+        json={"latitude": ROOM_LATITUDE, "longitude": ROOM_LONGITUDE, "accuracy_meters": 5000},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["teacher_location_accuracy_meters"] == 5000
+
+
 def test_qr_generation_authorization_claims_and_rotation(attendance_env):
     client, TestSession, auth, ids, new_session = attendance_env
     session_id = new_session()
