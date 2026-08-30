@@ -41,6 +41,7 @@ class QRResponse(BaseModel):
     geofence_radius_meters: float | None
     teacher_location_accuracy_meters: float | None
     self_checkin_window_minutes: int
+    self_checkin_closes_at: datetime
     classroom_code: str = Field(pattern=r"^\d{5}$")
     challenge_id: int
 

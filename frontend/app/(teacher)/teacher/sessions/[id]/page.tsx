@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import { useParams } from "next/navigation";
 import api from "@/lib/api";
 import QRDisplay from "@/components/QRDisplay";
@@ -13,7 +14,7 @@ import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 
 type Row = { attendance_id: number | null; student_id: number; student_name: string; roll_number: string; status: string; check_in_time: string | null; distance_meters: number | null; allowed_radius_meters: number | null; location_accuracy_meters: number | null };
 type ExceptionRow = { id: number; student_name: string; roll_number: string; section_name: string; reason: string; distance_meters: number | null; allowed_radius_meters: number | null; accuracy_meters: number | null; created_at: string; status: string };
-type QRData = { token: string; expires_at: string; rotation_seconds: number; self_checkin_window_minutes: number; module_title: string; section_names: string[]; room: string; start_time: string; end_time: string; geofence_radius_meters: number | null; teacher_location_accuracy_meters: number | null; classroom_code: string; challenge_id: number };
+type QRData = { token: string; expires_at: string; rotation_seconds: number; self_checkin_window_minutes: number; self_checkin_closes_at: string; module_title: string; section_names: string[]; room: string; start_time: string; end_time: string; geofence_radius_meters: number | null; teacher_location_accuracy_meters: number | null; classroom_code: string; challenge_id: number };
 type DialogAction = { kind: "finalize" } | { kind: "exception"; item: ExceptionRow; decision: "confirm" | "reject" } | { kind: "status"; row: Row; status: string };
 type RosterView = "grid" | "list";
 type RosterFilter = "all" | "present" | "absent";
@@ -35,6 +36,7 @@ const timeLabel = (value: string | null) => {
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? "No check-in" : date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 };
+const durationLabel = (seconds: number) => `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
 const distanceLabel = (row: Row) => row.distance_meters == null ? "Location not recorded" : `${Math.round(row.distance_meters)}m from teacher${row.allowed_radius_meters == null ? "" : ` / ${Math.round(row.allowed_radius_meters)}m boundary`}`;
 
 function GridIcon() { return <svg aria-hidden="true" viewBox="0 0 24 24" className="h-4 w-4 fill-none stroke-current stroke-2"><rect x="4" y="4" width="6" height="6" rx="1" /><rect x="14" y="4" width="6" height="6" rx="1" /><rect x="4" y="14" width="6" height="6" rx="1" /><rect x="14" y="14" width="6" height="6" rx="1" /></svg>; }
@@ -47,6 +49,7 @@ export default function Page() {
   const [exceptions, setExceptions] = useState<ExceptionRow[]>([]);
   const [message, setMessage] = useState("");
   const [completed, setCompleted] = useState(false);
+  const [checkInClosed, setCheckInClosed] = useState(false);
   const [countdown, setCountdown] = useState(0);
   const [dialog, setDialog] = useState<DialogAction | null>(null);
   const [rosterView, setRosterView] = useState<RosterView>("grid");
@@ -57,14 +60,26 @@ export default function Page() {
     const [qrResult, rosterResult, exceptionsResult] = await Promise.allSettled([
       api.get<QRData>(`/api/v1/sessions/${id}/qr`), api.get<Row[]>(`/api/v1/sessions/${id}/summary`), api.get<ExceptionRow[]>(`/api/v1/sessions/${id}/check-in-exceptions`),
     ]);
-    if (qrResult.status === "fulfilled") { setQr(qrResult.value.data); setCompleted(false); }
-    else if (qrResult.reason?.response?.status === 409) { setCompleted(true); setQr(null); }
+    if (qrResult.status === "fulfilled") { setQr(qrResult.value.data); setCompleted(false); setCheckInClosed(false); }
+    else if (qrResult.reason?.response?.status === 409) {
+      setQr(null);
+      if (qrResult.reason?.response?.data?.detail === "SELF_CHECKIN_WINDOW_CLOSED") setCheckInClosed(true);
+      else { setCompleted(true); setCheckInClosed(false); }
+    }
     if (rosterResult.status === "fulfilled") setRows(rosterResult.value.data);
     if (exceptionsResult.status === "fulfilled") setExceptions(exceptionsResult.value.data);
   }, [id]);
 
   useEffect(() => { void refresh(); const timer = window.setInterval(() => void refresh(), 3000); return () => window.clearInterval(timer); }, [refresh]);
   useEffect(() => { const timer = window.setInterval(() => setCountdown(qr ? Math.max(0, Math.ceil((new Date(qr.expires_at).getTime() - Date.now()) / 1000)) : 0), 250); return () => window.clearInterval(timer); }, [qr]);
+  useEffect(() => {
+    const update = () => {
+      if (qr && new Date(qr.self_checkin_closes_at).getTime() <= Date.now()) { setCheckInClosed(true); setQr(null); }
+    };
+    update();
+    const timer = window.setInterval(update, 250);
+    return () => window.clearInterval(timer);
+  }, [qr]);
 
   const counts = useMemo(() => ({
     total: rows.length,
@@ -74,6 +89,7 @@ export default function Page() {
     remaining: rows.filter((row) => row.status === "not_checked_in").length,
   }), [rows]);
   const attendanceRate = counts.total ? Math.round((counts.present / counts.total) * 100) : 0;
+  const checkInSecondsRemaining = qr ? Math.max(0, Math.ceil((new Date(qr.self_checkin_closes_at).getTime() - Date.now()) / 1000)) : 0;
   const visibleRows = useMemo(() => {
     const query = search.trim().toLowerCase();
     return rows.filter((row) => {
@@ -116,10 +132,11 @@ export default function Page() {
   </select>;
 
   return <div>
-    <PageHeader title={completed ? "Session summary" : "Live attendance session"} description={qr ? `${qr.module_title} - ${qr.section_names.join(" + ")}` : "Attendance and location verification"} action={!completed && <Button variant="outline" onClick={() => setDialog({ kind: "finalize" })}>Finalize session</Button>} />
+    <PageHeader title={completed ? "Session summary" : checkInClosed ? "Self check-in closed" : "Live attendance session"} description={qr ? `${qr.module_title} - ${qr.section_names.join(" + ")}` : checkInClosed ? "The check-in deadline has passed. Manual attendance and finalization remain available." : "Attendance and location verification"} action={completed ? <Link href="/teacher/sessions" className="inline-flex min-h-10 items-center justify-center rounded-lg border border-emerald-400 bg-emerald-400 px-4 py-2 text-sm font-semibold text-slate-950 transition hover:border-emerald-300 hover:bg-emerald-300">Start another session</Link> : <Button variant="outline" onClick={() => setDialog({ kind: "finalize" })}>Finalize session</Button>} />
     {message && <p role="status" className="mb-4 rounded-lg border border-emerald-500/20 bg-emerald-500/10 p-3 text-sm text-emerald-200">{message}</p>}
+    {checkInClosed && <section className="my-6 rounded-xl border border-amber-500/35 bg-amber-500/10 p-5"><Badge tone="warning">Self check-in closed</Badge><h2 className="mt-3 text-xl font-semibold">QR attendance is no longer available</h2><p className="mt-2 text-sm text-slate-300">The configured check-in window has ended, so the QR and classroom code are hidden. You can still record manual attendance, review exceptions, or finalize this session.</p></section>}
     {qr && <section className="panel my-6 grid items-center gap-8 p-5 sm:p-7 lg:grid-cols-[minmax(300px,420px)_1fr]">
-      <div><QRDisplay value={qr.token} /><div className="mx-auto mt-3 max-w-[380px]"><div className="h-1.5 overflow-hidden rounded-full bg-slate-800"><div className="h-full rounded-full bg-emerald-400 transition-[width]" style={{ width: `${Math.max(0, Math.min(100, (countdown / qr.rotation_seconds) * 100))}%` }} /></div><p className="mt-2 text-center text-sm font-medium text-emerald-300">QR and code change in {countdown} seconds</p></div></div>
+      <div><QRDisplay value={qr.token} /><div className="mx-auto mt-3 max-w-[380px]"><div className="h-1.5 overflow-hidden rounded-full bg-slate-800"><div className="h-full rounded-full bg-emerald-400 transition-[width]" style={{ width: `${Math.max(0, Math.min(100, (countdown / qr.rotation_seconds) * 100))}%` }} /></div><p className="mt-2 text-center text-sm font-medium text-emerald-300">QR and code change in {countdown} seconds</p><p className="mt-1 text-center text-sm font-semibold text-amber-300">Self check-in closes in {durationLabel(checkInSecondsRemaining)}</p></div></div>
       <div><Badge tone="success">Session active</Badge><h2 className="mt-4 text-2xl font-semibold sm:text-3xl">{qr.module_title}</h2><p className="mt-2 text-lg text-slate-300">{qr.section_names.join(" + ")}</p><div className="mt-6 rounded-2xl border border-emerald-400/40 bg-emerald-400/10 p-5 text-center"><p className="text-xs font-semibold uppercase tracking-[0.2em] text-emerald-200">Announce this class code</p><p className="mt-2 font-mono text-5xl font-bold tracking-[0.3em] text-emerald-100">{qr.classroom_code}</p><p className="mt-3 text-sm text-slate-300">Students must enter this code after scanning the QR.</p><Button className="mt-4" variant="outline" onClick={() => void regenerateChallenge()}>Generate New Challenge</Button></div><dl className="mt-6 grid gap-4 sm:grid-cols-3"><div><dt className="text-xs uppercase tracking-wider text-slate-500">Time</dt><dd className="mt-1 font-medium">{qr.start_time.slice(0, 5)}-{qr.end_time.slice(0, 5)}</dd></div><div><dt className="text-xs uppercase tracking-wider text-slate-500">Room</dt><dd className="mt-1 font-medium">{qr.room}</dd></div><div><dt className="text-xs uppercase tracking-wider text-slate-500">Check-in window</dt><dd className="mt-1 font-medium">{qr.self_checkin_window_minutes} minutes</dd></div></dl>{qr.geofence_radius_meters != null ? <div className="mt-6 rounded-lg border border-emerald-500/25 bg-emerald-500/10 p-4"><p className="font-semibold text-emerald-300">Campus location check active</p><p className="mt-1 text-sm text-slate-400">Teacher location was captured with +/-{Math.round(qr.teacher_location_accuracy_meters ?? 0)}m accuracy.</p></div> : <p className="mt-6 rounded-lg border border-amber-500/25 bg-amber-500/10 p-4 text-amber-200">Historical session: location attempts require teacher verification.</p>}</div>
     </section>}
     <section aria-label="Attendance counts" className="mb-8 grid grid-cols-2 gap-3 lg:grid-cols-4">

@@ -18,7 +18,7 @@ def teacher_profile(db,user):
     return teacher
 @router.post("/routine-sessions/{routine_id}/start",response_model=ClassSessionRead)
 def start_routine_session(routine_id:int,p:SessionGeofenceCapture,user:Annotated[User,Depends(require_role("teacher"))],db:DbSession):
-    teacher=teacher_profile(db,user);entry=db.get(RoutineEntry,routine_id)
+    teacher=teacher_profile(db,user);entry=db.scalar(select(RoutineEntry).where(RoutineEntry.id==routine_id).with_for_update())
     if not entry:raise HTTPException(404,"Routine entry not found")
     today=datetime.now().date()
     override=approved_routine_override(db,entry.id,today)
@@ -26,7 +26,7 @@ def start_routine_session(routine_id:int,p:SessionGeofenceCapture,user:Annotated
     effective=resolve_effective_class(db,entry,today,override)
     if effective.cancelled:raise HTTPException(409,"Class is cancelled")
     if effective.teacher_id!=teacher.id:raise HTTPException(403,"This session is assigned to another teacher")
-    session=db.scalar(select(ClassSession).where(ClassSession.routine_entry_id==routine_id,ClassSession.session_date==today))
+    session=db.scalar(select(ClassSession).where(ClassSession.routine_entry_id==routine_id,ClassSession.session_date==today,ClassSession.status==SessionStatus.ACTIVE).order_by(ClassSession.started_at.desc(),ClassSession.id.desc()).with_for_update())
     if not session:
         captured_at=datetime.now(UTC);radius=p.geofence_radius_meters or settings.geofence_radius_meters
         # GPS is retained as coarse campus/audit evidence. It must not block an
@@ -79,17 +79,17 @@ def current_sessions(user:Annotated[User,Depends(require_role("teacher"))],db:Db
         if effective_teacher!=teacher.id or (override and override.is_cancelled):continue
         start=override.start_time if override and override.start_time else entry.start_time;end=override.end_time if override and override.end_time else entry.end_time
         if start<=now.time()<=end:
-            session=db.scalar(select(ClassSession).where(ClassSession.timetable_entry_id==entry.id,ClassSession.session_date==now.date()))
+            session=db.scalar(select(ClassSession).where(ClassSession.timetable_entry_id==entry.id,ClassSession.session_date==now.date(),ClassSession.status==SessionStatus.ACTIVE).order_by(ClassSession.started_at.desc(),ClassSession.id.desc()))
             result.append(CurrentSession(timetable_entry_id=entry.id,subject_name=entry.subject.name,original_teacher_id=entry.teacher_id,effective_teacher_id=effective_teacher,original_room=entry.room_name,room_name=override.new_room if override and override.new_room else entry.room_name,start_time=start,end_time=end,class_session_id=session.id if session else None,status=session.status.value if session else None,override_id=override.id if override else None))
     return result
 @router.post("/sessions/{entry_id}/start",response_model=ClassSessionRead)
 def start_session(entry_id:int,user:Annotated[User,Depends(require_role("teacher"))],db:DbSession):
-    teacher=teacher_profile(db,user);entry=db.get(TimetableEntry,entry_id)
+    teacher=teacher_profile(db,user);entry=db.scalar(select(TimetableEntry).where(TimetableEntry.id==entry_id).with_for_update())
     if not entry:raise HTTPException(404,"Timetable entry not found")
     today=datetime.now().date();override=approved_override(db,entry_id,today);effective=override.new_teacher_id if override and override.new_teacher_id else entry.teacher_id
     if override and override.is_cancelled:raise HTTPException(409,"Class is cancelled")
     if effective!=teacher.id:raise HTTPException(403,"This session is assigned to another teacher")
-    session=db.scalar(select(ClassSession).where(ClassSession.timetable_entry_id==entry_id,ClassSession.session_date==today))
+    session=db.scalar(select(ClassSession).where(ClassSession.timetable_entry_id==entry_id,ClassSession.session_date==today,ClassSession.status==SessionStatus.ACTIVE).order_by(ClassSession.started_at.desc(),ClassSession.id.desc()).with_for_update())
     if not session:session=ClassSession(timetable_entry_id=entry_id,session_date=today,effective_teacher_id=effective,effective_room=override.new_room if override and override.new_room else entry.room_name,schedule_override_id=override.id if override else None,status=SessionStatus.ACTIVE,self_checkin_window_minutes=settings.attendance_self_checkin_window_minutes,challenge_rotation_seconds=settings.attendance_challenge_rotation_seconds);db.add(session);db.flush();log_audit(db,user.id,"class_session.started","class_session",session.id,None,{"timetable_entry_id":entry_id});db.commit();db.refresh(session)
     return session
 @router.get("/sessions",response_model=list[SessionHistory])

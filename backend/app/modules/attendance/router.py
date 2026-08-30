@@ -65,10 +65,14 @@ def ensure_session_active(session: ClassSession, db) -> None:
         raise HTTPException(409, "SESSION_CANCELLED")
 
 
+def self_checkin_closes_at(session: ClassSession) -> datetime:
+    window_minutes = session.self_checkin_window_minutes or settings.attendance_self_checkin_window_minutes
+    return utc(session.started_at) + timedelta(minutes=window_minutes)
+
+
 def ensure_accepting_check_ins(session: ClassSession, db) -> None:
     ensure_session_active(session, db)
-    window_minutes = session.self_checkin_window_minutes or settings.attendance_self_checkin_window_minutes
-    if utc(session.started_at) + timedelta(minutes=window_minutes) <= datetime.now(UTC):
+    if self_checkin_closes_at(session) <= datetime.now(UTC):
         raise HTTPException(409, "SELF_CHECKIN_WINDOW_CLOSED")
 
 
@@ -180,9 +184,9 @@ def pending_response(session: ClassSession, db, reason: str) -> CheckInResponse:
 
 def teacher_qr_response(id: int, user: User, db, *, force: bool = False) -> QRResponse:
     session = teacher_session(db, user, id)
-    ensure_session_active(session, db)
     # Keep the QR fields and challenge row in the same database transaction.
     session = db.scalar(select(ClassSession).where(ClassSession.id == id).with_for_update())
+    ensure_accepting_check_ins(session, db)
     token, expires, challenge, code, created = issue_qr_challenge(db, session, user.id, force=force)
     if created:
         now = datetime.now(UTC)
@@ -219,6 +223,7 @@ def teacher_qr_response(id: int, user: User, db, *, force: bool = False) -> QRRe
         geofence_radius_meters=session.geofence_radius_meters,
         teacher_location_accuracy_meters=session.teacher_location_accuracy_meters,
         self_checkin_window_minutes=session.self_checkin_window_minutes or settings.attendance_self_checkin_window_minutes,
+        self_checkin_closes_at=self_checkin_closes_at(session),
         classroom_code=code,
         challenge_id=challenge.id,
     )
@@ -546,7 +551,7 @@ def manual_session(db, entry: RoutineEntry, effective, attendance_date: date, st
         select(ClassSession).where(
             ClassSession.routine_entry_id == entry.id,
             ClassSession.session_date == attendance_date,
-        )
+        ).order_by(ClassSession.started_at.desc(), ClassSession.id.desc())
     )
     today = datetime.now().date()
     now = datetime.now(UTC)

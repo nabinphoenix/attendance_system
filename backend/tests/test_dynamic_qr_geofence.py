@@ -232,6 +232,29 @@ def test_teacher_start_accepts_coarse_campus_location_and_keeps_it_fixed(attenda
     assert check_in(client, auth, token).json()["status"] == "present"
 
 
+def test_teacher_can_start_another_session_after_finalizing(attendance_env):
+    client, TestSession, auth, ids, _ = attendance_env
+    endpoint = f"/api/v1/routine-sessions/{ids['routine']}/start"
+    payload = {"latitude": ROOM_LATITUDE, "longitude": ROOM_LONGITUDE, "accuracy_meters": 10}
+    first = client.post(endpoint, headers=auth["teacher"], json=payload)
+    assert first.status_code == 200, first.text
+    first_id = first.json()["id"]
+    # While a session is still active, Start resumes the same session instead of
+    # creating parallel QR sessions for the same class.
+    assert client.post(endpoint, headers=auth["teacher"], json=payload).json()["id"] == first_id
+    assert client.post(f"/api/v1/sessions/{first_id}/finalize", headers=auth["teacher"]).status_code == 200
+
+    second = client.post(endpoint, headers=auth["teacher"], json={**payload, "self_checkin_window_minutes": 2})
+    assert second.status_code == 200, second.text
+    second_id = second.json()["id"]
+    assert second_id != first_id
+    assert second.json()["self_checkin_window_minutes"] == 2
+    assert check_in(client, auth, get_qr(client, auth, second_id)["token"], student="a4").json()["status"] == "present"
+    with TestSession() as db:
+        sessions = db.scalars(select(ClassSession).where(ClassSession.routine_entry_id == ids["routine"]).order_by(ClassSession.id)).all()
+        assert [session.status for session in sessions] == [SessionStatus.COMPLETED, SessionStatus.ACTIVE]
+
+
 def test_teacher_start_does_not_block_on_low_gps_precision(attendance_env):
     client, _, auth, ids, _ = attendance_env
     response = client.post(
@@ -322,6 +345,9 @@ def test_expired_modified_cross_session_and_lifecycle_replay(attendance_env):
         session = db.get(ClassSession, second_id)
         session.started_at = datetime.now(UTC) - timedelta(minutes=settings.attendance_self_checkin_window_minutes + 1)
         db.commit()
+    for method, path in (("get", f"/api/v1/sessions/{second_id}/qr"), ("post", f"/api/v1/sessions/{second_id}/challenge")):
+        response = getattr(client, method)(path, headers=auth["teacher"])
+        assert response.status_code == 409 and response.json()["detail"] == "SELF_CHECKIN_WINDOW_CLOSED"
     assert check_in(client, auth, second_qr["token"]).json()["detail"] == "SELF_CHECKIN_WINDOW_CLOSED"
 
 
