@@ -60,7 +60,7 @@ def issue_qr_token(session: ClassSession, now: datetime | None = None, *, force:
         session.qr_version = (session.qr_version or 0) + 1
         session.qr_nonce = secrets.token_urlsafe(24)
         session.qr_issued_at = now
-        session.qr_expires_at = now + timedelta(seconds=settings.attendance_challenge_rotation_seconds)
+        session.qr_expires_at = now + timedelta(seconds=session.challenge_rotation_seconds or settings.attendance_challenge_rotation_seconds)
         # Transitional column retained by the schema; raw QR secrets are no longer persisted.
         session.current_qr_token = None
         issued = now

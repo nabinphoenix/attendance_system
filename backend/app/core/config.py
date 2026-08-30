@@ -17,7 +17,7 @@ class Settings(BaseSettings):
     geofence_radius_meters: float = 150
     geolocation_max_accuracy_meters: float = 100
     attendance_window_minutes: int = 240
-    attendance_self_checkin_window_minutes: int = 5
+    attendance_self_checkin_window_minutes: int = Field(default=15, ge=1, le=240)
     attendance_challenge_rotation_seconds: int = Field(default=20, ge=1)
     attendance_code_length: int = Field(default=5, ge=5, le=5)
     attendance_verification_timeout_seconds: int = Field(default=12, ge=1)

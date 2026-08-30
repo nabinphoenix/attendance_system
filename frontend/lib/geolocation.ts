@@ -1,9 +1,9 @@
-// A fresh GPS fix can take longer than the browser's usual short default,
-// especially indoors or immediately after opening the app on a phone.
-const LOCATION_TIMEOUT_MS = 30_000;
-// A good phone fix is often around this range indoors. Location remains a
-// campus/audit signal; QR plus the spoken code is the classroom proof.
-const EARLY_ACCEPT_ACCURACY_METERS = 50;
+// Request a new reading, but do not leave a student waiting for a cold GPS
+// fix indefinitely. maximumAge: 0 below prevents stale cached coordinates.
+const LOCATION_TIMEOUT_MS = 10_000;
+// A fresh +/-100m fix is sufficient for the coarse campus/audit signal. The
+// rotating QR and spoken code remain the classroom-presence proof.
+const EARLY_ACCEPT_ACCURACY_METERS = 100;
 
 export type LocationFailureReason = "LOCATION_DENIED" | "LOCATION_TIMEOUT" | "LOCATION_UNAVAILABLE";
 

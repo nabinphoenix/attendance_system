@@ -243,6 +243,28 @@ def test_teacher_start_does_not_block_on_low_gps_precision(attendance_env):
     assert response.json()["teacher_location_accuracy_meters"] == 5000
 
 
+def test_teacher_can_configure_checkin_window_and_qr_rotation(attendance_env):
+    client, _, auth, ids, _ = attendance_env
+    response = client.post(
+        f"/api/v1/routine-sessions/{ids['routine']}/start",
+        headers=auth["teacher"],
+        json={
+            "latitude": ROOM_LATITUDE,
+            "longitude": ROOM_LONGITUDE,
+            "accuracy_meters": 69,
+            "self_checkin_window_minutes": 60,
+            "challenge_rotation_seconds": 45,
+        },
+    )
+    assert response.status_code == 200, response.text
+    session_id = response.json()["id"]
+    assert response.json()["self_checkin_window_minutes"] == 60
+    assert response.json()["challenge_rotation_seconds"] == 45
+    qr = get_qr(client, auth, session_id)
+    assert qr["self_checkin_window_minutes"] == 60
+    assert qr["rotation_seconds"] == 45
+
+
 def test_qr_generation_authorization_claims_and_rotation(attendance_env):
     client, TestSession, auth, ids, new_session = attendance_env
     session_id = new_session()

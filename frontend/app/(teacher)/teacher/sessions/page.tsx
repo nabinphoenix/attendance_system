@@ -12,6 +12,8 @@ import { RoutineScheduleCards } from "@/components/RoutineScheduleCards";
 
 const days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 const localDate = (value = new Date()) => `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, "0")}-${String(value.getDate()).padStart(2, "0")}`;
+const DEFAULT_SELF_CHECKIN_WINDOW_MINUTES = 15;
+const DEFAULT_CHALLENGE_ROTATION_SECONDS = 20;
 type PendingSessionStart = { routineId: number; latitude: number; longitude: number; accuracy: number };
 
 export default function Page() {
@@ -26,7 +28,28 @@ export default function Page() {
   const [pendingStart, setPendingStart] = useState<PendingSessionStart | null>(null);
   const [locationRetryRoutineId, setLocationRetryRoutineId] = useState<number | null>(null);
   const [radiusInput, setRadiusInput] = useState("150");
+  const [selfCheckinInput, setSelfCheckinInput] = useState(String(DEFAULT_SELF_CHECKIN_WINDOW_MINUTES));
+  const [rotationInput, setRotationInput] = useState(String(DEFAULT_CHALLENGE_ROTATION_SECONDS));
   const [filters, setFilters] = useState({ query: "", module: "", section: "", classType: "", day: "" });
+
+  function getSessionSettings() {
+    const boundary = Number(radiusInput);
+    const selfCheckinWindowMinutes = Number(selfCheckinInput);
+    const challengeRotationSeconds = Number(rotationInput);
+    if (!Number.isFinite(boundary) || boundary <= 0) {
+      setError("Campus boundary must be greater than 0 meters.");
+      return null;
+    }
+    if (!Number.isInteger(selfCheckinWindowMinutes) || selfCheckinWindowMinutes < 1 || selfCheckinWindowMinutes > 240) {
+      setError("Self check-in window must be between 1 and 240 minutes.");
+      return null;
+    }
+    if (!Number.isInteger(challengeRotationSeconds) || challengeRotationSeconds < 15 || challengeRotationSeconds > 300) {
+      setError("QR and classroom code rotation must be between 15 and 300 seconds.");
+      return null;
+    }
+    return { boundary, selfCheckinWindowMinutes, challengeRotationSeconds };
+  }
 
   async function load() {
     setError("");
@@ -62,20 +85,16 @@ export default function Page() {
       setError("Starting a QR attendance session requires a secure HTTPS connection so the browser can share your classroom location.");
       return;
     }
-    const boundary = Number(radiusInput);
-    if (!Number.isFinite(boundary) || boundary <= 0) {
-      setError("Attendance boundary must be greater than 0 meters.");
-      return;
-    }
+    if (!getSessionSettings()) return;
     setStartingId(routineId);
     setError("");
     setLocationRetryRoutineId(null);
-    setStartStatus("Getting your classroom location (this can take up to 30 seconds)…");
+    setStartStatus("Getting a fresh classroom location (usually within 10 seconds)…");
     try {
       const position = await getBestFreshPosition();
       setPendingStart({ routineId, latitude: position.coords.latitude, longitude: position.coords.longitude, accuracy: position.coords.accuracy });
       setLocationRetryRoutineId(null);
-      setStartStatus(`Location captured with +/-${Math.round(position.coords.accuracy)}m accuracy. Choose the attendance boundary, then start the QR session.`);
+      setStartStatus(`Location captured with +/-${Math.round(position.coords.accuracy)}m accuracy. Choose the attendance settings, then start the QR session.`);
       setStartingId(null);
       return;
     } catch (requestError: any) {
@@ -87,7 +106,7 @@ export default function Page() {
         setError(reason === "LOCATION_DENIED"
           ? "Location permission is required to create the classroom geofence. Allow location access and retry."
           : reason === "LOCATION_TIMEOUT"
-            ? "A fresh classroom location could not be obtained within 30 seconds. Check that location services are on, allow location for this site, then retry."
+            ? "A fresh classroom location could not be obtained within 10 seconds. Check that location services are on, allow location for this site, then retry."
             : "Classroom location is unavailable on this device. Check location services and the browser permission, then retry.");
       }
       setStartStatus("");
@@ -97,11 +116,8 @@ export default function Page() {
 
   async function startSession() {
     if (!pendingStart) return;
-    const radius = Number(radiusInput);
-    if (!Number.isFinite(radius) || radius <= 0) {
-      setError("Attendance boundary must be greater than 0 meters.");
-      return;
-    }
+    const controls = getSessionSettings();
+    if (!controls) return;
     setStartingId(pendingStart.routineId);
     setError("");
     setLocationRetryRoutineId(null);
@@ -111,7 +127,9 @@ export default function Page() {
         latitude: pendingStart.latitude,
         longitude: pendingStart.longitude,
         accuracy_meters: pendingStart.accuracy,
-        geofence_radius_meters: radius,
+        geofence_radius_meters: controls.boundary,
+        self_checkin_window_minutes: controls.selfCheckinWindowMinutes,
+        challenge_rotation_seconds: controls.challengeRotationSeconds,
       });
       router.push(`/teacher/sessions/${response.data.id}`);
     } catch (requestError: any) {
@@ -156,7 +174,7 @@ export default function Page() {
     <p className="mt-2 text-sm text-slate-300">{item.section_names.join(" + ")} · {item.room}</p>
     {item.room !== item.original_room && <p className="text-amber-300">Original room: {item.original_room} · Effective room: {item.room}</p>}
     {item.teacher_id !== item.original_teacher_id && <p className="text-amber-300">Substitute assignment</p>}
-    {!item.cancelled&&item.can_start&&<div className="mt-4">{pendingStart?.routineId===item.routine_id?<div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-4"><div className="flex flex-wrap items-center justify-between gap-2"><p className="font-semibold text-emerald-100">Location captured</p><Badge tone="success">+/-{Math.round(pendingStart?.accuracy ?? 0)}m accuracy</Badge></div><label className="mt-4 block"><span className="field-label">Campus boundary (meters)</span><input className="w-full" type="number" min="1" step="1" inputMode="decimal" value={radiusInput} onChange={(event)=>setRadiusInput(event.target.value)} aria-describedby={`boundary-help-${item.routine_id}`}/><span id={`boundary-help-${item.routine_id}`} className="helper-text">Location is a campus-level audit signal. The rotating QR and the spoken 5-digit classroom code verify that the student is in class.</span></label><div className="mt-4 flex flex-wrap gap-2"><Button size="lg" loading={startingId===item.routine_id} disabled={startingId!==null} onClick={()=>void startSession()}>{startingId===item.routine_id?"Starting QR session…":"Start QR attendance"}</Button><Button type="button" variant="ghost" disabled={startingId!==null} onClick={()=>{setPendingStart(null);setStartStatus("")}}>Cancel</Button></div></div>:<Button size="lg" loading={startingId===item.routine_id} disabled={startingId!==null||pendingStart!==null} onClick={()=>void start(item.routine_id)}>{startingId===item.routine_id?"Getting location…":"Use location & set boundary"}</Button>}</div>}
+    {!item.cancelled&&item.can_start&&<div className="mt-4">{pendingStart?.routineId===item.routine_id?<div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-4"><div className="flex flex-wrap items-center justify-between gap-2"><p className="font-semibold text-emerald-100">Location captured</p><Badge tone="success">+/-{Math.round(pendingStart?.accuracy ?? 0)}m accuracy</Badge></div><div className="mt-4 grid gap-3 sm:grid-cols-3"><label><span className="field-label">Campus boundary (meters)</span><input className="w-full" type="number" min="1" step="1" inputMode="decimal" value={radiusInput} onChange={(event)=>setRadiusInput(event.target.value)} aria-describedby={`boundary-help-${item.routine_id}`}/></label><label><span className="field-label">Check-in window (minutes)</span><input className="w-full" type="number" min="1" max="240" step="1" inputMode="numeric" value={selfCheckinInput} onChange={(event)=>setSelfCheckinInput(event.target.value)} aria-describedby={`settings-help-${item.routine_id}`}/></label><label><span className="field-label">QR + code rotation (seconds)</span><input className="w-full" type="number" min="15" max="300" step="1" inputMode="numeric" value={rotationInput} onChange={(event)=>setRotationInput(event.target.value)} aria-describedby={`settings-help-${item.routine_id}`}/></label></div><span id={`boundary-help-${item.routine_id}`} className="helper-text">Location is a campus-level audit signal. The rotating QR and the spoken 5-digit classroom code verify that the student is in class.</span><span id={`settings-help-${item.routine_id}`} className="helper-text">Students can check in during the selected window. The QR and spoken code rotate together at the selected interval.</span><div className="mt-4 flex flex-wrap gap-2"><Button size="lg" loading={startingId===item.routine_id} disabled={startingId!==null} onClick={()=>void startSession()}>{startingId===item.routine_id?"Starting QR session…":"Start QR attendance"}</Button><Button type="button" variant="ghost" disabled={startingId!==null} onClick={()=>{setPendingStart(null);setStartStatus("")}}>Cancel</Button></div></div>:<Button size="lg" loading={startingId===item.routine_id} disabled={startingId!==null||pendingStart!==null} onClick={()=>void start(item.routine_id)}>{startingId===item.routine_id?"Getting location…":"Use location & set boundary"}</Button>}</div>}
   </article>;
 
   return <div>

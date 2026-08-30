@@ -67,7 +67,8 @@ def ensure_session_active(session: ClassSession, db) -> None:
 
 def ensure_accepting_check_ins(session: ClassSession, db) -> None:
     ensure_session_active(session, db)
-    if utc(session.started_at) + timedelta(minutes=settings.attendance_self_checkin_window_minutes) <= datetime.now(UTC):
+    window_minutes = session.self_checkin_window_minutes or settings.attendance_self_checkin_window_minutes
+    if utc(session.started_at) + timedelta(minutes=window_minutes) <= datetime.now(UTC):
         raise HTTPException(409, "SELF_CHECKIN_WINDOW_CLOSED")
 
 
@@ -209,7 +210,7 @@ def teacher_qr_response(id: int, user: User, db, *, force: bool = False) -> QRRe
     return QRResponse(
         token=token,
         expires_at=expires,
-        rotation_seconds=settings.attendance_challenge_rotation_seconds,
+        rotation_seconds=session.challenge_rotation_seconds or settings.attendance_challenge_rotation_seconds,
         module_title=title,
         section_names=sections,
         room=room,
@@ -217,6 +218,7 @@ def teacher_qr_response(id: int, user: User, db, *, force: bool = False) -> QRRe
         end_time=end,
         geofence_radius_meters=session.geofence_radius_meters,
         teacher_location_accuracy_meters=session.teacher_location_accuracy_meters,
+        self_checkin_window_minutes=session.self_checkin_window_minutes or settings.attendance_self_checkin_window_minutes,
         classroom_code=code,
         challenge_id=challenge.id,
     )
