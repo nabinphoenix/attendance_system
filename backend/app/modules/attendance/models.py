@@ -43,6 +43,44 @@ class CheckInAttempt(Base):
     reviewed_at:Mapped[datetime|None]=mapped_column(DateTime(timezone=True),nullable=True)
     decision_reason:Mapped[str|None]=mapped_column(Text,nullable=True)
     created_at:Mapped[datetime]=mapped_column(DateTime(timezone=True),server_default=func.now())
+class AttendanceChallenge(Base):
+    __tablename__="attendance_challenges"
+    __table_args__=(
+        UniqueConstraint("class_session_id","qr_version",name="uq_attendance_challenge_session_qr_version"),
+        Index("ix_attendance_challenges_session_active","class_session_id","revoked_at","expires_at"),
+    )
+    id:Mapped[int]=mapped_column(primary_key=True)
+    class_session_id:Mapped[int]=mapped_column(ForeignKey("class_sessions.id",ondelete="CASCADE"))
+    qr_version:Mapped[int]=mapped_column(Integer)
+    qr_nonce:Mapped[str]=mapped_column(String(64))
+    code_hash:Mapped[str]=mapped_column(String(64))
+    code_ciphertext:Mapped[str]=mapped_column(Text)
+    created_by:Mapped[int|None]=mapped_column(ForeignKey("users.id"),nullable=True)
+    created_at:Mapped[datetime]=mapped_column(DateTime(timezone=True),server_default=func.now())
+    expires_at:Mapped[datetime]=mapped_column(DateTime(timezone=True))
+    revoked_at:Mapped[datetime|None]=mapped_column(DateTime(timezone=True),nullable=True)
+class PendingAttendanceVerification(Base):
+    __tablename__="pending_attendance_verifications"
+    __table_args__=(
+        UniqueConstraint("token_hash",name="uq_pending_attendance_verification_token"),
+        Index("ix_pending_attendance_verification_student","student_id","class_session_id","expires_at"),
+    )
+    id:Mapped[int]=mapped_column(primary_key=True)
+    token_hash:Mapped[str]=mapped_column(String(64))
+    student_id:Mapped[int]=mapped_column(ForeignKey("students.id"))
+    class_session_id:Mapped[int]=mapped_column(ForeignKey("class_sessions.id",ondelete="CASCADE"))
+    attendance_challenge_id:Mapped[int]=mapped_column(ForeignKey("attendance_challenges.id",ondelete="CASCADE"))
+    qr_version:Mapped[int]=mapped_column(Integer)
+    latitude:Mapped[float|None]=mapped_column(Float,nullable=True)
+    longitude:Mapped[float|None]=mapped_column(Float,nullable=True)
+    accuracy_meters:Mapped[float|None]=mapped_column(Float,nullable=True)
+    distance_meters:Mapped[float|None]=mapped_column(Float,nullable=True)
+    allowed_radius_meters:Mapped[float|None]=mapped_column(Float,nullable=True)
+    created_at:Mapped[datetime]=mapped_column(DateTime(timezone=True),server_default=func.now())
+    expires_at:Mapped[datetime]=mapped_column(DateTime(timezone=True))
+    failed_attempts:Mapped[int]=mapped_column(Integer,default=0,server_default="0")
+    consumed_at:Mapped[datetime|None]=mapped_column(DateTime(timezone=True),nullable=True)
+    invalidated_at:Mapped[datetime|None]=mapped_column(DateTime(timezone=True),nullable=True)
 class LeaveRequest(Base):
     __tablename__="leave_requests"
     id:Mapped[int]=mapped_column(primary_key=True)

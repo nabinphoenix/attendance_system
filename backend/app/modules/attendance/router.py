@@ -1,3 +1,4 @@
+import secrets
 from datetime import UTC, date, datetime, timedelta
 from typing import Annotated
 
@@ -17,15 +18,18 @@ from app.modules.scheduling.service import approved_routine_override, resolve_ef
 
 from .models import (
     AttendanceChange,
+    AttendanceChallenge,
     AttendanceMethod,
     AttendanceRecord,
     AttendanceStatus,
     CheckInAttempt,
     CheckInAttemptStatus,
     LeaveRequest,
+    PendingAttendanceVerification,
 )
 from .schemas import (
     CheckInExceptionRead,
+    ChallengeConfirmationRequest,
     CheckInRequest,
     CheckInResponse,
     ExceptionDecision,
@@ -34,7 +38,7 @@ from .schemas import (
     StatusChange,
     TeacherAttendanceClass,
 )
-from .service import QRClaims, QRValidationError, distance_meters, issue_qr_token, utc, validate_qr_token
+from .service import QRClaims, QRValidationError, challenge_is_current, classroom_code_matches, distance_meters, issue_qr_challenge, utc, validate_qr_token, verification_token_digest
 
 router = APIRouter(tags=["attendance"])
 
@@ -53,14 +57,18 @@ def effective_session(session: ClassSession, db):
     return None
 
 
-def ensure_accepting_check_ins(session: ClassSession, db) -> None:
+def ensure_session_active(session: ClassSession, db) -> None:
     if session.status != SessionStatus.ACTIVE:
         raise HTTPException(409, "SESSION_FINALIZED")
     effective = effective_session(session, db)
     if effective and effective.cancelled:
         raise HTTPException(409, "SESSION_CANCELLED")
-    if utc(session.started_at) + timedelta(minutes=settings.attendance_window_minutes) <= datetime.now(UTC):
-        raise HTTPException(409, "ATTENDANCE_WINDOW_CLOSED")
+
+
+def ensure_accepting_check_ins(session: ClassSession, db) -> None:
+    ensure_session_active(session, db)
+    if utc(session.started_at) + timedelta(minutes=settings.attendance_self_checkin_window_minutes) <= datetime.now(UTC):
+        raise HTTPException(409, "SELF_CHECKIN_WINDOW_CLOSED")
 
 
 def session_metadata(session: ClassSession, db) -> tuple[str, list[str], str, object, object]:
@@ -74,7 +82,43 @@ def session_metadata(session: ClassSession, db) -> tuple[str, list[str], str, ob
 
 def validate_current_rotation(session: ClassSession, claims: QRClaims) -> None:
     if claims.session_id != session.id or claims.version != session.qr_version or claims.nonce != session.qr_nonce:
-        raise HTTPException(400, "INVALID_QR")
+        raise HTTPException(400, "ATTENDANCE_CHALLENGE_EXPIRED")
+
+
+def student_for_user(db, user: User) -> Student:
+    student = db.scalar(select(Student).where(Student.user_id == user.id))
+    if not student:
+        raise HTTPException(404, "Student profile not found")
+    return student
+
+
+def ensure_student_eligible(session: ClassSession, student: Student, db) -> None:
+    entry = resolve_session_schedule(session)
+    if session.routine_entry_id:
+        if student.section_id not in session_section_ids(session):
+            raise HTTPException(403, "STUDENT_NOT_ELIGIBLE")
+        return
+    enrolled = db.scalar(
+        select(StudentSubjectEnrollment).where(
+            StudentSubjectEnrollment.student_id == student.id,
+            StudentSubjectEnrollment.subject_id == entry.subject_id,
+        )
+    )
+    if student.section_id != entry.section_id or not enrolled:
+        raise HTTPException(403, "STUDENT_NOT_ELIGIBLE")
+
+
+def current_challenge(db, session: ClassSession, claims: QRClaims) -> AttendanceChallenge:
+    challenge = db.scalar(
+        select(AttendanceChallenge).where(
+            AttendanceChallenge.class_session_id == session.id,
+            AttendanceChallenge.qr_version == claims.version,
+            AttendanceChallenge.qr_nonce == claims.nonce,
+        )
+    )
+    if not challenge or not challenge_is_current(session, challenge):
+        raise HTTPException(400, "ATTENDANCE_CHALLENGE_EXPIRED")
+    return challenge
 
 
 def pending_attempt(
@@ -133,29 +177,39 @@ def pending_response(session: ClassSession, db, reason: str) -> CheckInResponse:
     )
 
 
-@router.get("/sessions/{id}/qr", response_model=QRResponse)
-def qr(id: int, user: Annotated[User, Depends(require_role("teacher"))], db: DbSession):
+def teacher_qr_response(id: int, user: User, db, *, force: bool = False) -> QRResponse:
     session = teacher_session(db, user, id)
-    ensure_accepting_check_ins(session, db)
-    # Serialize generation changes so simultaneous refreshes cannot publish two nonces.
+    ensure_session_active(session, db)
+    # Keep the QR fields and challenge row in the same database transaction.
     session = db.scalar(select(ClassSession).where(ClassSession.id == id).with_for_update())
-    token, expires, created = issue_qr_token(session)
+    token, expires, challenge, code, created = issue_qr_challenge(db, session, user.id, force=force)
     if created:
+        now = datetime.now(UTC)
+        for pending in db.scalars(
+            select(PendingAttendanceVerification).where(
+                PendingAttendanceVerification.class_session_id == session.id,
+                PendingAttendanceVerification.attendance_challenge_id != challenge.id,
+                PendingAttendanceVerification.consumed_at.is_(None),
+                PendingAttendanceVerification.invalidated_at.is_(None),
+            )
+        ).all():
+            pending.invalidated_at = now
+        action = "attendance_challenge.manually_regenerated" if force else "attendance_challenge.rotated"
         log_audit(
             db,
             user.id,
-            "attendance_qr.issued",
-            "class_session",
-            session.id,
+            action,
+            "attendance_challenge",
+            challenge.id,
             None,
-            {"qr_version": session.qr_version, "expires_at": expires},
+            {"class_session_id": session.id, "qr_version": challenge.qr_version, "expires_at": expires},
         )
         db.commit()
     title, sections, room, start, end = session_metadata(session, db)
     return QRResponse(
         token=token,
         expires_at=expires,
-        rotation_seconds=settings.qr_token_expire_seconds,
+        rotation_seconds=settings.attendance_challenge_rotation_seconds,
         module_title=title,
         section_names=sections,
         room=room,
@@ -163,14 +217,26 @@ def qr(id: int, user: Annotated[User, Depends(require_role("teacher"))], db: DbS
         end_time=end,
         geofence_radius_meters=session.geofence_radius_meters,
         teacher_location_accuracy_meters=session.teacher_location_accuracy_meters,
+        classroom_code=code,
+        challenge_id=challenge.id,
     )
+
+
+@router.get("/sessions/{id}/qr", response_model=QRResponse)
+def qr(id: int, user: Annotated[User, Depends(require_role("teacher"))], db: DbSession):
+    return teacher_qr_response(id, user, db)
+
+
+@router.post("/sessions/{id}/challenge", response_model=QRResponse)
+def regenerate_challenge(id: int, user: Annotated[User, Depends(require_role("teacher"))], db: DbSession):
+    return teacher_qr_response(id, user, db, force=True)
 
 
 @router.post("/check-ins", response_model=CheckInResponse)
 def check_in(p: CheckInRequest, user: Annotated[User, Depends(require_role("student"))], db: DbSession):
-    student = db.scalar(select(Student).where(Student.user_id == user.id))
-    if not student:
-        raise HTTPException(404, "Student profile not found")
+    """Validate a QR scan and create a single-use pending classroom-code verification."""
+
+    student = student_for_user(db, user)
     try:
         claims = validate_qr_token(p.qr_token)
     except QRValidationError as exc:
@@ -180,19 +246,8 @@ def check_in(p: CheckInRequest, user: Annotated[User, Depends(require_role("stud
         raise HTTPException(400, "INVALID_QR")
     ensure_accepting_check_ins(session, db)
     validate_current_rotation(session, claims)
-    entry = resolve_session_schedule(session)
-    if session.routine_entry_id:
-        if student.section_id not in session_section_ids(session):
-            raise HTTPException(403, "STUDENT_NOT_ELIGIBLE")
-    else:
-        enrolled = db.scalar(
-            select(StudentSubjectEnrollment).where(
-                StudentSubjectEnrollment.student_id == student.id,
-                StudentSubjectEnrollment.subject_id == entry.subject_id,
-            )
-        )
-        if student.section_id != entry.section_id or not enrolled:
-            raise HTTPException(403, "STUDENT_NOT_ELIGIBLE")
+    challenge = current_challenge(db, session, claims)
+    ensure_student_eligible(session, student, db)
     existing = db.scalar(
         select(AttendanceRecord).where(
             AttendanceRecord.class_session_id == session.id,
@@ -209,7 +264,6 @@ def check_in(p: CheckInRequest, user: Annotated[User, Depends(require_role("stud
         return pending_response(session, db, p.location_failure_reason)
     if p.latitude is None or p.longitude is None or p.accuracy is None:
         raise HTTPException(422, "Location coordinates and accuracy are required")
-
     if p.accuracy > settings.geolocation_max_accuracy_meters:
         reason = "LOW_LOCATION_ACCURACY"
         pending_attempt(db, session, student, claims, reason, latitude=p.latitude, longitude=p.longitude, accuracy=p.accuracy)
@@ -217,11 +271,11 @@ def check_in(p: CheckInRequest, user: Annotated[User, Depends(require_role("stud
         db.commit()
         return pending_response(session, db, reason)
 
+    entry = resolve_session_schedule(session)
     if session.geofence_latitude is not None and session.geofence_longitude is not None:
         center_latitude, center_longitude = session.geofence_latitude, session.geofence_longitude
         radius = session.geofence_radius_meters or settings.geofence_radius_meters
     elif not session.routine_entry_id:
-        # Historical legacy sessions retain their original timetable-coordinate behavior.
         center_latitude, center_longitude = entry.latitude, entry.longitude
         radius = settings.geofence_radius_meters
     else:
@@ -233,47 +287,132 @@ def check_in(p: CheckInRequest, user: Annotated[User, Depends(require_role("stud
     distance = distance_meters(p.latitude, p.longitude, center_latitude, center_longitude)
     if distance > radius:
         reason = "OUTSIDE_GEOFENCE"
-        pending_attempt(
-            db,
-            session,
-            student,
-            claims,
-            reason,
-            latitude=p.latitude,
-            longitude=p.longitude,
-            accuracy=p.accuracy,
-            distance=distance,
-            radius=radius,
-        )
-        log_audit(db, user.id, "attendance.check_in_pending", "class_session", session.id, None, {"reason": reason})
+        pending_attempt(db, session, student, claims, reason, latitude=p.latitude, longitude=p.longitude, accuracy=p.accuracy, distance=distance, radius=radius)
+        log_audit(db, user.id, "attendance.check_in_pending", "class_session", session.id, None, {"reason": reason, "distance_meters": distance})
         db.commit()
         return pending_response(session, db, reason)
+
+    now = datetime.now(UTC)
+    for previous in db.scalars(
+        select(PendingAttendanceVerification).where(
+            PendingAttendanceVerification.student_id == student.id,
+            PendingAttendanceVerification.class_session_id == session.id,
+            PendingAttendanceVerification.consumed_at.is_(None),
+            PendingAttendanceVerification.invalidated_at.is_(None),
+        )
+    ).all():
+        previous.invalidated_at = now
+    verification_token = secrets.token_urlsafe(32)
+    verification_expires_at = min(
+        utc(challenge.expires_at),
+        now + timedelta(seconds=settings.attendance_verification_timeout_seconds),
+    )
+    verification = PendingAttendanceVerification(
+        token_hash=verification_token_digest(verification_token),
+        student_id=student.id,
+        class_session_id=session.id,
+        attendance_challenge_id=challenge.id,
+        qr_version=claims.version,
+        latitude=p.latitude,
+        longitude=p.longitude,
+        accuracy_meters=p.accuracy,
+        distance_meters=distance,
+        allowed_radius_meters=radius,
+        created_at=now,
+        expires_at=verification_expires_at,
+    )
+    db.add(verification)
+    db.flush()
+    log_audit(db, user.id, "attendance.qr_scanned", "pending_attendance_verification", verification.id, None, {"class_session_id": session.id, "challenge_id": challenge.id})
+    db.commit()
+    title, _, room, start, _ = session_metadata(session, db)
+    return CheckInResponse(
+        status="challenge_required",
+        verification_token=verification_token,
+        verification_expires_at=verification_expires_at,
+        code_length=settings.attendance_code_length,
+        module_title=title,
+        room=room,
+        start_time=start,
+        message=f"QR verified. Enter the {settings.attendance_code_length}-digit code announced by your teacher.",
+    )
+
+
+@router.post("/check-ins/confirm", response_model=CheckInResponse)
+def confirm_check_in(p: ChallengeConfirmationRequest, user: Annotated[User, Depends(require_role("student"))], db: DbSession):
+    student = student_for_user(db, user)
+    pending = db.scalar(
+        select(PendingAttendanceVerification)
+        .where(PendingAttendanceVerification.token_hash == verification_token_digest(p.verification_token))
+        .with_for_update()
+    )
+    if not pending or pending.student_id != student.id:
+        raise HTTPException(400, "VERIFICATION_FAILED")
+    if pending.consumed_at is not None:
+        raise HTTPException(409, "ALREADY_CHECKED_IN")
+    now = datetime.now(UTC)
+    session = db.get(ClassSession, pending.class_session_id)
+    challenge = db.get(AttendanceChallenge, pending.attendance_challenge_id)
+    if (
+        pending.invalidated_at is not None
+        or utc(pending.expires_at) <= now
+        or not session
+        or not challenge
+        or not challenge_is_current(session, challenge, now)
+    ):
+        pending.invalidated_at = pending.invalidated_at or now
+        db.commit()
+        raise HTTPException(400, "ATTENDANCE_CHALLENGE_EXPIRED")
+    ensure_accepting_check_ins(session, db)
+    ensure_student_eligible(session, student, db)
+    existing = db.scalar(
+        select(AttendanceRecord).where(
+            AttendanceRecord.class_session_id == session.id,
+            AttendanceRecord.student_id == student.id,
+        )
+    )
+    if existing:
+        pending.consumed_at = now
+        db.commit()
+        raise HTTPException(409, "ALREADY_CHECKED_IN")
+    if len(p.code) != settings.attendance_code_length or not classroom_code_matches(challenge, p.code):
+        pending.failed_attempts += 1
+        remaining = settings.attendance_max_code_attempts - pending.failed_attempts
+        exhausted = remaining <= 0
+        if exhausted:
+            pending.invalidated_at = now
+        log_audit(db, user.id, "attendance.challenge_failed", "pending_attendance_verification", pending.id, None, {"failed_attempts": pending.failed_attempts})
+        db.commit()
+        if exhausted:
+            raise HTTPException(400, "VERIFICATION_FAILED")
+        raise HTTPException(400, f"INCORRECT_CLASSROOM_CODE:{remaining}")
 
     record = AttendanceRecord(
         class_session_id=session.id,
         student_id=student.id,
         status=AttendanceStatus.PRESENT,
         method=AttendanceMethod.QR_GEOFENCE,
-        check_in_time=datetime.now(UTC),
+        check_in_time=now,
     )
     try:
         db.add(record)
         db.flush()
+        pending.consumed_at = now
         db.add(
             CheckInAttempt(
                 class_session_id=session.id,
                 student_id=student.id,
                 status=CheckInAttemptStatus.ACCEPTED,
-                qr_version=claims.version,
-                latitude=p.latitude,
-                longitude=p.longitude,
-                accuracy_meters=p.accuracy,
-                distance_meters=distance,
-                allowed_radius_meters=radius,
+                qr_version=pending.qr_version,
+                latitude=pending.latitude,
+                longitude=pending.longitude,
+                accuracy_meters=pending.accuracy_meters,
+                distance_meters=pending.distance_meters,
+                allowed_radius_meters=pending.allowed_radius_meters,
                 geofence_pass=True,
             )
         )
-        log_audit(db, user.id, "attendance.check_in", "attendance_record", record.id, None, {"class_session_id": session.id, "status": "present"})
+        log_audit(db, user.id, "attendance.challenge_confirmed", "attendance_record", record.id, None, {"class_session_id": session.id, "challenge_id": challenge.id, "status": "present"})
         db.commit()
     except IntegrityError as exc:
         db.rollback()
@@ -286,7 +425,7 @@ def check_in(p: CheckInRequest, user: Annotated[User, Depends(require_role("stud
         module_title=title,
         room=room_name,
         start_time=start,
-        message="Attendance recorded",
+        message="Attendance recorded successfully.",
     )
 
 

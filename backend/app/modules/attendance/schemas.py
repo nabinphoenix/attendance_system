@@ -17,9 +17,12 @@ class CheckInRequest(BaseModel):
 
 
 class CheckInResponse(BaseModel):
-    status: Literal["present", "pending_verification"]
+    status: Literal["present", "pending_verification", "challenge_required"]
     reason: str | None = None
     check_in_time: datetime | None = None
+    verification_token: str | None = None
+    verification_expires_at: datetime | None = None
+    code_length: int | None = None
     module_title: str
     room: str
     start_time: time
@@ -37,6 +40,14 @@ class QRResponse(BaseModel):
     end_time: time
     geofence_radius_meters: float | None
     teacher_location_accuracy_meters: float | None
+    classroom_code: str = Field(pattern=r"^\d{5}$")
+    challenge_id: int
+
+
+class ChallengeConfirmationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    verification_token: str = Field(min_length=20, max_length=512)
+    code: str = Field(min_length=5, max_length=5, pattern=r"^\d{5}$")
 
 
 class RosterItem(BaseModel):

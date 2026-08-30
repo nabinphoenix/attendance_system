@@ -28,8 +28,8 @@ def start_routine_session(routine_id:int,p:SessionGeofenceCapture,user:Annotated
     if effective.teacher_id!=teacher.id:raise HTTPException(403,"This session is assigned to another teacher")
     session=db.scalar(select(ClassSession).where(ClassSession.routine_entry_id==routine_id,ClassSession.session_date==today))
     if not session:
-        if p.accuracy_meters>settings.teacher_location_max_accuracy_meters:raise HTTPException(422,"Your location accuracy is currently too low to create the classroom geofence. Please try again near a window or after GPS improves.")
         captured_at=datetime.now(UTC);radius=p.geofence_radius_meters or settings.geofence_radius_meters
+        if p.accuracy_meters>settings.teacher_location_max_accuracy_meters:raise HTTPException(422,f"Your +/-{p.accuracy_meters:g}m location accuracy is too imprecise for campus verification. Capture a reading accurate to +/-{settings.teacher_location_max_accuracy_meters:g}m or better, then retry.")
         session=ClassSession(routine_entry_id=routine_id,session_date=today,effective_teacher_id=effective.teacher_id,effective_room=effective.room,schedule_override_id=effective.override_id,status=SessionStatus.ACTIVE,geofence_latitude=p.latitude,geofence_longitude=p.longitude,geofence_radius_meters=radius,teacher_location_accuracy_meters=p.accuracy_meters,geofence_captured_at=captured_at);db.add(session);db.flush();log_audit(db,user.id,"class_session.started","class_session",session.id,None,{"routine_entry_id":routine_id,"geofence_created":True,"geofence_radius_meters":radius,"teacher_location_accuracy_meters":p.accuracy_meters,"geofence_captured_at":captured_at});db.commit();db.refresh(session)
     return session
 @router.post("/scheduling/timetable-entries",response_model=TimetableRead,dependencies=[Depends(require_role("admin"))])

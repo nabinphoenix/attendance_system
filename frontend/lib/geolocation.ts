@@ -1,8 +1,8 @@
 // A fresh GPS fix can take longer than the browser's usual short default,
 // especially indoors or immediately after opening the app on a phone.
 const LOCATION_TIMEOUT_MS = 30_000;
-// This matches the most restrictive accepted accuracy for a teacher-created
-// session geofence. The server still validates every submitted reading.
+// A good phone fix is often around this range indoors. Location remains a
+// campus/audit signal; QR plus the spoken code is the classroom proof.
 const EARLY_ACCEPT_ACCURACY_METERS = 50;
 
 export type LocationFailureReason = "LOCATION_DENIED" | "LOCATION_TIMEOUT" | "LOCATION_UNAVAILABLE";
@@ -19,7 +19,7 @@ export function locationFailureReason(error: unknown): LocationFailureReason {
   return "LOCATION_UNAVAILABLE";
 }
 
-export function getBestFreshPosition(): Promise<GeolocationPosition> {
+export function getBestFreshPosition(earlyAcceptAccuracyMeters = EARLY_ACCEPT_ACCURACY_METERS): Promise<GeolocationPosition> {
   return new Promise((resolve, reject) => {
     if (!navigator.geolocation) {
       reject(new Error("Geolocation is unavailable"));
@@ -44,7 +44,7 @@ export function getBestFreshPosition(): Promise<GeolocationPosition> {
     watchId = navigator.geolocation.watchPosition(
       (position) => {
         if (!best || position.coords.accuracy < best.coords.accuracy) best = position;
-        if (position.coords.accuracy <= EARLY_ACCEPT_ACCURACY_METERS) finish(position);
+        if (position.coords.accuracy <= earlyAcceptAccuracyMeters) finish(position);
       },
       (error) => {
         if (error.code === error.PERMISSION_DENIED) finish(undefined, error);

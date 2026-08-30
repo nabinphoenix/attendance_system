@@ -31,9 +31,12 @@ def test_full_attendance_vertical_slice():
         return response.json()["access_token"]
     teacher_headers={"Authorization":f"Bearer {login('teacher@example.com')}"}; student_headers={"Authorization":f"Bearer {login('student0@example.com')}"}
     started=client.post(f"/api/v1/sessions/{entry_id}/start",headers=teacher_headers);assert started.status_code==200,started.text;session_id=started.json()["id"]
-    token=client.get(f"/api/v1/sessions/{session_id}/qr",headers=teacher_headers).json()["token"]
+    challenge=client.get(f"/api/v1/sessions/{session_id}/qr",headers=teacher_headers).json()
+    token=challenge["token"]
     payload={"qr_token":token,"latitude":27.7172,"longitude":85.3240,"accuracy":5}
-    checked=client.post("/api/v1/check-ins",headers=student_headers,json=payload);assert checked.status_code==200,checked.text
+    scanned=client.post("/api/v1/check-ins",headers=student_headers,json=payload);assert scanned.status_code==200,scanned.text
+    assert scanned.json()["status"]=="challenge_required"
+    checked=client.post("/api/v1/check-ins/confirm",headers=student_headers,json={"verification_token":scanned.json()["verification_token"],"code":challenge["classroom_code"]});assert checked.status_code==200,checked.text
     assert client.post("/api/v1/check-ins",headers=student_headers,json=payload).status_code==409
     final=client.post(f"/api/v1/sessions/{session_id}/finalize",headers=teacher_headers);assert final.status_code==200,final.text
     rows=final.json();assert {r["status"] for r in rows}=={"present","absent"};absent=next(r for r in rows if r["status"]=="absent")

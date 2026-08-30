@@ -62,6 +62,11 @@ export default function Page() {
       setError("Starting a QR attendance session requires a secure HTTPS connection so the browser can share your classroom location.");
       return;
     }
+    const boundary = Number(radiusInput);
+    if (!Number.isFinite(boundary) || boundary <= 0) {
+      setError("Attendance boundary must be greater than 0 meters.");
+      return;
+    }
     setStartingId(routineId);
     setError("");
     setLocationRetryRoutineId(null);
@@ -94,7 +99,7 @@ export default function Page() {
     if (!pendingStart) return;
     const radius = Number(radiusInput);
     if (!Number.isFinite(radius) || radius <= 0) {
-      setError("Enter a boundary greater than 0 meters.");
+      setError("Attendance boundary must be greater than 0 meters.");
       return;
     }
     setStartingId(pendingStart.routineId);
@@ -151,7 +156,7 @@ export default function Page() {
     <p className="mt-2 text-sm text-slate-300">{item.section_names.join(" + ")} · {item.room}</p>
     {item.room !== item.original_room && <p className="text-amber-300">Original room: {item.original_room} · Effective room: {item.room}</p>}
     {item.teacher_id !== item.original_teacher_id && <p className="text-amber-300">Substitute assignment</p>}
-    {!item.cancelled&&item.can_start&&<div className="mt-4">{pendingStart?.routineId===item.routine_id?<div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-4"><div className="flex flex-wrap items-center justify-between gap-2"><p className="font-semibold text-emerald-100">Location captured</p><Badge tone="success">+/-{Math.round(pendingStart?.accuracy ?? 0)}m accuracy</Badge></div><label className="mt-4 block"><span className="field-label">Attendance boundary (meters)</span><input className="w-full" type="number" min="1" step="1" inputMode="decimal" value={radiusInput} onChange={(event)=>setRadiusInput(event.target.value)} aria-describedby={`boundary-help-${item.routine_id}`}/><span id={`boundary-help-${item.routine_id}`} className="helper-text">Students farther than this distance from your captured location will be sent to you for manual verification.</span></label><div className="mt-4 flex flex-wrap gap-2"><Button size="lg" loading={startingId===item.routine_id} disabled={startingId!==null} onClick={()=>void startSession()}>{startingId===item.routine_id?"Starting QR session…":"Start QR attendance"}</Button><Button type="button" variant="ghost" disabled={startingId!==null} onClick={()=>{setPendingStart(null);setStartStatus("")}}>Cancel</Button></div></div>:<Button size="lg" loading={startingId===item.routine_id} disabled={startingId!==null||pendingStart!==null} onClick={()=>void start(item.routine_id)}>{startingId===item.routine_id?"Getting location…":"Use location & set boundary"}</Button>}</div>}
+    {!item.cancelled&&item.can_start&&<div className="mt-4">{pendingStart?.routineId===item.routine_id?<div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-4"><div className="flex flex-wrap items-center justify-between gap-2"><p className="font-semibold text-emerald-100">Location captured</p><Badge tone="success">+/-{Math.round(pendingStart?.accuracy ?? 0)}m accuracy</Badge></div><label className="mt-4 block"><span className="field-label">Campus boundary (meters)</span><input className="w-full" type="number" min="1" step="1" inputMode="decimal" value={radiusInput} onChange={(event)=>setRadiusInput(event.target.value)} aria-describedby={`boundary-help-${item.routine_id}`}/><span id={`boundary-help-${item.routine_id}`} className="helper-text">Location is a campus-level audit signal. The rotating QR and the spoken 5-digit classroom code verify that the student is in class.</span></label><div className="mt-4 flex flex-wrap gap-2"><Button size="lg" loading={startingId===item.routine_id} disabled={startingId!==null} onClick={()=>void startSession()}>{startingId===item.routine_id?"Starting QR session…":"Start QR attendance"}</Button><Button type="button" variant="ghost" disabled={startingId!==null} onClick={()=>{setPendingStart(null);setStartStatus("")}}>Cancel</Button></div></div>:<Button size="lg" loading={startingId===item.routine_id} disabled={startingId!==null||pendingStart!==null} onClick={()=>void start(item.routine_id)}>{startingId===item.routine_id?"Getting location…":"Use location & set boundary"}</Button>}</div>}
   </article>;
 
   return <div>

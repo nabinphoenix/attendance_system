@@ -14,11 +14,15 @@ class Settings(BaseSettings):
     access_token_expire_minutes: int = 60
     auth_cookie_name: str = "antimbench_session"
     auth_cookie_secure: bool = False
-    qr_token_expire_seconds: int = 45
     geofence_radius_meters: float = 150
     geolocation_max_accuracy_meters: float = 100
-    teacher_location_max_accuracy_meters: float = 50
+    teacher_location_max_accuracy_meters: float = 250
     attendance_window_minutes: int = 240
+    attendance_self_checkin_window_minutes: int = 5
+    attendance_challenge_rotation_seconds: int = Field(default=20, ge=1)
+    attendance_code_length: int = Field(default=5, ge=5, le=5)
+    attendance_verification_timeout_seconds: int = Field(default=12, ge=1)
+    attendance_max_code_attempts: int = Field(default=3, ge=1)
     check_in_attempt_rate_limit_seconds: int = 5
     attendance_threshold_percent: float = 75
     minimum_observations: int = 4

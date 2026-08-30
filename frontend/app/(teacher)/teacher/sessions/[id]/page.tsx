@@ -13,7 +13,7 @@ import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 
 type Row = { attendance_id: number | null; student_id: number; student_name: string; roll_number: string; status: string; check_in_time: string | null; distance_meters: number | null; allowed_radius_meters: number | null; location_accuracy_meters: number | null };
 type ExceptionRow = { id: number; student_name: string; roll_number: string; section_name: string; reason: string; distance_meters: number | null; allowed_radius_meters: number | null; accuracy_meters: number | null; created_at: string; status: string };
-type QRData = { token: string; expires_at: string; rotation_seconds: number; module_title: string; section_names: string[]; room: string; start_time: string; end_time: string; geofence_radius_meters: number | null; teacher_location_accuracy_meters: number | null };
+type QRData = { token: string; expires_at: string; rotation_seconds: number; module_title: string; section_names: string[]; room: string; start_time: string; end_time: string; geofence_radius_meters: number | null; teacher_location_accuracy_meters: number | null; classroom_code: string; challenge_id: number };
 type DialogAction = { kind: "finalize" } | { kind: "exception"; item: ExceptionRow; decision: "confirm" | "reject" } | { kind: "status"; row: Row; status: string };
 type RosterView = "grid" | "list";
 type RosterFilter = "all" | "present" | "absent";
@@ -92,6 +92,14 @@ export default function Page() {
     catch (error: any) { setMessage(error.response?.data?.detail ?? "Unable to review this attempt"); }
   }
   async function change(row: Row, status: string, reason: string) { await api.put(`/api/v1/sessions/${id}/attendance/${row.student_id}`, { status, reason }); setMessage(`${row.student_name}'s attendance was updated.`); await refresh(); }
+  async function regenerateChallenge() {
+    try {
+      const response = await api.post<QRData>(`/api/v1/sessions/${id}/challenge`);
+      setQr(response.data);
+      setMessage("A new QR and classroom code have been generated. The previous pair is no longer valid.");
+      await refresh();
+    } catch (error: any) { setMessage(error.response?.data?.detail ?? "Unable to generate a new classroom challenge."); }
+  }
   async function confirmAction(reason: string) { if (!dialog) return; if (dialog.kind === "finalize") await finalize(); else if (dialog.kind === "exception") await decide(dialog.item, dialog.decision, reason); else await change(dialog.row, dialog.status, reason); }
 
   const dialogInfo = dialog?.kind === "finalize"
@@ -111,8 +119,8 @@ export default function Page() {
     <PageHeader title={completed ? "Session summary" : "Live attendance session"} description={qr ? `${qr.module_title} - ${qr.section_names.join(" + ")}` : "Attendance and location verification"} action={!completed && <Button variant="outline" onClick={() => setDialog({ kind: "finalize" })}>Finalize session</Button>} />
     {message && <p role="status" className="mb-4 rounded-lg border border-emerald-500/20 bg-emerald-500/10 p-3 text-sm text-emerald-200">{message}</p>}
     {qr && <section className="panel my-6 grid items-center gap-8 p-5 sm:p-7 lg:grid-cols-[minmax(300px,420px)_1fr]">
-      <div><QRDisplay value={qr.token} /><div className="mx-auto mt-3 max-w-[380px]"><div className="h-1.5 overflow-hidden rounded-full bg-slate-800"><div className="h-full rounded-full bg-emerald-400 transition-[width]" style={{ width: `${Math.max(0, Math.min(100, (countdown / qr.rotation_seconds) * 100))}%` }} /></div><p className="mt-2 text-center text-sm font-medium text-emerald-300">Refreshes in {countdown} seconds</p></div></div>
-      <div><Badge tone="success">Session active</Badge><h2 className="mt-4 text-2xl font-semibold sm:text-3xl">{qr.module_title}</h2><p className="mt-2 text-lg text-slate-300">{qr.section_names.join(" + ")}</p><dl className="mt-6 grid gap-4 sm:grid-cols-2"><div><dt className="text-xs uppercase tracking-wider text-slate-500">Time</dt><dd className="mt-1 font-medium">{qr.start_time.slice(0, 5)}-{qr.end_time.slice(0, 5)}</dd></div><div><dt className="text-xs uppercase tracking-wider text-slate-500">Room</dt><dd className="mt-1 font-medium">{qr.room}</dd></div></dl>{qr.geofence_radius_meters != null ? <div className="mt-6 rounded-lg border border-emerald-500/25 bg-emerald-500/10 p-4"><p className="font-semibold text-emerald-300">Geofence active - {Math.round(qr.geofence_radius_meters)}m</p><p className="mt-1 text-sm text-slate-400">Captured with +/-{Math.round(qr.teacher_location_accuracy_meters ?? 0)}m accuracy</p></div> : <p className="mt-6 rounded-lg border border-amber-500/25 bg-amber-500/10 p-4 text-amber-200">Historical session: location attempts require teacher verification.</p>}</div>
+      <div><QRDisplay value={qr.token} /><div className="mx-auto mt-3 max-w-[380px]"><div className="h-1.5 overflow-hidden rounded-full bg-slate-800"><div className="h-full rounded-full bg-emerald-400 transition-[width]" style={{ width: `${Math.max(0, Math.min(100, (countdown / qr.rotation_seconds) * 100))}%` }} /></div><p className="mt-2 text-center text-sm font-medium text-emerald-300">QR and code change in {countdown} seconds</p></div></div>
+      <div><Badge tone="success">Session active</Badge><h2 className="mt-4 text-2xl font-semibold sm:text-3xl">{qr.module_title}</h2><p className="mt-2 text-lg text-slate-300">{qr.section_names.join(" + ")}</p><div className="mt-6 rounded-2xl border border-emerald-400/40 bg-emerald-400/10 p-5 text-center"><p className="text-xs font-semibold uppercase tracking-[0.2em] text-emerald-200">Announce this class code</p><p className="mt-2 font-mono text-5xl font-bold tracking-[0.3em] text-emerald-100">{qr.classroom_code}</p><p className="mt-3 text-sm text-slate-300">Students must enter this code after scanning the QR.</p><Button className="mt-4" variant="outline" onClick={() => void regenerateChallenge()}>Generate New Challenge</Button></div><dl className="mt-6 grid gap-4 sm:grid-cols-2"><div><dt className="text-xs uppercase tracking-wider text-slate-500">Time</dt><dd className="mt-1 font-medium">{qr.start_time.slice(0, 5)}-{qr.end_time.slice(0, 5)}</dd></div><div><dt className="text-xs uppercase tracking-wider text-slate-500">Room</dt><dd className="mt-1 font-medium">{qr.room}</dd></div></dl>{qr.geofence_radius_meters != null ? <div className="mt-6 rounded-lg border border-emerald-500/25 bg-emerald-500/10 p-4"><p className="font-semibold text-emerald-300">Campus location check active</p><p className="mt-1 text-sm text-slate-400">Teacher location was captured with +/-{Math.round(qr.teacher_location_accuracy_meters ?? 0)}m accuracy.</p></div> : <p className="mt-6 rounded-lg border border-amber-500/25 bg-amber-500/10 p-4 text-amber-200">Historical session: location attempts require teacher verification.</p>}</div>
     </section>}
     <section aria-label="Attendance counts" className="mb-8 grid grid-cols-2 gap-3 lg:grid-cols-4">
       {[

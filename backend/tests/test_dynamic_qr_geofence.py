@@ -27,7 +27,7 @@ from app.modules.academic.models import (
     Teacher,
     TimeSlot,
 )
-from app.modules.attendance.models import AttendanceRecord, CheckInAttempt, CheckInAttemptStatus
+from app.modules.attendance.models import AttendanceChallenge, AttendanceRecord, CheckInAttempt, CheckInAttemptStatus, PendingAttendanceVerification
 from app.modules.attendance.router import validate_current_rotation
 from app.modules.attendance.service import QRValidationError, validate_qr_token
 from app.modules.identity.models import User, UserRole
@@ -180,36 +180,45 @@ def get_qr(client, auth, session_id, teacher="teacher"):
     return response.json()
 
 
-def check_in(client, auth, token, student="a3", **location):
+def scan_check_in(client, auth, token, student="a3", **location):
     payload = {"qr_token": token, "latitude": ROOM_LATITUDE, "longitude": ROOM_LONGITUDE, "accuracy": 8, **location}
     return client.post("/api/v1/check-ins", headers=auth[student], json=payload)
 
 
-def test_teacher_start_requires_valid_fresh_geofence_and_keeps_it_fixed(attendance_env):
+def check_in(client, auth, token, student="a3", **location):
+    response = scan_check_in(client, auth, token, student, **location)
+    if response.status_code != 200 or response.json().get("status") != "challenge_required":
+        return response
+    code = get_qr(client, auth, validate_qr_token(token).session_id)["classroom_code"]
+    return client.post(
+        "/api/v1/check-ins/confirm",
+        headers=auth[student],
+        json={"verification_token": response.json()["verification_token"], "code": code},
+    )
+
+
+def test_teacher_start_accepts_coarse_campus_location_and_keeps_it_fixed(attendance_env):
     client, TestSession, auth, ids, new_session = attendance_env
     endpoint = f"/api/v1/routine-sessions/{ids['routine']}/start"
     # 1: canonical session creation requires a validated location body.
     assert client.post(endpoint, headers=auth["teacher"]).status_code == 422
     # Ownership is still derived from the authenticated effective teacher.
     assert client.post(endpoint, headers=auth["other_teacher"], json={"latitude": ROOM_LATITUDE, "longitude": ROOM_LONGITUDE, "accuracy_meters": 10}).status_code == 403
-    # 5: poor teacher GPS blocks creation and leaves no partial session.
-    poor = client.post(endpoint, headers=auth["teacher"], json={"latitude": ROOM_LATITUDE, "longitude": ROOM_LONGITUDE, "accuracy_meters": settings.teacher_location_max_accuracy_meters + 1})
-    assert poor.status_code == 422 and "accuracy is currently too low" in poor.json()["detail"]
+    # A +/-69m GPS fix is coarse but is adequate for a campus/audit signal.
+    created = client.post(endpoint, headers=auth["teacher"], json={"latitude": ROOM_LATITUDE, "longitude": ROOM_LONGITUDE, "accuracy_meters": 69, "geofence_radius_meters": 150})
+    assert created.status_code == 200, created.text
+    session_id = created.json()["id"]
     with TestSession() as db:
-        assert db.scalar(select(ClassSession).where(ClassSession.routine_entry_id == ids["routine"])) is None
         # 8: Room coordinates are deliberately absent for normal canonical attendance.
         room = db.get(Room, ids["room"])
         room.latitude = room.longitude = None
         db.commit()
-    # 2-4: accepted teacher GPS, its accuracy, radius, and capture time are stored on the session.
-    created = client.post(endpoint, headers=auth["teacher"], json={"latitude": ROOM_LATITUDE, "longitude": ROOM_LONGITUDE, "accuracy_meters": 14.2})
-    assert created.status_code == 200, created.text
-    session_id = created.json()["id"]
+    # The coarse fix, radius, and capture time are stored for audit.
     with TestSession() as db:
         session = db.get(ClassSession, session_id)
         assert session.geofence_latitude == ROOM_LATITUDE and session.geofence_longitude == ROOM_LONGITUDE
-        assert session.teacher_location_accuracy_meters == 14.2
-        assert session.geofence_radius_meters == settings.geofence_radius_meters
+        assert session.teacher_location_accuracy_meters == 69
+        assert session.geofence_radius_meters == 150
         assert session.geofence_captured_at is not None
         assert db.scalar(select(AuditLog).where(AuditLog.action == "class_session.started", AuditLog.entity_id == session_id)) is not None
     # 11: pressing Start again cannot silently move the fixed session geofence.
@@ -228,7 +237,8 @@ def test_qr_generation_authorization_claims_and_rotation(attendance_env):
     session_id = new_session()
     # 1-3: owner generation, unauthorized teacher, and signed session claims.
     first = get_qr(client, auth, session_id)
-    assert first["rotation_seconds"] == settings.qr_token_expire_seconds == 45
+    assert first["rotation_seconds"] == settings.attendance_challenge_rotation_seconds
+    assert first["classroom_code"].isdigit() and len(first["classroom_code"]) == settings.attendance_code_length
     assert client.get(f"/api/v1/sessions/{session_id}/qr", headers=auth["other_teacher"]).status_code == 403
     claims = validate_qr_token(first["token"])
     assert claims.session_id == session_id and claims.version == 1 and claims.nonce
@@ -244,7 +254,7 @@ def test_qr_generation_authorization_claims_and_rotation(attendance_env):
     assert second["token"] != first["token"] and validate_qr_token(second["token"]).version == 2
     # 6: old rotations fail even while their signed exp claim is still fresh (zero grace).
     old = check_in(client, auth, first["token"])
-    assert old.status_code == 400 and old.json()["detail"] == "INVALID_QR"
+    assert old.status_code == 400 and old.json()["detail"] == "ATTENDANCE_CHALLENGE_EXPIRED"
 
 
 def test_expired_modified_cross_session_and_lifecycle_replay(attendance_env):
@@ -277,9 +287,9 @@ def test_expired_modified_cross_session_and_lifecycle_replay(attendance_env):
     # Attendance-window closure is also authoritative.
     with TestSession() as db:
         session = db.get(ClassSession, second_id)
-        session.started_at = datetime.now(UTC) - timedelta(minutes=settings.attendance_window_minutes + 1)
+        session.started_at = datetime.now(UTC) - timedelta(minutes=settings.attendance_self_checkin_window_minutes + 1)
         db.commit()
-    assert check_in(client, auth, second_qr["token"]).json()["detail"] == "ATTENDANCE_WINDOW_CLOSED"
+    assert check_in(client, auth, second_qr["token"]).json()["detail"] == "SELF_CHECKIN_WINDOW_CLOSED"
 
 
 def test_cancelled_effective_occurrence_rejects_existing_session(attendance_env):
@@ -299,12 +309,12 @@ def test_teacher_can_choose_the_session_boundary(attendance_env):
     response = client.post(
         f"/api/v1/routine-sessions/{ids['routine']}/start",
         headers=auth["teacher"],
-        json={"latitude": ROOM_LATITUDE, "longitude": ROOM_LONGITUDE, "accuracy_meters": 10, "geofence_radius_meters": 27},
+        json={"latitude": ROOM_LATITUDE, "longitude": ROOM_LONGITUDE, "accuracy_meters": 69, "geofence_radius_meters": 150},
     )
     assert response.status_code == 200, response.text
     with TestSession() as db:
         session = db.get(ClassSession, response.json()["id"])
-        assert session.geofence_radius_meters == 27
+        assert session.geofence_radius_meters == 150
 
 
 def test_inside_boundary_outside_and_room_specific_radius(attendance_env):
@@ -313,10 +323,10 @@ def test_inside_boundary_outside_and_room_specific_radius(attendance_env):
     session_id = new_session()
     response = check_in(client, auth, get_qr(client, auth, session_id)["token"])
     assert response.status_code == 200 and response.json()["status"] == "present"
-    # 12/14: a point just inside the 50m room radius passes with good accuracy.
+    # A point inside the configured campus boundary can proceed to code verification.
     boundary_session = new_session()
     boundary_token = get_qr(client, auth, boundary_session)["token"]
-    near_boundary = ROOM_LATITUDE + 49 / 111_195
+    near_boundary = ROOM_LATITUDE + 20 / 111_195
     response = check_in(client, auth, boundary_token, student="a4", latitude=near_boundary)
     assert response.status_code == 200 and response.json()["status"] == "present"
     # 13: accurate but outside is queued with server-computed evidence.
@@ -327,6 +337,16 @@ def test_inside_boundary_outside_and_room_specific_radius(attendance_env):
     with TestSession() as db:
         attempt = db.scalar(select(CheckInAttempt).where(CheckInAttempt.class_session_id == outside_session))
         assert attempt.distance_meters > 90 and attempt.allowed_radius_meters == 50 and attempt.geofence_pass is False
+
+
+def test_coarse_geofence_does_not_apply_a_classroom_accuracy_margin(attendance_env):
+    client, _, auth, _, new_session = attendance_env
+    session_id = new_session(geofence_radius_meters=40, teacher_accuracy=10)
+    token = get_qr(client, auth, session_id)["token"]
+    response = check_in(client, auth, token, latitude=ROOM_LATITUDE + 23 / 111_195)
+    # The student is within the campus boundary. The spoken code supplies the
+    # classroom-presence proof, rather than a compounded GPS accuracy margin.
+    assert response.status_code == 200 and response.json()["status"] == "present"
 
 
 @pytest.mark.parametrize("reason", ["LOCATION_DENIED", "LOCATION_TIMEOUT", "LOCATION_UNAVAILABLE"])
@@ -354,11 +374,11 @@ def test_low_accuracy_historical_missing_center_and_default_radius(attendance_en
     missing_id = new_session(geofence_latitude=None, geofence_longitude=None, geofence_radius_meters=None)
     missing = check_in(client, auth, get_qr(client, auth, missing_id)["token"], student="a4")
     assert missing.json()["reason"] == "SESSION_GEOFENCE_NOT_CONFIGURED"
-    # A session center with a null captured radius safely uses the configured default.
+    # A session center with no configured radius uses the campus default.
     fallback_id = new_session(geofence_radius_meters=None)
     fallback_token = get_qr(client, auth, fallback_id)["token"]
-    response = check_in(client, auth, fallback_token, latitude=ROOM_LATITUDE + 100 / 111_195)
-    assert response.json()["status"] == "present"
+    response = check_in(client, auth, fallback_token, latitude=ROOM_LATITUDE + (settings.geofence_radius_meters + 100) / 111_195)
+    assert response.json()["reason"] == "OUTSIDE_GEOFENCE"
     with TestSession() as db:
         attempt = db.scalar(select(CheckInAttempt).where(CheckInAttempt.class_session_id == fallback_id))
         assert attempt.allowed_radius_meters == settings.geofence_radius_meters
@@ -405,6 +425,86 @@ def test_combined_section_eligibility_duplicate_and_identity_spoofing(attendance
     # 25: student_id cannot be submitted at all; identity always comes from auth.
     spoof = client.post("/api/v1/check-ins", headers=auth["a3"], json={"qr_token": invalid_token, "latitude": ROOM_LATITUDE, "longitude": ROOM_LONGITUDE, "accuracy": 5, "student_id": ids["student_a4"]})
     assert spoof.status_code == 422
+
+
+def test_scan_requires_the_teacher_code_before_creating_attendance(attendance_env):
+    client, TestSession, auth, ids, new_session = attendance_env
+    session_id = new_session()
+    qr = get_qr(client, auth, session_id)
+
+    # Students can scan the signed QR but never retrieve the spoken code.
+    assert client.get(f"/api/v1/sessions/{session_id}/qr", headers=auth["a3"]).status_code == 403
+    scan = scan_check_in(client, auth, qr["token"])
+    assert scan.status_code == 200, scan.text
+    payload = scan.json()
+    assert payload["status"] == "challenge_required"
+    assert payload["code_length"] == 5
+    assert "code" not in jwt.get_unverified_claims(qr["token"])
+    assert "classroom_code" not in payload
+    with TestSession() as db:
+        assert db.scalar(select(AttendanceRecord).where(AttendanceRecord.class_session_id == session_id)) is None
+        assert db.scalar(select(PendingAttendanceVerification).where(PendingAttendanceVerification.class_session_id == session_id)) is not None
+
+    confirmed = client.post(
+        "/api/v1/check-ins/confirm",
+        headers=auth["a3"],
+        json={"verification_token": payload["verification_token"], "code": qr["classroom_code"]},
+    )
+    assert confirmed.status_code == 200 and confirmed.json()["status"] == "present"
+    with TestSession() as db:
+        assert db.scalar(select(AttendanceRecord).where(AttendanceRecord.class_session_id == session_id, AttendanceRecord.student_id == ids["student_a3"])) is not None
+        assert db.scalar(select(AuditLog).where(AuditLog.action == "attendance.qr_scanned")) is not None
+        assert db.scalar(select(AuditLog).where(AuditLog.action == "attendance.challenge_confirmed")) is not None
+
+    replay = client.post(
+        "/api/v1/check-ins/confirm",
+        headers=auth["a3"],
+        json={"verification_token": payload["verification_token"], "code": qr["classroom_code"]},
+    )
+    assert replay.status_code == 409 and replay.json()["detail"] == "ALREADY_CHECKED_IN"
+
+
+def test_wrong_code_is_limited_and_teacher_regeneration_invalidates_pending(attendance_env):
+    client, TestSession, auth, _, new_session = attendance_env
+    session_id = new_session()
+    first = get_qr(client, auth, session_id)
+    scan = scan_check_in(client, auth, first["token"])
+    verification_token = scan.json()["verification_token"]
+    wrong_code = "99999" if first["classroom_code"] != "99999" else "00000"
+
+    for remaining in range(settings.attendance_max_code_attempts - 1, 0, -1):
+        wrong = client.post(
+            "/api/v1/check-ins/confirm",
+            headers=auth["a3"],
+            json={"verification_token": verification_token, "code": wrong_code},
+        )
+        assert wrong.status_code == 400 and wrong.json()["detail"] == f"INCORRECT_CLASSROOM_CODE:{remaining}"
+    exhausted = client.post(
+        "/api/v1/check-ins/confirm",
+        headers=auth["a3"],
+        json={"verification_token": verification_token, "code": wrong_code},
+    )
+    assert exhausted.status_code == 400 and exhausted.json()["detail"] == "VERIFICATION_FAILED"
+    with TestSession() as db:
+        pending = db.scalar(select(PendingAttendanceVerification).where(PendingAttendanceVerification.token_hash.is_not(None)))
+        assert pending.failed_attempts == settings.attendance_max_code_attempts
+        assert pending.invalidated_at is not None
+        assert db.scalar(select(AuditLog).where(AuditLog.action == "attendance.challenge_failed")) is not None
+
+    second_scan = scan_check_in(client, auth, first["token"], student="a4")
+    assert second_scan.status_code == 200
+    regenerated = client.post(f"/api/v1/sessions/{session_id}/challenge", headers=auth["teacher"])
+    assert regenerated.status_code == 200 and regenerated.json()["token"] != first["token"]
+    assert client.post(f"/api/v1/sessions/{session_id}/challenge", headers=auth["other_teacher"]).status_code == 403
+    stale_confirm = client.post(
+        "/api/v1/check-ins/confirm",
+        headers=auth["a4"],
+        json={"verification_token": second_scan.json()["verification_token"], "code": first["classroom_code"]},
+    )
+    assert stale_confirm.status_code == 400 and stale_confirm.json()["detail"] == "ATTENDANCE_CHALLENGE_EXPIRED"
+    with TestSession() as db:
+        assert db.scalar(select(AttendanceChallenge).where(AttendanceChallenge.class_session_id == session_id, AttendanceChallenge.revoked_at.is_not(None))) is not None
+        assert db.scalar(select(AuditLog).where(AuditLog.action == "attendance_challenge.manually_regenerated")) is not None
 
 
 def test_failed_attempt_rate_limit_and_teacher_exception_decisions(attendance_env):
