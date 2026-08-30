@@ -51,6 +51,7 @@ export default function Page() {
   const [completed, setCompleted] = useState(false);
   const [checkInClosed, setCheckInClosed] = useState(false);
   const [countdown, setCountdown] = useState(0);
+  const [checkInSecondsRemaining, setCheckInSecondsRemaining] = useState(0);
   const [dialog, setDialog] = useState<DialogAction | null>(null);
   const [rosterView, setRosterView] = useState<RosterView>("grid");
   const [rosterFilter, setRosterFilter] = useState<RosterFilter>("all");
@@ -74,7 +75,9 @@ export default function Page() {
   useEffect(() => { const timer = window.setInterval(() => setCountdown(qr ? Math.max(0, Math.ceil((new Date(qr.expires_at).getTime() - Date.now()) / 1000)) : 0), 250); return () => window.clearInterval(timer); }, [qr]);
   useEffect(() => {
     const update = () => {
-      if (qr && new Date(qr.self_checkin_closes_at).getTime() <= Date.now()) { setCheckInClosed(true); setQr(null); }
+      const remaining = qr ? Math.max(0, Math.ceil((new Date(qr.self_checkin_closes_at).getTime() - Date.now()) / 1000)) : 0;
+      setCheckInSecondsRemaining(remaining);
+      if (qr && remaining === 0) { setCheckInClosed(true); setQr(null); }
     };
     update();
     const timer = window.setInterval(update, 250);
@@ -89,7 +92,6 @@ export default function Page() {
     remaining: rows.filter((row) => row.status === "not_checked_in").length,
   }), [rows]);
   const attendanceRate = counts.total ? Math.round((counts.present / counts.total) * 100) : 0;
-  const checkInSecondsRemaining = qr ? Math.max(0, Math.ceil((new Date(qr.self_checkin_closes_at).getTime() - Date.now()) / 1000)) : 0;
   const visibleRows = useMemo(() => {
     const query = search.trim().toLowerCase();
     return rows.filter((row) => {
