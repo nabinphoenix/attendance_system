@@ -20,7 +20,13 @@ class SubjectPage(BaseModel): items: list[SubjectRead]; total: int; page: int; p
 class EnrollmentCreate(BaseModel): subject_id: int
 class PersonCreate(BaseModel): name: str; email: EmailStr; password: str
 class StudentCreate(PersonCreate): section_id: int; roll_number: str; subject_ids: list[int] = []
-class StudentRead(ORMModel): id: int; user_id: int | None; section_id: int; roll_number: str
+class StudentRead(ORMModel):
+    id: int
+    user_id: int | None
+    section_id: int
+    roll_number: str
+    name: str | None = None
+    email: str | None = None
 class TeacherCreate(PersonCreate): employee_code: str
 class TeacherUpdate(BaseModel): name: str | None = None; email: EmailStr | None = None; password: str | None = None; employee_code: str | None = None
 class TeacherRead(ORMModel): id: int; user_id: int; employee_code: str; name: str; email: EmailStr
