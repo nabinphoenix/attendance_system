@@ -23,7 +23,7 @@ FastAPI backend (REST API, JWT cookie/bearer authentication)
         |
         +-- PostgreSQL on AWS (SQLAlchemy models + Alembic migrations)
         +-- SMTP/Gmail worker (durable notifications table)
-        +-- Optional S3 profile-image storage
+        +-- PostgreSQL-backed private profile photos
 ```
 
 The frontend is in `frontend/`; the backend is in `backend/`. FastAPI registers modular routers in `backend/app/main.py`. The major backend modules are `identity`, `academic`, `scheduling`, `attendance`, `analytics`, `course_completion`, `crm`, and `operations`.

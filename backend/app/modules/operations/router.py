@@ -23,7 +23,7 @@ from app.modules.identity.models import User,UserRole
 from app.modules.academic.student_profile_service import current_student_profile
 from app.modules.scheduling.models import ClassSession,TimetableEntry
 from .models import AuditLog,ImportJob,Notification,NotificationStatus
-from .schemas import AuditPage,AuditRead,ImportError,ImportJobRead,NotificationRead
+from .schemas import AuditPage,AuditRead,ImportError,ImportJobRead,ImportRowResult,NotificationRead
 from .service import log_audit
 router=APIRouter(tags=["operations"])
 
@@ -166,7 +166,17 @@ async def validate_timetable_file(db,file,teacher_id:int|None=None,context:tuple
    valid.append((int(offset)+2,payload,state,message,pending_names))
   except Exception as exc:errors.append(import_error(int(offset)+2,"row",str(exc)))
  return len(frame),valid,errors
-def read_job(job):return ImportJobRead(id=job.id,file_name=job.file_name,upload_type=job.upload_type,total_rows=job.total_rows,success_count=job.success_count,failed_count=job.failed_count,pending_section_references=job.pending_section_references,errors=[ImportError(**e) for e in json.loads(job.errors_json)],created_at=job.created_at)
+def import_row_data(row):
+    return {str(key): str(value).strip() for key,value in row.items() if str(value).strip()}
+def read_job(job):
+    errors=json.loads(job.errors_json or "[]")
+    results=json.loads(job.results_json or "[]")
+    # Jobs created before row-level results were introduced still expose their
+    # stored failures in the detail view.
+    if not results:
+        results=[{"row_number":item.get("row_number",0),"status":"failed","message":item.get("error_message", "Import failed"),"data":{}} for item in errors]
+    results=sorted(results,key=lambda item:item.get("row_number",0))
+    return ImportJobRead(id=job.id,file_name=job.file_name,upload_type=job.upload_type,total_rows=job.total_rows,success_count=job.success_count,failed_count=job.failed_count,pending_section_references=job.pending_section_references,errors=[ImportError(**e) for e in errors],results=[ImportRowResult(**item) for item in results],created_at=job.created_at)
 async def read_import_file(file:UploadFile):
     raw=await file.read();name=(file.filename or "").lower()
     try:
@@ -180,7 +190,7 @@ async def read_import_file(file:UploadFile):
 @router.post("/imports/students",response_model=ImportJobRead)
 async def import_students(user:Annotated[User,Depends(require_role("admin"))],db:DbSession,file:UploadFile=File(...)):
     frame=await read_import_file(file)
-    job=ImportJob(uploaded_by=user.id,file_name=file.filename or "students.csv",upload_type="students",total_rows=len(frame),success_count=0,failed_count=0);db.add(job);db.flush();errors=[]
+    job=ImportJob(uploaded_by=user.id,file_name=file.filename or "students.csv",upload_type="students",total_rows=len(frame),success_count=0,failed_count=0);db.add(job);db.flush();errors=[];results=[]
     for offset,row in frame.iterrows():
         row_number=int(offset)+2
         try:
@@ -197,11 +207,14 @@ async def import_students(user:Annotated[User,Depends(require_role("admin"))],db
                 student=Student(user_id=account.id,section_id=section.id,roll_number=str(row.get("roll_number","")).strip() or f"IMP-{job.id}-{row_number}",name=name,email=email);db.add(student);db.flush();issue_student_invitation(db,student,account,welcome=True);phone=str(row.get("phone","")).strip()
                 if phone:db.add(Guardian(name=f"Guardian of {name}",student_id=student.id,phone=phone))
             job.success_count+=1
-        except Exception as exc:errors.append({"row_number":row_number,"error_message":str(exc)});job.failed_count+=1
-    job.errors_json=json.dumps(errors);log_audit(db,user.id,"import.completed","import_job",job.id,None,{"success":job.success_count,"failed":job.failed_count});db.commit();db.refresh(job);return read_job(job)
+            results.append({"row_number":row_number,"status":"success","message":"Student imported and secure account-setup email queued.","data":{"name":name,"email":email,"batch_name":batch_name,"section_name":section_name}})
+        except Exception as exc:
+            message=str(exc);errors.append({"row_number":row_number,"error_message":message});job.failed_count+=1
+            results.append({"row_number":row_number,"status":"failed","message":message,"data":{}})
+    job.errors_json=json.dumps(errors);job.results_json=json.dumps(results);log_audit(db,user.id,"import.completed","import_job",job.id,None,{"success":job.success_count,"failed":job.failed_count});db.commit();db.refresh(job);return read_job(job)
 @router.post("/imports/routines",response_model=ImportJobRead)
 async def import_routines(user:Annotated[User,Depends(require_role("admin"))],db:DbSession,file:UploadFile=File(...)):
-    frame=await read_import_file(file);job=ImportJob(uploaded_by=user.id,file_name=file.filename or "routines.csv",upload_type="routines",total_rows=len(frame),success_count=0,failed_count=0);db.add(job);db.flush();errors=[]
+    frame=await read_import_file(file);job=ImportJob(uploaded_by=user.id,file_name=file.filename or "routines.csv",upload_type="routines",total_rows=len(frame),success_count=0,failed_count=0);db.add(job);db.flush();errors=[];results=[]
     for offset,row in frame.iterrows():
         row_number=int(offset)+2
         try:
@@ -211,8 +224,11 @@ async def import_routines(user:Annotated[User,Depends(require_role("admin"))],db
                 payload=resolve_routine_payload(db,row)
                 create_or_merge_routine_entry(db,payload)
             job.success_count+=1
-        except Exception as exc:errors.append({"row_number":row_number,"error_message":str(exc)});job.failed_count+=1
-    job.errors_json=json.dumps(errors);log_audit(db,user.id,"import.completed","import_job",job.id,None,{"upload_type":"routines","success":job.success_count,"failed":job.failed_count});db.commit();db.refresh(job);return read_job(job)
+            results.append({"row_number":row_number,"status":"success","message":"Routine imported successfully.","data":import_row_data(row)})
+        except Exception as exc:
+            message=str(exc);errors.append({"row_number":row_number,"error_message":message});job.failed_count+=1
+            results.append({"row_number":row_number,"status":"failed","message":message,"data":import_row_data(row)})
+    job.errors_json=json.dumps(errors);job.results_json=json.dumps(results);log_audit(db,user.id,"import.completed","import_job",job.id,None,{"upload_type":"routines","success":job.success_count,"failed":job.failed_count});db.commit();db.refresh(job);return read_job(job)
 @router.get("/imports",response_model=list[ImportJobRead])
 def import_history(user:Annotated[User,Depends(require_role("admin"))],db:DbSession):return [read_job(j) for j in db.scalars(select(ImportJob).order_by(ImportJob.created_at.desc())).all()]
 @router.get("/imports/{id}",response_model=ImportJobRead)
@@ -255,7 +271,7 @@ def pending_section_routine_references(section_id:int,intake_id:int,semester_num
     q=select(RoutinePendingSection).join(RoutineEntry).outerjoin(RoutineEntrySection).where(RoutinePendingSection.resolved_section_id.is_(None),RoutineEntry.intake_id==intake_id,RoutineEntry.semester_number==semester_number,or_(RoutineEntry.section_id==section_id,RoutineEntrySection.section_id==section_id)).order_by(RoutinePendingSection.created_at,RoutinePendingSection.id)
     return [{"id":item.id,"routine_entry_id":item.routine_entry_id,"section_name":item.section_name,"intake_id":item.intake_id,"semester_number":item.semester_number,"module_id":item.routine_entry.module_id,"module_code":item.routine_entry.module.code,"module_title":item.routine_entry.module.title,"day_of_week":item.routine_entry.day_of_week,"time_slot_id":item.routine_entry.time_slot_id,"teacher_id":item.routine_entry.teacher_id,"room_id":item.routine_entry.room_id,"class_type_id":item.routine_entry.class_type_id} for item in db.scalars(q).unique().all()]
 def apply_timetable_import(db,user,file_name,total,valid,errors,upload_type):
-    job=ImportJob(uploaded_by=user.id,file_name=file_name,upload_type=upload_type,total_rows=total,success_count=0,failed_count=len(errors),pending_section_references=0);db.add(job);db.flush()
+    job=ImportJob(uploaded_by=user.id,file_name=file_name,upload_type=upload_type,total_rows=total,success_count=0,failed_count=len(errors),pending_section_references=0);db.add(job);db.flush();results=[{"row_number":item["row_number"],"status":"failed","message":item["error_message"],"data":{}} for item in errors]
     for row_number,payload,_,_,pending_names in valid:
         try:
             with db.begin_nested():
@@ -263,8 +279,11 @@ def apply_timetable_import(db,user,file_name,total,valid,errors,upload_type):
                 persist_pending_section_references(db,entry,pending_names,payload.intake_id,payload.semester_number)
             job.success_count+=1
             job.pending_section_references+=len(pending_names)
-        except Exception as exc:job.failed_count+=1;errors.append(import_error(row_number,"row",str(exc)))
-    job.errors_json=json.dumps(errors);log_audit(db,user.id,"import.completed","import_job",job.id,None,{"upload_type":upload_type,"success":job.success_count,"failed":job.failed_count,"pending_section_references":job.pending_section_references});db.commit();db.refresh(job);return read_job(job)
+            results.append({"row_number":row_number,"status":"success","message":"Routine imported successfully.","data":payload.model_dump()})
+        except Exception as exc:
+            message=str(exc);job.failed_count+=1;errors.append(import_error(row_number,"row",message))
+            results.append({"row_number":row_number,"status":"failed","message":message,"data":payload.model_dump()})
+    job.errors_json=json.dumps(errors);job.results_json=json.dumps(results);log_audit(db,user.id,"import.completed","import_job",job.id,None,{"upload_type":upload_type,"success":job.success_count,"failed":job.failed_count,"pending_section_references":job.pending_section_references});db.commit();db.refresh(job);return read_job(job)
 @router.post("/academic/teachers/{teacher_id}/timetable/import",response_model=ImportJobRead)
 async def import_teacher_timetable(teacher_id:int,user:Annotated[User,Depends(require_role("admin"))],db:DbSession,file:UploadFile=File(...)):
     if not db.get(Teacher,teacher_id):raise HTTPException(404,"Teacher not found")

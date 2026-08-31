@@ -1,7 +1,7 @@
 from io import BytesIO
 
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 from PIL import Image
@@ -50,6 +50,16 @@ def test_user_can_update_profile_password_and_avatar(tmp_path, monkeypatch):
         assert avatar.status_code == 200
         assert avatar.json()["avatar_url"].startswith("/api/v1/profile-media/")
         assert client.get(avatar.json()["avatar_url"]).status_code == 200
+        image_response = client.get(avatar.json()["avatar_url"])
+        assert image_response.status_code == 200
+        assert image_response.content == image_stream.getvalue()
+        assert image_response.headers["content-type"] == "image/png"
+        with session_factory() as db:
+            stored_user = db.scalar(select(User).where(User.email == "updated@example.com"))
+            assert stored_user is not None
+            assert stored_user.avatar_data == image_stream.getvalue()
+            assert stored_user.avatar_content_type == "image/png"
+        assert not list(tmp_path.iterdir())
 
         assert client.post("/api/v1/auth/logout").status_code == 204
         assert client.post("/api/v1/auth/login", json={"email": "profile@example.com", "password": "Original123!"}).status_code == 401

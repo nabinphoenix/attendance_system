@@ -90,7 +90,7 @@ export default function StudentInvitationPanel() {
         section_id: sectionId ? Number(sectionId) : null,
         only_without_accounts: onlyUnregistered,
       });
-      setSummary(`Account emails queued: ${response.data.sent} (${response.data.activation_sent} activation, ${response.data.password_setup_sent} password setup), ${response.data.failed} failed.`);
+      setSummary(`Account emails queued: ${response.data.sent} (${response.data.activation_sent} activation, ${response.data.password_setup_sent} password setup), ${response.data.failed} failed. The delivery worker processes the selected emails automatically.`);
       setSelected([]);
       await load();
     } catch (requestError: any) {

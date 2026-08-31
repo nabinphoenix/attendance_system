@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.modules.identity.models import User
 from app.modules.operations.service import queue_notification
+from app.modules.operations.email_templates import invitation_email
 
 from .models import InvitationPurpose, InvitationStatus, Student, StudentInvitation
 
@@ -50,31 +51,14 @@ def issue_student_invitation(
     setup_url = f"{application_url}/activate?token={token}"
     student_name = student.name or (account.name if account else None) or "Student"
 
-    if welcome:
-        subject = "Your AntimBench student account is ready"
-        body = (
-            f"Hello {student_name},\n\n"
-            "Your AntimBench student account has been created.\n"
-            f"Sign-in email: {email}\n\n"
-            "For your security, choose your own password using the single-use setup link below.\n\n"
-            f"After you save your password, visit {application_url} and sign in with "
-            "your registered email address and the password you created.\n\n"
-            f"This setup link expires in {settings.invitation_expire_hours} hours.\n\n"
-            f"Complete account setup: {setup_url}"
-        )
-    elif purpose == InvitationPurpose.PASSWORD_SETUP:
-        subject = "Set your AntimBench password"
-        body = (
-            f"Hello {student_name}, set a new password for your existing AntimBench "
-            f"account by opening this secure link before it expires: {setup_url}"
-        )
-    else:
-        subject = "Activate your AntimBench account"
-        body = (
-            f"Hello {student_name}, activate your account by opening this link before "
-            f"it expires: {setup_url}"
-        )
-
+    subject, body, html_body = invitation_email(
+        student_name=student_name,
+        email=email,
+        setup_url=setup_url,
+        expires_hours=settings.invitation_expire_hours,
+        welcome=welcome,
+        has_account=account is not None,
+    )
     queue_notification(
         db,
         "student",
@@ -83,5 +67,6 @@ def issue_student_invitation(
         body,
         "student_invitation",
         invitation.id,
+        html_body=html_body,
     )
     return invitation

@@ -10,6 +10,7 @@ from app.core.database import SessionLocal
 from app.modules.academic.models import Guardian, Student, Teacher
 from app.modules.identity.models import User
 from app.modules.operations.models import Notification, NotificationStatus
+from app.modules.operations.email_templates import plain_text_email_html
 
 
 def recipient_address(db: Session, notification: Notification) -> str | None:
@@ -42,6 +43,7 @@ def deliver_notification(db: Session, notification: Notification) -> None:
         message["To"] = destination
         message["Subject"] = notification.subject
         message.set_content(notification.body)
+        message.add_alternative(notification.html_body or plain_text_email_html(notification.subject, notification.body), subtype="html")
         with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=20) as smtp:
             smtp.starttls()
             if settings.smtp_username:
@@ -49,6 +51,7 @@ def deliver_notification(db: Session, notification: Notification) -> None:
             smtp.send_message(message)
         if notification.related_entity == "student_invitation":
             notification.body = "Secure student account setup email delivered."
+            notification.html_body = "Secure student account setup email delivered."
         notification.status = NotificationStatus.SENT
         notification.sent_at = datetime.now(UTC)
     except Exception as exc:

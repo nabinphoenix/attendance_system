@@ -172,13 +172,12 @@ async def upload_avatar(
     suffix, media_type = PROFILE_IMAGE_TYPES[image_format]
     avatar_key = f"{uuid4().hex}.{suffix}"
     media_store = get_profile_media_store()
-    try:
-        media_store.save(avatar_key, contents, media_type)
-    except ProfileMediaUnavailable as exc:
-        raise HTTPException(503, str(exc)) from exc
     old_key = user.avatar_key
+    old_media_was_external = user.avatar_data is None
     user.avatar_key = avatar_key
-    log_audit(db, user.id, "user.avatar_updated", "user", user.id, {"avatar_key": old_key}, {"avatar_key": avatar_key})
+    user.avatar_data = contents
+    user.avatar_content_type = media_type
+    log_audit(db, user.id, "user.avatar_updated", "user", user.id, {"avatar_key": old_key}, {"avatar_key": avatar_key, "storage": "postgresql"})
     try:
         db.commit(); db.refresh(user)
     except Exception:
@@ -188,7 +187,7 @@ async def upload_avatar(
         except ProfileMediaUnavailable:
             pass
         raise
-    if old_key:
+    if old_key and old_media_was_external:
         try:
             media_store.delete(old_key)
         except ProfileMediaUnavailable:
@@ -198,9 +197,18 @@ async def upload_avatar(
     return user
 
 @router.get("/profile-media/{avatar_key}")
-def profile_media(avatar_key: str, _: Annotated[User, Depends(get_current_user)]) -> Response:
+def profile_media(avatar_key: str, _: Annotated[User, Depends(get_current_user)], db: DbSession) -> Response:
     if Path(avatar_key).name != avatar_key:
         raise HTTPException(404, "Profile image not found")
+    owner = db.scalar(select(User).where(User.avatar_key == avatar_key))
+    if not owner:
+        raise HTTPException(404, "Profile image not found")
+    if owner.avatar_data is not None:
+        return Response(
+            content=owner.avatar_data,
+            media_type=owner.avatar_content_type or "application/octet-stream",
+            headers={"Cache-Control": "private, max-age=31536000, immutable"},
+        )
     try:
         image = get_profile_media_store().read(avatar_key)
     except ProfileMediaNotFound as exc:
