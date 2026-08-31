@@ -9,11 +9,12 @@ import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { EmptyState } from "@/components/ui/States";
 import { apiMessage, AvailabilityState, ScheduleFeedback } from "@/components/ScheduleFeedback";
+import OverrideWorkspace from "@/components/OverrideWorkspace";
 
 const empty = {override_date:"",new_teacher_id:"",new_room:"",start_time:"",end_time:"",is_cancelled:false,reason:""};
 const days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 
-export default function Page() {
+export function LegacyPage() {
   const params = useSearchParams();
   const [data, setData] = useState<Record<string, any[]>>({});
   const [routineId, setRoutineId] = useState(params.get("routine_id") || "");
@@ -83,4 +84,8 @@ export default function Page() {
     <section className="mt-8"><h2 className="text-lg font-semibold">Override history</h2><div className="mt-4 space-y-3">{routineId && !rows.length ? <EmptyState title="No overrides for this class" description="Dated schedule changes will appear here." /> : rows.map((row) => <article key={row.id} className="panel flex flex-col gap-4 p-4 sm:flex-row sm:items-center"><div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><p className="font-semibold text-slate-100">{new Date(`${row.override_date}T00:00:00`).toLocaleDateString(undefined,{dateStyle:"medium"})}</p><StatusBadge status={row.status} />{row.is_cancelled && <StatusBadge status="cancelled" />}</div><p className="mt-2 text-sm text-slate-300">{row.is_cancelled ? "Class cancelled" : row.new_teacher_id ? `Substitute: ${find("teachers",row.new_teacher_id)?.name || "Assigned lecturer"}` : row.new_room ? `Room: ${row.new_room}` : "Time adjusted"}</p><p className="mt-1 text-sm text-slate-500">{row.reason}</p></div>{row.status === "pending" && <div className="flex gap-2"><Button size="sm" onClick={() => setDecision({id:row.id,status:"approved"})}>Approve</Button><Button variant="danger" size="sm" onClick={() => setDecision({id:row.id,status:"rejected"})}>Reject</Button></div>}</article>)}</div></section>
     <ConfirmDialog open={Boolean(decision)} title={`${decision?.status === "approved" ? "Approve" : "Reject"} this override?`} description="This decision will update the effective schedule and be visible to affected users." confirmLabel={decision?.status === "approved" ? "Approve override" : "Reject override"} tone={decision?.status === "approved" ? "primary" : "danger"} onClose={() => setDecision(null)} onConfirm={decide} />
   </div>;
+}
+
+export default function Page() {
+  return <OverrideWorkspace />;
 }

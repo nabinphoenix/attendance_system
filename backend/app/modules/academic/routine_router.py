@@ -60,6 +60,14 @@ class RoutineConflict(BaseModel):
  resource:str;title:str;description:str;routine_id:int;class_label:str;teacher_name:str;room_name:str;section_names:list[str];time_range:str
 class RoutineAvailability(BaseModel):
  available:bool;conflicts:list[RoutineConflict]=[]
+class RoomAvailabilitySlot(BaseModel):
+ time_slot_id:int;start_time:time;end_time:time;status:Literal["available","occupied"];routine_id:int|None=None;class_label:str|None=None;section_names:list[str]=[]
+class RoomAvailabilityRoom(BaseModel):
+ id:int;name:str;room_type:str;capacity:int;slots:list[RoomAvailabilitySlot]
+class BlockRoomAvailability(BaseModel):
+ id:int;name:str;rooms:list[RoomAvailabilityRoom]
+class RoomAvailabilityRead(BaseModel):
+ day_of_week:int;blocks:list[BlockRoomAvailability]
 class EffectiveRoutineRead(BaseModel):
  routine_id:int;date:date;start_time:time;end_time:time;teacher_id:int;original_teacher_id:int;room:str;original_room:str;section_ids:list[int];section_names:list[str];module_id:int;class_type_id:int;cancelled:bool;override_id:int|None;occupancy_status:Literal["occupied","empty"];can_start:bool=False
 
@@ -343,6 +351,31 @@ def create_routine(p:RoutineCreate,user:Annotated[User,Depends(require_role("adm
 def routine_availability(p:RoutineCreate,user:Annotated[User,Depends(require_role("admin"))],db:DbSession):
  valid_routine(db,p);conflicts=routine_conflicts(db,p)
  return RoutineAvailability(available=not conflicts,conflicts=conflicts)
+@router.get("/room-availability",response_model=RoomAvailabilityRead)
+def room_availability(db:DbSession,day_of_week:int=Query(0,ge=0,le=6),block_id:int|None=None):
+ slots=db.scalars(select(TimeSlot).order_by(TimeSlot.start_time,TimeSlot.end_time)).all()
+ block_query=select(Block).order_by(Block.name)
+ if block_id is not None:block_query=block_query.where(Block.id==block_id)
+ blocks=db.scalars(block_query).all()
+ rooms=db.scalars(select(Room).order_by(Room.block_id,Room.name)).all()
+ rooms_by_block:dict[int,list[Room]]={block.id:[] for block in blocks}
+ for room in rooms:
+  if room.block_id in rooms_by_block:rooms_by_block[room.block_id].append(room)
+ entries=db.scalars(routine_query().join(TimeSlot,RoutineEntry.time_slot_id==TimeSlot.id).where(RoutineEntry.day_of_week==day_of_week)).unique().all()
+ result=[]
+ for block in blocks:
+  block_rooms=[]
+  for room in rooms_by_block[block.id]:
+   room_slots=[]
+   for slot in slots:
+    occupant=next((entry for entry in entries if entry.room_id==room.id and entry.time_slot.start_time<slot.end_time and entry.time_slot.end_time>slot.start_time),None)
+    if occupant:
+     section_names=[link.section.name for link in occupant.section_links if link.section] or [occupant.section.name]
+     room_slots.append(RoomAvailabilitySlot(time_slot_id=slot.id,start_time=slot.start_time,end_time=slot.end_time,status="occupied",routine_id=occupant.id,class_label=f"{occupant.module.code} - {occupant.module.title} ({occupant.class_type.name})",section_names=section_names))
+    else:room_slots.append(RoomAvailabilitySlot(time_slot_id=slot.id,start_time=slot.start_time,end_time=slot.end_time,status="available"))
+   block_rooms.append(RoomAvailabilityRoom(id=room.id,name=room.name,room_type=room.room_type,capacity=room.capacity,slots=room_slots))
+  result.append(BlockRoomAvailability(id=block.id,name=block.name,rooms=block_rooms))
+ return RoomAvailabilityRead(day_of_week=day_of_week,blocks=result)
 def filtered_routine_query(intake_id:int|None=None,semester_number:int|None=None,section_id:int|None=None,teacher_id:int|None=None,module_id:int|None=None,day_of_week:int|None=None,room_id:int|None=None,block_id:int|None=None):
  q=routine_query()
  if intake_id:q=q.where(RoutineEntry.intake_id==intake_id)
@@ -400,7 +433,7 @@ def my_teacher_routine(user:Annotated[User,Depends(require_role("teacher"))],db:
 def teacher_routine(teacher_id:int,db:DbSession):
  get(db,Teacher,teacher_id,"Teacher")
  return routines(db,teacher_id=teacher_id)
-class RoutineOverrideCreate(BaseModel):override_date:date;new_teacher_id:int|None=None;new_room:str|None=None;start_time:time|None=None;end_time:time|None=None;is_cancelled:bool=False;reason:str
+class RoutineOverrideCreate(BaseModel):override_date:date;new_teacher_id:int|None=None;new_room:str|None=None;new_room_id:int|None=None;start_time:time|None=None;end_time:time|None=None;is_cancelled:bool=False;reason:str
 class RoutineOverrideDecision(BaseModel):status:str
 @router.get("/routines/{routine_id}/overrides")
 def routine_overrides(routine_id:int,db:DbSession):return db.scalars(select(ScheduleOverride).where(ScheduleOverride.routine_entry_id==routine_id).order_by(ScheduleOverride.override_date.desc())).all()
@@ -413,6 +446,7 @@ def routine_override_availability(routine_id:int,p:RoutineOverrideCreate,user:An
   conflict=RoutineConflict(resource="override",title="Override already exists",description=f"{entry.module.code} - {entry.module.title} already has a {existing.status.value} override for {p.override_date}. Review the override history instead of creating another one.",routine_id=entry.id,class_label=f"{entry.module.code} - {entry.module.title} ({entry.class_type.name})",teacher_name=entry.teacher.user.name,room_name=entry.room.name,section_names=section_names,time_range=f"{entry.time_slot.start_time:%H:%M} to {entry.time_slot.end_time:%H:%M}")
   return RoutineAvailability(available=False,conflicts=[conflict])
  if p.new_teacher_id is not None:get(db,Teacher,p.new_teacher_id,"Substitute teacher")
+ if p.new_room_id is not None:get(db,Room,p.new_room_id,"Room")
  proposed=ScheduleOverride(routine_entry_id=routine_id,created_by=user.id,status=OverrideStatus.PENDING,**p.model_dump())
  _,conflicts=routine_override_conflicts(db,entry,proposed)
  return RoutineAvailability(available=not conflicts,conflicts=[RoutineConflict(**item) for item in conflicts])
@@ -420,6 +454,7 @@ def routine_override_availability(routine_id:int,p:RoutineOverrideCreate,user:An
 def create_routine_override(routine_id:int,p:RoutineOverrideCreate,user:Annotated[User,Depends(require_role("admin"))],db:DbSession):
  entry=get(db,RoutineEntry,routine_id,"Routine entry")
  if p.new_teacher_id is not None:get(db,Teacher,p.new_teacher_id,"Substitute teacher")
+ if p.new_room_id is not None:get(db,Room,p.new_room_id,"Room")
  if db.scalar(select(ScheduleOverride).where(ScheduleOverride.routine_entry_id==routine_id,ScheduleOverride.override_date==p.override_date)):raise HTTPException(409,"An override already exists for this routine and date")
  proposed=ScheduleOverride(routine_entry_id=routine_id,created_by=user.id,status=OverrideStatus.PENDING,**p.model_dump())
  validate_routine_override_conflicts(db,entry,proposed)

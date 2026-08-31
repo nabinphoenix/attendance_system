@@ -106,3 +106,38 @@ def test_combined_visibility_and_import_preview_conflicts():
     section_csv=f"day,start_time,end_time,sections,module_code,module_title,class_type,lecturer_email,block,room\n{day},08:30,09:30,A3,CT004,Advanced Database Systems,Lecture,chandra@example.com,Block B,Annapurna\n".encode()
     section_preview=client.post(f"/api/v1/academic/sections/{ids['section_A3']}/routine/preview?intake_id={ids['intake']}&semester_number=6",headers=admin,files={"file":("conflict.csv",io.BytesIO(section_csv),"text/csv")});assert section_preview.status_code==200 and section_preview.json()["invalid_rows"]==1;assert "Room conflict" in section_preview.json()["errors"][0]["error_message"]
     app.dependency_overrides.clear()
+
+
+def test_room_availability_groups_each_block_and_uses_room_ids_for_overrides():
+    Session, ids = setup_context()
+    client = TestClient(app)
+    admin = auth(client, "admin@example.com")
+    with Session() as db:
+        block_c = Block(name="Block C")
+        db.add(block_c)
+        db.flush()
+        duplicate_name_room = Room(block_id=block_c.id, name="Annapurna", room_type="lecture", capacity=40)
+        db.add(duplicate_name_room)
+        second = create_routine_entry(db, RoutineCreate(**payload(ids)))
+        db.commit()
+
+        candidate = ScheduleOverride(
+            routine_entry_id=second.id,
+            override_date=date.today(),
+            new_room_id=duplicate_name_room.id,
+            reason="Move to Block C",
+            created_by=1,
+            status=OverrideStatus.PENDING,
+        )
+        effective = validate_routine_override_conflicts(db, second, candidate)
+        assert effective.room_id == duplicate_name_room.id
+
+    response = client.get(f"/api/v1/academic/room-availability?day_of_week={ids['today']}", headers=admin)
+    assert response.status_code == 200, response.text
+    blocks = {block["name"]: block for block in response.json()["blocks"]}
+    assert {"Block B", "Block C"}.issubset(blocks)
+    block_b_room = next(room for room in blocks["Block B"]["rooms"] if room["id"] == ids["room_Annapurna"])
+    base_slot = next(slot for slot in block_b_room["slots"] if slot["time_slot_id"] == ids["slot_base"])
+    assert base_slot["status"] == "occupied" and base_slot["routine_id"] == ids["base"]
+    assert all(slot["status"] == "available" for slot in blocks["Block C"]["rooms"][0]["slots"])
+    app.dependency_overrides.clear()

@@ -10,13 +10,14 @@ import { EmptyState, ErrorState, LoadingState } from "@/components/ui/States";
 import { HorizontalPagination } from "@/components/ui/HorizontalPagination";
 import SectionRoutineImportPanel from "@/components/SectionRoutineImportPanel";
 import { apiMessage, AvailabilityState, ScheduleFeedback } from "@/components/ScheduleFeedback";
+import RoomAvailabilityPanel from "@/components/RoomAvailabilityPanel";
 
 const days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 const blank = { intake_id: "", semester_number: "", module_id: "", class_type_id: "", teacher_id: "", room_id: "", time_slot_id: "", day_of_week: "0", block_id: "" };
 const emptyFilters = { intake: "", semester: "", section: "", teacher: "", module: "", day: "", room: "", block: "" };
 const queryKeys: Record<string, string> = { intake: "intake_id", semester: "semester_number", section: "section_id", teacher: "teacher_id", module: "module_id", day: "day_of_week", room: "room_id", block: "block_id" };
 
-type Workspace = "schedule" | "create" | "import";
+type Workspace = "schedule" | "create" | "import" | "availability";
 type Routine = { id: number; intake_id: number; semester_number: number; section_id: number; section_ids: number[]; section_names: string[]; module_id: number; class_type_id: number; teacher_id: number; room_id: number; day_of_week: number; time_slot_id: number };
 type RoutinePage = { items: Routine[]; total: number; page: number; page_size: number };
 
@@ -141,6 +142,7 @@ export default function Page() {
 
   return <div className="max-w-7xl">
     <PageHeader title="Routine planner" description="Create, import, review, and resolve the recurring timetable from one focused workspace." action={<div className="flex flex-wrap gap-2"><Button type="button" variant={workspace === "schedule" ? "primary" : "outline"} size="sm" onClick={() => setWorkspace("schedule")}>Published routine</Button><Button type="button" variant={workspace === "create" ? "primary" : "outline"} size="sm" onClick={() => setWorkspace("create")}>Add class</Button><Button type="button" variant={workspace === "import" ? "primary" : "outline"} size="sm" onClick={() => setWorkspace("import")}>Import sheet</Button></div>} />
+    <div className="mb-5 flex justify-end"><Button type="button" variant={workspace === "availability" ? "primary" : "outline"} size="sm" onClick={() => setWorkspace("availability")}>Room availability</Button></div>
     {error && <div className="mb-5"><ErrorState title="Routine workspace needs attention" description={error} onRetry={() => { void loadMasterData(); void loadRoutinePage(); }} /></div>}
 
     {workspace === "create" && <section className="panel p-5 sm:p-6"><div className="mb-6 flex flex-wrap items-start justify-between gap-3"><div><h2 className="text-xl font-semibold">Add a recurring class</h2><p className="mt-1 text-sm text-slate-400">The system checks lecturer, room, section, and active offering conflicts before saving.</p></div><Badge tone="info">Conflict checked</Badge></div><form onSubmit={submit} className="grid gap-4 md:grid-cols-3">
@@ -156,6 +158,7 @@ export default function Page() {
     </form></section>}
 
     {workspace === "import" && <SectionRoutineImportPanel />}
+    {workspace === "availability" && <RoomAvailabilityPanel blocks={data.blocks || []} />}
 
     {workspace === "schedule" && <section className="panel overflow-hidden"><div className="border-b border-slate-800 px-5 py-5 sm:px-6"><div className="flex flex-wrap items-start justify-between gap-4"><div><div className="flex flex-wrap items-center gap-2"><h2 className="text-xl font-semibold">Published timetable</h2><Badge tone="success">{routinePage.total} classes</Badge></div><p className="mt-1 text-sm text-slate-400">Filter the schedule, then move through results without loading the full routine into the browser.</p></div><label className="text-sm text-slate-300">Rows per page<select className="ml-2 rounded-lg border border-slate-700 bg-slate-950 px-2 py-1.5" value={pageSize} onChange={(event) => { setPageSize(Number(event.target.value)); setPage(1); }}><option value="10">10</option><option value="25">25</option><option value="50">50</option></select></label></div>
       <div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">{filterSelect("intake", "Intake", "intakes")}{filterSelect("section", "Section", "sections")}{filterSelect("teacher", "Lecturer", "teachers")}{filterSelect("module", "Module", "modules")}<label><span className="field-label">Semester number</span><input className="w-full" type="number" min="1" placeholder="All semesters" value={filters.semester} onChange={(event) => changeFilter("semester", event.target.value)} /></label>{filterSelect("room", "Room", "rooms")}{filterSelect("block", "Block", "blocks")}<label><span className="field-label">Day</span><select className="w-full" value={filters.day} onChange={(event) => changeFilter("day", event.target.value)}><option value="">All days</option>{days.map((day, index) => <option key={day} value={index}>{day}</option>)}</select></label><div className="flex items-end"><Button type="button" variant="ghost" onClick={() => { setFilters(emptyFilters); setPage(1); }}>Clear filters</Button></div></div>
