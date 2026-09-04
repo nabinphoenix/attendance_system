@@ -27,15 +27,41 @@ class QRClaims:
     session_id: int
     version: int
     nonce: str
-    issued_at: datetime
-    expires_at: datetime
+    issued_at: datetime | None = None
+    expires_at: datetime | None = None
+
+
+# The QR is displayed from a classroom screen, so its encoded text needs to be
+# deliberately small. Keeping this alphabet uppercase plus digits and colons
+# lets QR encoders use their efficient alphanumeric mode instead of byte mode.
+QR_TOKEN_PREFIX = "AQ1"
+QR_NONCE_BYTES = 10
+QR_SIGNATURE_BYTES = 12
+
+
+def _is_compact_nonce(value: str | None) -> bool:
+    return bool(value and len(value) == 16 and all(character in "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567" for character in value))
 
 
 def utc(value: datetime) -> datetime:
     return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
 
 
-def _encode_qr(session_id: int, version: int, nonce: str, issued_at: datetime, expires_at: datetime) -> str:
+def _base32(value: bytes) -> str:
+    return base64.b32encode(value).decode("ascii").rstrip("=")
+
+
+def _compact_qr_signature(payload: str) -> str:
+    digest = hmac.new(settings.jwt_secret_key.encode(), payload.encode("ascii"), hashlib.sha256).digest()
+    return _base32(digest[:QR_SIGNATURE_BYTES])
+
+
+def _encode_compact_qr(session_id: int, version: int, nonce: str) -> str:
+    payload = f"{QR_TOKEN_PREFIX}:{session_id}:{version}:{nonce}"
+    return f"{payload}:{_compact_qr_signature(payload)}"
+
+
+def _encode_legacy_qr(session_id: int, version: int, nonce: str, issued_at: datetime, expires_at: datetime) -> str:
     return jwt.encode(
         {
             "session_id": session_id,
@@ -56,9 +82,9 @@ def issue_qr_token(session: ClassSession, now: datetime | None = None, *, force:
     now = utc(now or datetime.now(UTC))
     expires = utc(session.qr_expires_at) if session.qr_expires_at else None
     issued = utc(session.qr_issued_at) if session.qr_issued_at else None
-    if force or not session.qr_nonce or not issued or not expires or expires <= now:
+    if force or not _is_compact_nonce(session.qr_nonce) or not issued or not expires or expires <= now:
         session.qr_version = (session.qr_version or 0) + 1
-        session.qr_nonce = secrets.token_urlsafe(24)
+        session.qr_nonce = _base32(secrets.token_bytes(QR_NONCE_BYTES))
         session.qr_issued_at = now
         session.qr_expires_at = now + timedelta(seconds=session.challenge_rotation_seconds or settings.attendance_challenge_rotation_seconds)
         # Transitional column retained by the schema; raw QR secrets are no longer persisted.
@@ -68,7 +94,7 @@ def issue_qr_token(session: ClassSession, now: datetime | None = None, *, force:
         created = True
     else:
         created = False
-    return _encode_qr(session.id, session.qr_version, session.qr_nonce, issued, expires), expires, created
+    return _encode_compact_qr(session.id, session.qr_version, session.qr_nonce), expires, created
 
 
 def _challenge_cipher() -> Fernet:
@@ -150,7 +176,28 @@ def challenge_is_current(session: ClassSession, challenge: AttendanceChallenge, 
     )
 
 
+def _validate_compact_qr(token: str) -> QRClaims:
+    parts = token.split(":")
+    if len(parts) != 5 or parts[0] != QR_TOKEN_PREFIX:
+        raise QRValidationError("INVALID_QR", "This QR code is invalid")
+    _, session_id, version, nonce, signature = parts
+    payload = ":".join(parts[:-1])
+    if not hmac.compare_digest(signature, _compact_qr_signature(payload)):
+        raise QRValidationError("INVALID_QR", "This QR code is invalid")
+    try:
+        if len(nonce) != 16 or any(character not in "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567" for character in nonce):
+            raise ValueError
+        return QRClaims(session_id=int(session_id), version=int(version), nonce=nonce)
+    except ValueError as exc:
+        raise QRValidationError("INVALID_QR", "This QR code is invalid") from exc
+
+
 def validate_qr_token(token: str) -> QRClaims:
+    if token.startswith(f"{QR_TOKEN_PREFIX}:"):
+        return _validate_compact_qr(token)
+
+    # Permit already-issued JWT QR codes to finish an in-progress class after a
+    # deployment. New challenges always use the compact token above.
     try:
         payload = jwt.decode(token, settings.jwt_secret_key, algorithms=[settings.jwt_algorithm])
     except ExpiredSignatureError as exc:

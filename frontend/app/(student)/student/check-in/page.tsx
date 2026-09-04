@@ -142,12 +142,23 @@ export default function Page() {
     setStage("ready");
     setResult(null);
     try {
-      const { Html5Qrcode } = await import("html5-qrcode");
-      const reader = new Html5Qrcode("attendance-qr-reader");
+      const { Html5Qrcode, Html5QrcodeSupportedFormats } = await import("html5-qrcode");
+      const reader = new Html5Qrcode("attendance-qr-reader", { verbose: false, formatsToSupport: [Html5QrcodeSupportedFormats.QR_CODE], useBarCodeDetectorIfSupported: true });
       scanner.current = reader;
       await reader.start(
         { facingMode: "environment" },
-        { fps: 10, qrbox: { width: 250, height: 250 } },
+        {
+          fps: 12,
+          qrbox: (viewfinderWidth, viewfinderHeight) => {
+            const side = Math.floor(Math.min(viewfinderWidth, viewfinderHeight) * 0.9);
+            return { width: side, height: side };
+          },
+          videoConstraints: {
+            facingMode: { ideal: "environment" },
+            width: { ideal: 1920 },
+            height: { ideal: 1080 },
+          },
+        },
         async (decoded) => {
           await reader.stop();
           reader.clear();

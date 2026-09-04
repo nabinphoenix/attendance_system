@@ -141,3 +141,27 @@ def test_room_availability_groups_each_block_and_uses_room_ids_for_overrides():
     assert base_slot["status"] == "occupied" and base_slot["routine_id"] == ids["base"]
     assert all(slot["status"] == "available" for slot in blocks["Block C"]["rooms"][0]["slots"])
     app.dependency_overrides.clear()
+
+
+def test_room_availability_uses_effective_date_and_is_shared_across_roles():
+    Session, ids = setup_context()
+    client = TestClient(app)
+    admin = auth(client, "admin@example.com")
+    with Session() as db:
+        moved = ScheduleOverride(
+            routine_entry_id=ids["base"],
+            override_date=date.today(),
+            new_room_id=ids["room_Codespace"],
+            reason="Move class to Codespace",
+            created_by=1,
+            status=OverrideStatus.APPROVED,
+        )
+        db.add(moved)
+        db.commit()
+
+    response = client.get(f"/api/v1/academic/room-availability?date={date.today().isoformat()}", headers=admin)
+    assert response.status_code == 200, response.text
+    assert response.json()["date"] == date.today().isoformat()
+    rooms = {room["id"]: room for block in response.json()["blocks"] for room in block["rooms"]}
+    original_slot = next(slot for slot in rooms[ids["room_Annapurna"]]["slots"] if slot["time_slot_id"] == ids["slot_base"])
+    moved_slot = next(slot for slot in rooms[ids["room_Codespace"]]["slots"] if slot["time_slot_id"] == ids["slot_base"])

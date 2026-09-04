@@ -7,6 +7,7 @@ import { PageHeader } from "@/components/ui/PageHeader";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { EmptyState, ErrorState, LoadingState } from "@/components/ui/States";
+import RoomAvailabilityPanel from "@/components/RoomAvailabilityPanel";
 
 const localDate = (value = new Date()) =>
   `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, "0")}-${String(value.getDate()).padStart(2, "0")}`;
@@ -113,6 +114,7 @@ export default function Page() {
         <section className="panel overflow-hidden"><h2 className="px-5 py-4 text-lg font-semibold">Classes on {scheduleDate}</h2>{selectedDateRows.map(item)}{!selectedDateRows.length && <EmptyState title="No classes match these filters" description="Try another date or clear one of the schedule filters." />}</section>
         <section className="panel overflow-hidden"><h2 className="px-5 py-4 text-lg font-semibold">Upcoming classes</h2>{upcoming.map(item)}{!upcoming.length && <EmptyState title="No upcoming classes" description="The next scheduled occurrences will appear here." />}</section>
       </div>
+      <div className="mt-6"><RoomAvailabilityPanel /></div>
     </>}
   </div>;
 }

@@ -9,6 +9,7 @@ import { Badge, StatusBadge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { EmptyState, ErrorState, LoadingState } from "@/components/ui/States";
 import { downloadFile } from "@/lib/download";
+import RoomAvailabilityPanel from "@/components/RoomAvailabilityPanel";
 
 type RoutineOccurrence = {
   routine_id: number;
@@ -364,6 +365,8 @@ export default function Page() {
           {next ? card(next) : <div className="panel"><EmptyState title="No upcoming class" description="Your assigned routine will appear here when available." /></div>}
         </section>
       </>}
+
+      <div className="mt-8"><RoomAvailabilityPanel /></div>
 
       <section className="mt-10" aria-labelledby="attendance-heading">
         <div className="mb-4 flex flex-wrap items-end justify-between gap-3">

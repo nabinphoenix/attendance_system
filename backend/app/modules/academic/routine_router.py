@@ -61,13 +61,13 @@ class RoutineConflict(BaseModel):
 class RoutineAvailability(BaseModel):
  available:bool;conflicts:list[RoutineConflict]=[]
 class RoomAvailabilitySlot(BaseModel):
- time_slot_id:int;start_time:time;end_time:time;status:Literal["available","occupied"];routine_id:int|None=None;class_label:str|None=None;section_names:list[str]=[]
+ time_slot_id:int;start_time:time;end_time:time;status:Literal["available","occupied"];routine_id:int|None=None;override_id:int|None=None;class_label:str|None=None;section_names:list[str]=[]
 class RoomAvailabilityRoom(BaseModel):
  id:int;name:str;room_type:str;capacity:int;slots:list[RoomAvailabilitySlot]
 class BlockRoomAvailability(BaseModel):
  id:int;name:str;rooms:list[RoomAvailabilityRoom]
 class RoomAvailabilityRead(BaseModel):
- day_of_week:int;blocks:list[BlockRoomAvailability]
+ date:date;day_of_week:int;blocks:list[BlockRoomAvailability]
 class EffectiveRoutineRead(BaseModel):
  routine_id:int;date:date;start_time:time;end_time:time;teacher_id:int;original_teacher_id:int;room:str;original_room:str;section_ids:list[int];section_names:list[str];module_id:int;class_type_id:int;cancelled:bool;override_id:int|None;occupancy_status:Literal["occupied","empty"];can_start:bool=False
 
@@ -351,31 +351,57 @@ def create_routine(p:RoutineCreate,user:Annotated[User,Depends(require_role("adm
 def routine_availability(p:RoutineCreate,user:Annotated[User,Depends(require_role("admin"))],db:DbSession):
  valid_routine(db,p);conflicts=routine_conflicts(db,p)
  return RoutineAvailability(available=not conflicts,conflicts=conflicts)
-@router.get("/room-availability",response_model=RoomAvailabilityRead)
-def room_availability(db:DbSession,day_of_week:int=Query(0,ge=0,le=6),block_id:int|None=None):
+def room_availability_date(requested_date:date|None,day_of_week:int|None)->date:
+ """Keep the old weekly query usable while making date-specific schedules canonical."""
+ if requested_date is not None:return requested_date
+ today=date.today()
+ if day_of_week is None:return today
+ return today+timedelta(days=(day_of_week-today.weekday())%7)
+
+def effective_room_classes(db:DbSession,on_date:date)->list[EffectiveClass]:
+ """Return every class that can occupy an inventory room on one calendar date."""
+ entries=db.scalars(routine_query().where(RoutineEntry.day_of_week==on_date.weekday())).unique().all()
+ by_id={entry.id:entry for entry in entries}
+ makeup_overrides=db.scalars(select(ScheduleOverride).where(ScheduleOverride.routine_entry_id.is_not(None),ScheduleOverride.is_makeup.is_(True),ScheduleOverride.status==OverrideStatus.APPROVED,ScheduleOverride.override_date==on_date)).all()
+ missing_ids={override.routine_entry_id for override in makeup_overrides if override.routine_entry_id not in by_id}
+ if missing_ids:
+  extras=db.scalars(routine_query().where(RoutineEntry.id.in_(missing_ids))).unique().all()
+  by_id.update({entry.id:entry for entry in extras})
+ classes=[]
+ for entry in by_id.values():
+  override=next((item for item in makeup_overrides if item.routine_entry_id==entry.id),None)
+  classes.append(resolve_effective_class(db,entry,on_date,override))
+ return classes
+
+@student_router.get("/room-availability",response_model=RoomAvailabilityRead)
+def room_availability(user:Annotated[User,Depends(get_current_user)],db:DbSession,requested_date:date|None=Query(None,alias="date"),day_of_week:int|None=Query(None,ge=0,le=6),block_id:int|None=None,room_id:int|None=None):
+ """Authenticated, date-aware inventory availability for every role workspace."""
+ on_date=room_availability_date(requested_date,day_of_week)
  slots=db.scalars(select(TimeSlot).order_by(TimeSlot.start_time,TimeSlot.end_time)).all()
  block_query=select(Block).order_by(Block.name)
  if block_id is not None:block_query=block_query.where(Block.id==block_id)
  blocks=db.scalars(block_query).all()
- rooms=db.scalars(select(Room).order_by(Room.block_id,Room.name)).all()
+ room_query=select(Room).order_by(Room.block_id,Room.name)
+ if room_id is not None:room_query=room_query.where(Room.id==room_id)
  rooms_by_block:dict[int,list[Room]]={block.id:[] for block in blocks}
- for room in rooms:
+ for room in db.scalars(room_query).all():
   if room.block_id in rooms_by_block:rooms_by_block[room.block_id].append(room)
- entries=db.scalars(routine_query().join(TimeSlot,RoutineEntry.time_slot_id==TimeSlot.id).where(RoutineEntry.day_of_week==day_of_week)).unique().all()
+ effective_classes=effective_room_classes(db,on_date)
  result=[]
  for block in blocks:
   block_rooms=[]
   for room in rooms_by_block[block.id]:
    room_slots=[]
    for slot in slots:
-    occupant=next((entry for entry in entries if entry.room_id==room.id and entry.time_slot.start_time<slot.end_time and entry.time_slot.end_time>slot.start_time),None)
+    occupant=next((item for item in effective_classes if not item.cancelled and item.room_id==room.id and item.start_time<slot.end_time and item.end_time>slot.start_time),None)
     if occupant:
-     section_names=[link.section.name for link in occupant.section_links if link.section] or [occupant.section.name]
-     room_slots.append(RoomAvailabilitySlot(time_slot_id=slot.id,start_time=slot.start_time,end_time=slot.end_time,status="occupied",routine_id=occupant.id,class_label=f"{occupant.module.code} - {occupant.module.title} ({occupant.class_type.name})",section_names=section_names))
+     entry=occupant.routine_entry
+     section_names=[link.section.name for link in entry.section_links if link.section] or [entry.section.name]
+     room_slots.append(RoomAvailabilitySlot(time_slot_id=slot.id,start_time=slot.start_time,end_time=slot.end_time,status="occupied",routine_id=entry.id,override_id=occupant.override_id,class_label=f"{entry.module.code} - {entry.module.title} ({entry.class_type.name})",section_names=section_names))
     else:room_slots.append(RoomAvailabilitySlot(time_slot_id=slot.id,start_time=slot.start_time,end_time=slot.end_time,status="available"))
    block_rooms.append(RoomAvailabilityRoom(id=room.id,name=room.name,room_type=room.room_type,capacity=room.capacity,slots=room_slots))
   result.append(BlockRoomAvailability(id=block.id,name=block.name,rooms=block_rooms))
- return RoomAvailabilityRead(day_of_week=day_of_week,blocks=result)
+ return RoomAvailabilityRead(date=on_date,day_of_week=on_date.weekday(),blocks=result)
 def filtered_routine_query(intake_id:int|None=None,semester_number:int|None=None,section_id:int|None=None,teacher_id:int|None=None,module_id:int|None=None,day_of_week:int|None=None,room_id:int|None=None,block_id:int|None=None):
  q=routine_query()
  if intake_id:q=q.where(RoutineEntry.intake_id==intake_id)

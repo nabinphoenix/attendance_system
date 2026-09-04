@@ -9,6 +9,7 @@ import { Badge } from "@/components/ui/Badge";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { EmptyState, ErrorState, LoadingState } from "@/components/ui/States";
 import { RoutineScheduleCards } from "@/components/RoutineScheduleCards";
+import RoomAvailabilityPanel from "@/components/RoomAvailabilityPanel";
 
 const days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 const localDate = (value = new Date()) => `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, "0")}-${String(value.getDate()).padStart(2, "0")}`;
@@ -193,6 +194,6 @@ export default function Page() {
     {error&&<div className="mb-4"><ErrorState title="Unable to continue" description={error} onRetry={()=>locationRetryRoutineId!==null?void start(locationRetryRoutineId):void load()}/></div>}
     {loading?<LoadingState label="Loading teaching schedule"/>:<><section><h2 className="mb-3 text-lg font-semibold">Today&apos;s classes</h2><div className="grid gap-4 md:grid-cols-2">{today.map(occurrenceCard)}{!today.length&&<div className="panel md:col-span-2"><EmptyState title="No classes scheduled today" description="Your next scheduled class will appear below."/></div>}</div></section>
     <section className="mt-8"><h2 className="mb-3 text-xl font-semibold">Next Class</h2>{next ? <div><p className="mb-2 text-slate-400">{next.date}</p>{occurrenceCard(next)}</div> : <p className="text-slate-400">No upcoming class.</p>}</section>
-    <section className="mt-8"><h2 className="mb-3 text-lg font-semibold">Full timetable</h2><RoutineScheduleCards rows={filteredRows} colorRows={rows} days={days} colorBy="room_id" colorMeaning="Classroom" time={(row) => text("time-slots", row.time_slot_id)} title={(row) => text("modules", row.module_id)} classType={(row) => text("class-types", row.class_type_id)} details={(row) => [{ label: "Sections", value: row.section_names?.join(" + ") || "Not assigned" }, { label: "Room", value: text("rooms", row.room_id) }]} /></section></>}
+    <section className="mt-8"><h2 className="mb-3 text-lg font-semibold">Full timetable</h2><RoutineScheduleCards rows={filteredRows} colorRows={rows} days={days} colorBy="room_id" colorMeaning="Classroom" time={(row) => text("time-slots", row.time_slot_id)} title={(row) => text("modules", row.module_id)} classType={(row) => text("class-types", row.class_type_id)} details={(row) => [{ label: "Sections", value: row.section_names?.join(" + ") || "Not assigned" }, { label: "Room", value: text("rooms", row.room_id) }]} /></section><section className="mt-8"><RoomAvailabilityPanel /></section></>}
   </div>;
 }

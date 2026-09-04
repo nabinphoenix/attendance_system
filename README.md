@@ -126,7 +126,7 @@ Foreign keys, unique constraints, indexes, and application validation protect id
 - FastAPI issues signed JWT access tokens using `python-jose`; browser sessions are held in an HTTP-only cookie.
 - Role dependencies protect administrator, teacher, student, coordinator, and parent endpoints.
 - Student-import welcome emails use a single-use password-setup token. The token hash is stored in `student_invitations`; a successful delivery redacts the raw setup link from the queued notification record.
-- QR tokens are signed JWTs. The classroom code is HMAC-hashed for comparison and encrypted at rest for the teacher to reveal.
+- QR tokens are compact HMAC-signed, rotating attendance tokens, keeping the classroom QR low-density for reliable long-distance scans. The classroom code is HMAC-hashed for comparison and encrypted at rest for the teacher to reveal.
 - Profile-image files are validated with Pillow and can use private S3 storage through Boto3.
 - CORS origins, cookie security, database URL, JWT secret, and SMTP secrets are environment variables, not source code.
 
@@ -138,8 +138,8 @@ This project uses **geolocation/geofencing**, not a visual map SDK. There is no 
 
 1. The teacher starts a scheduled session and the browser sends latitude, longitude, accuracy, radius, check-in window, and QR rotation preference.
 2. The session stores the teacher's captured location and the effective teacher/room after any approved override.
-3. The backend creates a signed QR JWT, a random nonce, and a classroom code. The QR and code are tied to the current session/version.
-4. The teacher interface renders the QR with `qrcode.react`; it can be displayed full-screen.
+3. The backend creates a compact HMAC-signed QR token, a random nonce, and a classroom code. The QR and code are tied to the current session/version.
+4. The teacher interface renders the black-on-white QR with `qrcode.react`; it can be opened in a high-contrast full-screen long-distance view.
 5. On every rotation, the earlier challenge is revoked and still-pending verifications from the previous rotation are invalidated.
 
 ### Student flow
@@ -272,7 +272,7 @@ For a live dashboard test, import one test student with an inbox you control, or
 | SQLAlchemy + psycopg2-binary | ORM/database access and PostgreSQL driver. |
 | Alembic | Versioned database migrations. |
 | Passlib + bcrypt | Password hashing and verification. |
-| python-jose + cryptography/Fernet | JWT authentication, signed QR tokens, encryption, and secure comparisons. |
+| python-jose + cryptography/Fernet | JWT authentication, QR challenge encryption, and secure comparisons. |
 | pandas + OpenPyXL | CSV/XLSX parsing, templates, data frames, and CSV exports. |
 | python-multipart | Multipart file uploads for CSV/XLSX imports and profile-image uploads. |
 | Jinja2 + WeasyPrint + ReportLab | HTML report construction and PDF generation with fallback. |

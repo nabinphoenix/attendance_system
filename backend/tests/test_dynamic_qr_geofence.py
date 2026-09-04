@@ -298,6 +298,7 @@ def test_qr_generation_authorization_claims_and_rotation(attendance_env):
     assert client.get(f"/api/v1/sessions/{session_id}/qr", headers=auth["other_teacher"]).status_code == 403
     claims = validate_qr_token(first["token"])
     assert claims.session_id == session_id and claims.version == 1 and claims.nonce
+    assert first["token"].startswith("AQ1:") and len(first["token"]) < 60
     # Refreshing inside one generation is idempotent and does not store the raw secret.
     again = get_qr(client, auth, session_id)
     assert again["token"] == first["token"]
@@ -327,9 +328,7 @@ def test_expired_modified_cross_session_and_lifecycle_replay(attendance_env):
         validate_qr_token(expired)
     assert exc.value.code == "QR_EXPIRED"
     # 7: signature modification is rejected.
-    header, payload, signature = first_qr["token"].split(".")
-    signature = ("a" if signature[0] != "a" else "b") + signature[1:]
-    modified = ".".join((header, payload, signature))
+    modified = first_qr["token"][:-1] + ("A" if first_qr["token"][-1] != "A" else "B")
     response = check_in(client, auth, modified)
     assert response.status_code == 400 and response.json()["detail"] == "INVALID_QR"
     # 8: one session's claims cannot validate as another session's rotation.
@@ -498,7 +497,7 @@ def test_scan_requires_the_teacher_code_before_creating_attendance(attendance_en
     payload = scan.json()
     assert payload["status"] == "challenge_required"
     assert payload["code_length"] == 5
-    assert "code" not in jwt.get_unverified_claims(qr["token"])
+    assert qr["token"].startswith("AQ1:") and len(qr["token"].split(":")) == 5
     assert "classroom_code" not in payload
     with TestSession() as db:
         assert db.scalar(select(AttendanceRecord).where(AttendanceRecord.class_session_id == session_id)) is None
