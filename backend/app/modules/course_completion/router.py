@@ -6,6 +6,7 @@ from sqlalchemy import select
 
 from app.core.dependencies import DbSession, require_role
 from app.modules.academic.models import ModuleOffering, Student, StudentSubjectEnrollment, Subject
+from app.modules.academic.promotion_service import student_section_at, students_for_sections_as_of
 from app.modules.identity.models import User
 from app.modules.operations.service import log_audit, queue_notification
 from app.modules.scheduling.models import OverrideStatus, ScheduleOverride
@@ -156,7 +157,11 @@ def decide(id: int, payload: SuggestionDecision, user: Annotated[User, Depends(r
                 is_makeup=True,
                 status=OverrideStatus.APPROVED,
             )
-            students = db.scalars(select(Student).where(Student.section_id.in_(routine_section_ids(db, entry)))).all()
+            students = students_for_sections_as_of(
+                db,
+                routine_section_ids(db, entry),
+                suggestion.suggested_date,
+            )
         else:
             override = create_schedule_override(
                 db,
@@ -171,11 +176,14 @@ def decide(id: int, payload: SuggestionDecision, user: Annotated[User, Depends(r
                 status=OverrideStatus.APPROVED,
             )
             plan = db.get(CoursePlan, suggestion.course_plan_id)
-            students = db.scalars(
+            students = [
+                student for student in db.scalars(
                 select(Student)
                 .join(StudentSubjectEnrollment)
                 .where(StudentSubjectEnrollment.subject_id == plan.subject_id)
-            ).all()
+                ).all()
+                if student_section_at(db, student.id, suggestion.suggested_date) == plan.subject.section_id
+            ]
         suggestion.approved_by = user.id
         for student in students:
             queue_notification(

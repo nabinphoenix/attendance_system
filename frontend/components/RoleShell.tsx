@@ -12,11 +12,16 @@ import ThemeToggle from "@/components/ThemeToggle";
 type NavItem = { label: string; href: string; icon: IconName };
 type NavGroup = { label: string; items: NavItem[] };
 type IconName = "dashboard" | "calendar" | "people" | "book" | "building" | "upload" | "shield" | "chart" | "qr" | "file" | "support" | "settings";
-type CurrentUser = { name: string; email: string; role: string; avatar_url?: string | null };
+type CurrentUser = { name: string; email: string; role: string; avatar_url?: string | null; college_name?: string | null; active_college_id?: number | null };
 
 const navigation: Record<Role, NavGroup[]> = {
+  super_admin: [
+    { label: "Platform", items: [{ label: "Overview", href: "/super-admin/dashboard", icon: "dashboard" }, { label: "Colleges", href: "/super-admin/colleges", icon: "building" }, { label: "Accounts", href: "/super-admin/users", icon: "people" }] },
+    { label: "Governance", items: [{ label: "System audit log", href: "/super-admin/audit-log", icon: "shield" }, { label: "Configuration", href: "/super-admin/configuration", icon: "settings" }] },
+  ],
   admin: [
-    { label: "Overview", items: [{ label: "Dashboard", href: "/admin/dashboard", icon: "dashboard" }] },
+    { label: 'Progression', items: [{ label: 'Promotions', href: '/admin/academic/promotions', icon: 'calendar' }] },
+    { label: "Overview", items: [{ label: "Dashboard", href: "/admin/dashboard", icon: "dashboard" }, { label: "AI assistant", href: "/admin/assistant", icon: "support" }] },
     { label: "Attendance", items: [{ label: "Routine", href: "/admin/routine", icon: "calendar" }, { label: "Room availability", href: "/admin/room-availability", icon: "building" }, { label: "Overrides", href: "/admin/overrides", icon: "calendar" }] },
     { label: "People", items: [{ label: "Students", href: "/admin/students", icon: "people" }, { label: "Teachers", href: "/admin/academic/teachers", icon: "people" }, { label: "User access", href: "/admin/users", icon: "shield" }] },
     { label: "Academic", items: [{ label: "Programs", href: "/admin/academic/programs", icon: "book" }, { label: "Batches", href: "/admin/academic/batches", icon: "book" }, { label: "Intakes", href: "/admin/academic/intakes", icon: "book" }, { label: "Sections", href: "/admin/academic/sections", icon: "book" }, { label: "Modules", href: "/admin/academic/modules", icon: "book" }, { label: "Module offerings", href: "/admin/academic/module-offerings", icon: "book" }, { label: "Rooms", href: "/admin/academic/rooms", icon: "building" }, { label: "Time slots", href: "/admin/academic/time-slots", icon: "calendar" }, { label: "Class types", href: "/admin/academic/class-types", icon: "book" }] },
@@ -64,7 +69,7 @@ export default function RoleShell({ role, children }: { role: Role; children: Re
     let active = true;
     const confirmAccess = () => api.get<CurrentUser>("/api/v1/auth/me").then((response) => {
       if (!active) return;
-      if (response.data.role !== role) { window.location.replace("/login"); return; }
+      if (response.data.role !== role && !(role === "admin" && response.data.role === "super_admin" && response.data.active_college_id)) { window.location.replace("/login"); return; }
       setUser(response.data);
       setAllowed(true);
       setCollapsed(localStorage.getItem("sidebar_collapsed") === "true");
@@ -101,6 +106,7 @@ export default function RoleShell({ role, children }: { role: Role; children: Re
     setLogoutError("");
     try {
       await api.post("/api/v1/auth/logout");
+      sessionStorage.removeItem("platform_college_id");
       window.location.replace(destination);
     } catch {
       setLogoutError("We couldn't sign you out. Please try again.");
@@ -127,7 +133,8 @@ export default function RoleShell({ role, children }: { role: Role; children: Re
     <div className={`min-h-screen transition-[padding] ${collapsed ? "lg:pl-[4.75rem]" : "lg:pl-64"}`}>
       <header className="app-header sticky top-0 z-30 flex h-[4.5rem] items-center gap-3 border-b px-4 backdrop-blur sm:px-6 lg:px-8">
         <button className="grid h-10 w-10 place-items-center rounded-lg app-caption hover:bg-emerald-500/10 hover:text-emerald-600 lg:hidden" aria-label="Open navigation" onClick={() => setMobileOpen(true)}><svg aria-hidden="true" viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="2"><path d="M4 7h16M4 12h16M4 17h16" /></svg></button>
-        <div className="min-w-0 flex-1"><p className="app-title truncate text-sm font-semibold">{current?.label ?? `${role[0].toUpperCase()}${role.slice(1)} workspace`}</p><p className="app-caption hidden text-xs capitalize sm:block">{role} workspace</p></div>
+        <div className="min-w-0 flex-1"><p className="app-title truncate text-sm font-semibold">{current?.label ?? `${role[0].toUpperCase()}${role.slice(1)} workspace`}</p><p className="app-caption hidden text-xs capitalize sm:block">{user?.college_name ? `${user.college_name} ? ${role.replace("_", " ")}` : `${role.replace("_", " ")} workspace`}</p></div>
+        {user?.role === "super_admin" && role === "admin" && <Link href="/super-admin/colleges" className="rounded-lg border px-3 py-2 text-xs font-semibold">Back to platform</Link>}
         <ThemeToggle compact />
         <div className="relative"><button aria-label="Open account menu" aria-expanded={userMenuOpen} onClick={() => setUserMenuOpen((value) => !value)} className="rounded-full transition hover:scale-[1.03]"><ProfileAvatar name={user?.name ?? role} src={user?.avatar_url} /></button>{userMenuOpen && <div className="app-user-menu absolute right-0 top-12 w-72 overflow-hidden rounded-xl border p-2 shadow-xl"><div className="app-divider flex items-center gap-3 border-b px-2 py-3"><ProfileAvatar name={user?.name ?? role} src={user?.avatar_url} /><div className="min-w-0"><p className="app-user-name truncate text-sm font-semibold">{user?.name ?? "Signed-in user"}</p><p className="app-caption mt-0.5 truncate text-xs">{user?.email}</p><p className="mt-1 text-xs capitalize text-emerald-600">{role}</p></div></div><Link href="/settings" className="mt-1 flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm font-semibold app-caption hover:bg-emerald-500/10 hover:text-emerald-700"><Icon name="settings" />Account settings</Link><button onClick={() => void logout()} disabled={loggingOut} className="mt-1 w-full rounded-lg px-3 py-2 text-left text-sm font-semibold text-red-500 hover:bg-red-500/10 disabled:cursor-wait disabled:opacity-60">{loggingOut ? "Logging out…" : "Log out"}</button>{logoutError && <p className="px-3 py-2 text-xs text-red-400" role="alert">{logoutError}</p>}</div>}</div>
       </header>

@@ -65,8 +65,38 @@ html[data-theme="dark"] {
   .field-label { @apply mb-1.5 block text-sm font-medium; color: rgb(var(--text)); }
   .helper-text { @apply mt-1.5 text-sm; color: rgb(var(--text-muted)); }
   .table-wrap { @apply overflow-x-auto rounded-xl border; border-color: rgb(var(--border)); background: rgb(var(--surface)); -webkit-overflow-scrolling: touch; }
-  .interactive-link { @apply font-medium text-emerald-400 transition hover:text-emerald-300; }
+.interactive-link { @apply font-medium text-emerald-400 transition hover:text-emerald-300; }
 }
+/* Markdown returned by the AI assistant. Keep this scoped so normal application
+   tables and typography continue to use their existing shared styles. */
+.assistant-markdown { min-width: 0; overflow-wrap: anywhere; }
+.assistant-markdown p { margin: 0; white-space: pre-wrap; }
+.assistant-markdown p + p { margin-top: .75rem; }
+.assistant-markdown h1, .assistant-markdown h2, .assistant-markdown h3 { margin: 0 0 .55rem; font-weight: 750; line-height: 1.35; color: inherit; }
+.assistant-markdown h1 { font-size: 1.1rem; }
+.assistant-markdown h2 { font-size: 1rem; }
+.assistant-markdown h3 { font-size: .95rem; }
+.assistant-markdown strong { color: inherit; font-weight: 750; }
+.assistant-markdown em { color: inherit; }
+.assistant-markdown code { border-radius: .35rem; background: rgb(15 23 42 / .8); padding: .12rem .35rem; font-size: .86em; }
+.assistant-markdown a { color: rgb(110 231 183); text-decoration: underline; text-underline-offset: 2px; }
+.assistant-markdown ul, .assistant-markdown ol { margin: .35rem 0 .75rem; padding-left: 1.35rem; }
+.assistant-markdown ul { list-style: disc; }
+.assistant-markdown ol { list-style: decimal; }
+.assistant-markdown li { padding-left: .2rem; }
+.assistant-markdown li + li { margin-top: .25rem; }
+.assistant-table-wrap { width: 100%; margin: .7rem 0; overflow-x: auto; border: 1px solid rgb(51 65 85); border-radius: .65rem; -webkit-overflow-scrolling: touch; }
+.assistant-markdown table { min-width: 38rem; border-collapse: collapse; font-size: .78rem; line-height: 1.45; }
+.assistant-markdown thead { background: rgb(30 41 59 / .8); color: rgb(203 213 225); }
+.assistant-markdown th { padding: .55rem .7rem; white-space: nowrap; font-size: .7rem; font-weight: 750; letter-spacing: .02em; text-transform: none; }
+.assistant-markdown td { padding: .55rem .7rem; color: inherit; vertical-align: top; }
+.assistant-markdown tbody tr { border-top: 1px solid rgb(51 65 85 / .8); }
+.assistant-markdown tbody tr:hover { background: rgb(30 41 59 / .45); }
+html[data-theme="light"] .assistant-markdown code { background: rgb(var(--surface-muted)); }
+html[data-theme="light"] .assistant-table-wrap { border-color: rgb(var(--border)); }
+html[data-theme="light"] .assistant-markdown thead { background: rgb(var(--surface-muted)); color: rgb(var(--text)); }
+html[data-theme="light"] .assistant-markdown tbody tr { border-color: rgb(var(--border)); }
+html[data-theme="light"] .assistant-markdown tbody tr:hover { background: rgb(var(--surface-muted)); }
 
 #attendance-qr-reader video,
 #attendance-qr-reader img,

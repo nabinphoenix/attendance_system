@@ -4,6 +4,7 @@ from sqlalchemy import engine_from_config, pool
 from app.core.config import settings
 from app.core.database import Base
 from app.modules.academic import models as academic_models
+from app.modules.agent import models as agent_models
 from app.modules.attendance import models as attendance_models
 from app.modules.course_completion import models as course_completion_models
 from app.modules.crm import models as crm_models

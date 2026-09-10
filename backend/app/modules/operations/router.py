@@ -21,6 +21,7 @@ from app.modules.course_completion.models import CoursePlan
 from app.modules.crm.models import CaseStatus,StudentCase
 from app.modules.identity.models import User,UserRole
 from app.modules.academic.student_profile_service import current_student_profile
+from app.modules.academic.promotion_service import ensure_student_enrollment, student_section_at
 from app.modules.scheduling.models import ClassSession,TimetableEntry
 from .models import AuditLog,ImportJob,Notification,NotificationStatus
 from .schemas import AuditPage,AuditRead,ImportError,ImportJobRead,ImportRowResult,NotificationRead
@@ -199,13 +200,19 @@ async def import_students(user:Annotated[User,Depends(require_role("admin"))],db
                 if not name:raise ValueError("name is required")
                 if not email:raise ValueError("email is required")
                 if db.scalar(select(User).where(func.lower(User.email)==email)):raise ValueError("email is already in use")
-                section=db.scalar(select(Section).join(Batch).where(func.lower(Batch.name)==batch_name.lower(),func.lower(Section.name)==section_name.lower()))
+                intake_code=str(row.get('intake_code','')).strip()
+                section_query=select(Section).join(Batch).where(func.lower(Batch.name)==batch_name.lower(),func.lower(Section.name)==section_name.lower())
+                if intake_code:section_query=section_query.join(Intake,Section.intake_id==Intake.id).where(func.lower(Intake.code)==intake_code.lower())
+                sections_found=db.scalars(section_query).all()
+                if len(sections_found)>1:raise ValueError('section_name is ambiguous; provide intake_code')
+                section=sections_found[0] if sections_found else None
                 if not section:raise ValueError("batch_name or section_name does not exist")
                 if db.scalar(select(Student).where(func.lower(Student.email)==email)):raise ValueError("student email is already imported")
                 account=User(name=name,email=email,password_hash=hash_password(secrets.token_urlsafe(32)),role=UserRole.STUDENT)
                 db.add(account);db.flush()
                 student=Student(user_id=account.id,section_id=section.id,roll_number=str(row.get("roll_number","")).strip() or f"IMP-{job.id}-{row_number}",name=name,email=email);db.add(student);db.flush();issue_student_invitation(db,student,account,welcome=True);phone=str(row.get("phone","")).strip()
                 if phone:db.add(Guardian(name=f"Guardian of {name}",student_id=student.id,phone=phone))
+            ensure_student_enrollment(db, student)
             job.success_count+=1
             results.append({"row_number":row_number,"status":"success","message":"Student imported and secure account-setup email queued.","data":{"name":name,"email":email,"batch_name":batch_name,"section_name":section_name}})
         except Exception as exc:
@@ -319,13 +326,16 @@ def attendance_frame(db,user,student_id,section_id,batch_id,date_from,date_to):
         if not teacher:raise HTTPException(404,"Teacher profile not found")
         q=q.where(ClassSession.effective_teacher_id==teacher.id)
     if student_id:q=q.where(Student.id==student_id)
-    if section_id:q=q.where(Student.section_id==section_id)
+    if section_id:pass
     if batch_id:q=q.where(Section.batch_id==batch_id)
-    rows=db.execute(q.order_by(ClassSession.session_date,User.name)).mappings().all();frame=pd.DataFrame(rows)
+    rows=db.execute(q.order_by(ClassSession.session_date,User.name)).mappings().all()
+    if section_id:
+        rows=[row for row in rows if student_section_at(db,row['student_id'],row['session_date'])==section_id]
+    frame=pd.DataFrame(rows)
     if len(frame):frame["status"]=frame["status"].map(lambda value:value.value if hasattr(value,"value") else str(value))
     return frame
 def stream_bytes(data:bytes,media:str,filename:str):return StreamingResponse(io.BytesIO(data),media_type=media,headers={"Content-Disposition":f'attachment; filename="{filename}"'})
-def render_pdf(html:str,title:str,lines:list[str],frame:pd.DataFrame)->bytes:
+def render_pdf(html:str,title:str,lines:list[str],frame:pd.DataFrame,college_name:str|None=None)->bytes:
     try:
         from weasyprint import HTML
         return HTML(string=html).write_pdf()
@@ -334,7 +344,7 @@ def render_pdf(html:str,title:str,lines:list[str],frame:pd.DataFrame)->bytes:
         from reportlab.lib.pagesizes import A4,landscape
         from reportlab.lib.styles import getSampleStyleSheet
         from reportlab.platypus import Paragraph,SimpleDocTemplate,Spacer,Table,TableStyle
-        output=io.BytesIO();doc=SimpleDocTemplate(output,pagesize=landscape(A4));styles=getSampleStyleSheet();story=[Paragraph(settings.college_name,styles["Title"]),Paragraph(title,styles["Heading2"])]
+        output=io.BytesIO();doc=SimpleDocTemplate(output,pagesize=landscape(A4));styles=getSampleStyleSheet();story=[Paragraph(college_name or settings.college_name,styles["Title"]),Paragraph(title,styles["Heading2"])]
         for line in lines:story.extend([Paragraph(line,styles["BodyText"]),Spacer(1,5)])
         data=[list(frame.columns)]+[[str(value) for value in row] for row in frame.itertuples(index=False,name=None)]
         if data:table=Table(data,repeatRows=1);table.setStyle(TableStyle([("BACKGROUND",(0,0),(-1,0),colors.HexColor("#d1fae5")),("GRID",(0,0),(-1,-1),0.5,colors.grey),("FONTSIZE",(0,0),(-1,-1),7)]));story.append(table)
@@ -343,7 +353,7 @@ def render_pdf(html:str,title:str,lines:list[str],frame:pd.DataFrame)->bytes:
 def attendance_csv(user:Annotated[User,Depends(get_current_user)],db:DbSession,date_from:date,date_to:date,student_id:int|None=None,section_id:int|None=None,batch_id:int|None=None):return stream_bytes(attendance_frame(db,user,student_id,section_id,batch_id,date_from,date_to).to_csv(index=False).encode(),"text/csv","attendance_report.csv")
 @router.get("/exports/attendance.pdf")
 def attendance_pdf(user:Annotated[User,Depends(get_current_user)],db:DbSession,date_from:date,date_to:date,student_id:int|None=None,section_id:int|None=None,batch_id:int|None=None):
-    frame=attendance_frame(db,user,student_id,section_id,batch_id,date_from,date_to);passing=frame["status"].astype(str).str.lower().isin(["attendancestatus.present","attendancestatus.late","present","late"]).sum() if len(frame) else 0;percent=round(100*passing/len(frame),2) if len(frame) else 0;generated=datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC");html=Template("""<html><head><style>body{font-family:sans-serif}h1{color:#064e3b}table{width:100%;border-collapse:collapse}th,td{border:1px solid #aaa;padding:6px;font-size:11px}th{background:#d1fae5}</style></head><body><h1>{{college}}</h1><h2>Attendance Report</h2><p>Generated {{generated}} · {{date_from}} to {{date_to}}</p><p><b>Overall attendance: {{percent}}%</b> ({{passing}}/{{total}})</p>{{table|safe}}</body></html>""").render(college=settings.college_name,generated=generated,date_from=date_from,date_to=date_to,percent=percent,passing=passing,total=len(frame),table=frame.to_html(index=False));pdf=render_pdf(html,"Attendance Report",[f"Generated {generated}",f"Filters: {date_from} to {date_to}",f"Overall attendance: {percent}% ({passing}/{len(frame)})"],frame);return stream_bytes(pdf,"application/pdf","attendance_report.pdf")
+    frame=attendance_frame(db,user,student_id,section_id,batch_id,date_from,date_to);passing=frame["status"].astype(str).str.lower().isin(["attendancestatus.present","attendancestatus.late","present","late"]).sum() if len(frame) else 0;percent=round(100*passing/len(frame),2) if len(frame) else 0;generated=datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC");html=Template("""<html><head><style>body{font-family:sans-serif}h1{color:#064e3b}table{width:100%;border-collapse:collapse}th,td{border:1px solid #aaa;padding:6px;font-size:11px}th{background:#d1fae5}</style></head><body><h1>{{college}}</h1><h2>Attendance Report</h2><p>Generated {{generated}} · {{date_from}} to {{date_to}}</p><p><b>Overall attendance: {{percent}}%</b> ({{passing}}/{{total}})</p>{{table|safe}}</body></html>""").render(college=getattr(user, 'college_name', None) or settings.college_name,generated=generated,date_from=date_from,date_to=date_to,percent=percent,passing=passing,total=len(frame),table=frame.to_html(index=False));pdf=render_pdf(html,"Attendance Report",[f"Generated {generated}",f"Filters: {date_from} to {date_to}",f"Overall attendance: {percent}% ({passing}/{len(frame)})"],frame);return stream_bytes(pdf,"application/pdf","attendance_report.pdf")
 def case_frame(db,status,date_from,date_to):
     q=select(StudentCase.id,StudentCase.student_id,StudentCase.trigger_type,StudentCase.scope_type,StudentCase.scope_id,StudentCase.status,StudentCase.priority,StudentCase.assigned_to,StudentCase.opened_at,StudentCase.closed_at)
     if status:q=q.where(StudentCase.status==CaseStatus(status))
@@ -353,8 +363,8 @@ def case_frame(db,status,date_from,date_to):
 @router.get("/exports/cases.csv",dependencies=[Depends(require_role("admin"))])
 def cases_csv(db:DbSession,status:str|None=None,date_from:date|None=None,date_to:date|None=None):return stream_bytes(case_frame(db,status,date_from,date_to).to_csv(index=False).encode(),"text/csv","case_report.csv")
 @router.get("/exports/cases.pdf",dependencies=[Depends(require_role("admin"))])
-def cases_pdf(db:DbSession,status:str|None=None,date_from:date|None=None,date_to:date|None=None):
-    frame=case_frame(db,status,date_from,date_to);generated=f"{datetime.now(UTC):%Y-%m-%d}";html=f"<h1>{settings.college_name}</h1><h2>Student Case Report</h2><p>Generated {generated}</p>{frame.to_html(index=False)}";return stream_bytes(render_pdf(html,"Student Case Report",[f"Generated {generated}"],frame),"application/pdf","case_report.pdf")
+def cases_pdf(user:Annotated[User,Depends(get_current_user)],db:DbSession,status:str|None=None,date_from:date|None=None,date_to:date|None=None):
+    frame=case_frame(db,status,date_from,date_to);generated=f"{datetime.now(UTC):%Y-%m-%d}";html=f"<h1>{getattr(user, 'college_name', None) or settings.college_name}</h1><h2>Student Case Report</h2><p>Generated {generated}</p>{frame.to_html(index=False)}";return stream_bytes(render_pdf(html,"Student Case Report",[f"Generated {generated}"],frame,getattr(user, 'college_name', None)),"application/pdf","case_report.pdf")
 @router.get("/exports/course-completion.csv",dependencies=[Depends(require_role("admin"))])
 def course_csv(db:DbSession):
     rows=db.execute(select(CoursePlan.id,func.coalesce(AcademicModule.title,Subject.name).label("course"),Batch.name.label("batch"),CoursePlan.planned_sessions,CoursePlan.conducted_sessions).outerjoin(Subject,CoursePlan.subject_id==Subject.id).outerjoin(ModuleOffering,CoursePlan.module_offering_id==ModuleOffering.id).outerjoin(AcademicModule,ModuleOffering.academic_module_id==AcademicModule.id).join(Batch,CoursePlan.batch_id==Batch.id)).mappings().all();frame=pd.DataFrame(rows);frame["deficit"]=frame.planned_sessions-frame.conducted_sessions if len(frame) else [];return stream_bytes(frame.to_csv(index=False).encode(),"text/csv","course_completion.csv")

@@ -17,6 +17,7 @@ from app.modules.crm.models import CaseStatus,StudentCase
 from app.modules.scheduling.models import OverrideStatus,ScheduleOverride
 from app.modules.course_completion.models import MakeupSuggestion,SuggestionStatus
 from app.modules.academic.student_profile_service import current_student_profile
+from app.modules.academic.promotion_service import routine_is_active_on_date, student_section_at, students_for_sections_as_of
 router=APIRouter(prefix="/analytics",tags=["analytics"])
 def student_display_name(student:Student)->str:
     return student.user.name if student.user else student.name or student.roll_number
@@ -104,6 +105,8 @@ def teacher_attendance_analysis_response(
         routine = next((item for item in routines if item.id == session.routine_entry_id), None)
         if not routine:
             continue
+        if not routine_is_active_on_date(db, routine, session.session_date):
+            continue
         if module_id is not None and routine.module_id != module_id:
             continue
         if class_type_id is not None and routine.class_type_id != class_type_id:
@@ -133,10 +136,11 @@ def teacher_attendance_analysis_response(
         .join(Student, AttendanceRecord.student_id == Student.id)
         .where(AttendanceRecord.class_session_id.in_([session.id for session in selected_sessions]))
     ).all()
+    session_dates = {session.id: session.session_date for session in selected_sessions}
     students: dict[int, dict] = {}
     class_types: dict[int, dict] = {}
     for record, student in records:
-        if section_id is not None and student.section_id != section_id:
+        if section_id is not None and student_section_at(db, student.id, session_dates[record.class_session_id]) != section_id:
             continue
         routine = selected_routines[record.class_session_id]
         attended = record.status in PASSING
@@ -201,7 +205,7 @@ def student_summary(id:int,user:Annotated[User,Depends(get_current_user)],db:DbS
     return student_summary_response(db,student)
 @router.get("/sections/{id}/attendance-summary",response_model=SectionSummary)
 def section_summary(id:int,user:Annotated[User,Depends(require_roles("admin","teacher"))],db:DbSession):
-    students=db.scalars(select(Student).where(Student.section_id==id)).all();items=[];all_present=all_total=0
+    students=students_for_sections_as_of(db,{id},date.today());items=[];all_present=all_total=0
     for student in students:
         stats=subject_stats(db,student.id);present=sum(x["present"] for x in stats);total=sum(x["total"] for x in stats);all_present+=present;all_total+=total;items.append(SectionStudentSummary(student_id=student.id,student_name=student_display_name(student),percentage=round(100*present/total,2) if total else 0))
     return SectionSummary(section_id=id,overall_percentage=round(100*all_present/all_total,2) if all_total else 0,students=items)

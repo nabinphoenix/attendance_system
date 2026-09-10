@@ -5,6 +5,7 @@ from sqlalchemy import or_,select
 from app.core.dependencies import DbSession,require_role,require_roles
 from app.core.config import settings
 from app.modules.academic.models import RoutineEntry, Section, Subject, Teacher
+from app.modules.academic.promotion_service import routine_is_active_on_date
 from app.modules.identity.models import User
 from .models import ClassSession,OverrideStatus,ScheduleOverride,SessionStatus,TimetableEntry
 from .schemas import ClassSessionRead,CurrentSession,OverrideCreate,OverrideDecision,OverrideRead,SessionGeofenceCapture,SessionHistory,TimetableCreate,TimetableRead
@@ -21,6 +22,8 @@ def start_routine_session(routine_id:int,p:SessionGeofenceCapture,user:Annotated
     teacher=teacher_profile(db,user);entry=db.scalar(select(RoutineEntry).where(RoutineEntry.id==routine_id).with_for_update())
     if not entry:raise HTTPException(404,"Routine entry not found")
     today=datetime.now().date()
+    if not routine_is_active_on_date(db, entry, today):
+        raise HTTPException(409, 'This routine is outside its cohort semester dates')
     override=approved_routine_override(db,entry.id,today)
     if entry.day_of_week!=today.weekday() and not (override and override.is_makeup):raise HTTPException(409,"This routine is not scheduled today")
     effective=resolve_effective_class(db,entry,today,override)

@@ -10,9 +10,10 @@ from app.modules.identity.models import User
 from app.modules.operations.service import log_audit
 from app.modules.scheduling.models import OverrideStatus, ScheduleOverride
 from app.modules.scheduling.service import EffectiveClass, create_schedule_override, resolve_effective_class, routine_override_conflicts, validate_routine_override_conflicts
-from .models import AcademicModule, Batch, Block, ClassType, Intake, ModuleOffering, Program, Room, RoutineEntry, RoutineEntrySection, RoutinePendingSection, Section, Student, Teacher, TimeSlot
+from .models import AcademicModule, Batch, Block, ClassType, CohortSemester, Intake, ModuleOffering, Program, Room, RoutineEntry, RoutineEntrySection, RoutinePendingSection, Section, Student, Teacher, TimeSlot
 from .module_offering_service import resolve_active_module_offering, synchronize_offering_sections, validate_offering_context
 from .student_profile_service import current_student_profile
+from .promotion_service import period_for_context, routine_is_active_on_date, student_section_at
 
 router=APIRouter(prefix="/academic",tags=["routine"],dependencies=[Depends(require_role("admin"))])
 student_router=APIRouter(prefix="/academic",tags=["routine"])
@@ -210,7 +211,8 @@ def create_module_offering(p:ModuleOfferingCreate,user:Annotated[User,Depends(re
  validate_offering_context(db,academic_module_id=p.academic_module_id,intake_id=p.intake_id,batch_id=p.batch_id,semester_number=p.semester_number,section_ids=set())
  if db.scalar(select(ModuleOffering.id).where(ModuleOffering.academic_module_id==p.academic_module_id,ModuleOffering.intake_id==p.intake_id,ModuleOffering.batch_id==p.batch_id,ModuleOffering.semester_number==p.semester_number)):
   raise HTTPException(409,"A module offering already exists for this module, intake, batch, and semester")
- offering=ModuleOffering(academic_module_id=p.academic_module_id,intake_id=p.intake_id,batch_id=p.batch_id,semester_number=p.semester_number,is_active=p.is_active)
+ period=period_for_context(db,p.intake_id,p.batch_id,p.semester_number)
+ offering=ModuleOffering(academic_module_id=p.academic_module_id,intake_id=p.intake_id,batch_id=p.batch_id,semester_number=p.semester_number,cohort_semester_id=period.id if period else None,is_active=p.is_active)
  try:
   db.add(offering);db.flush();sections=synchronize_offering_sections(db,offering);after=p.model_dump(exclude={"section_ids"})|{"inherited_section_ids":[section.id for section in sections]};log_audit(db,user.id,"module_offering.created","module_offering",offering.id,None,after);db.commit()
  except IntegrityError:
@@ -288,6 +290,7 @@ def create_routine_entry(db,p:RoutineCreate):
  offering=valid_routine(db,p)
  entry=RoutineEntry(**p.model_dump(exclude={"section_ids"}),module_offering_id=offering.id)
  db.add(entry);db.flush()
+ entry.cohort_semester_id=offering.cohort_semester_id
  for section_id in payload_section_ids(p):db.add(RoutineEntrySection(routine_entry_id=entry.id,section_id=section_id))
  db.flush();return entry
 def merge_routine_entry_sections(db,entry:RoutineEntry,p:RoutineCreate)->str:
@@ -369,6 +372,7 @@ def effective_room_classes(db:DbSession,on_date:date)->list[EffectiveClass]:
   by_id.update({entry.id:entry for entry in extras})
  classes=[]
  for entry in by_id.values():
+  if not routine_is_active_on_date(db,entry,on_date):continue
   override=next((item for item in makeup_overrides if item.routine_entry_id==entry.id),None)
   classes.append(resolve_effective_class(db,entry,on_date,override))
  return classes
@@ -431,6 +435,7 @@ def update_routine(id:int,p:RoutineUpdate,user:Annotated[User,Depends(require_ro
  for key,value in values.items():
   if key!="section_ids":setattr(obj,key,value)
  obj.module_offering_id=offering.id
+ obj.cohort_semester_id=offering.cohort_semester_id
  if "section_ids" in values:
   obj.section_id=next(iter(payload_section_ids(candidate)));obj.section_links.clear();db.flush()
   for section_id in payload_section_ids(candidate):db.add(RoutineEntrySection(routine_entry_id=obj.id,section_id=section_id))
@@ -440,10 +445,11 @@ def delete_routine(id:int,user:Annotated[User,Depends(require_role("admin"))],db
 @student_router.get("/routines/me",response_model=list[RoutineRead])
 def my_routine(user:Annotated[User,Depends(get_current_user)],db:DbSession):
  student=current_student_profile(db,user)
- section=student.section
- if not section.intake_id or not section.semester_number:return []
- q=routine_query().outerjoin(RoutineEntrySection).where((RoutineEntry.section_id==section.id)|(RoutineEntrySection.section_id==section.id)).order_by(RoutineEntry.day_of_week)
- return [routine_read(entry) for entry in db.scalars(q).unique().all()]
+ section_id=student_section_at(db,student.id,date.today())
+ section=db.get(Section,section_id) if section_id else None
+ if not section or not section.intake_id or not section.semester_number:return []
+ q=routine_query().outerjoin(RoutineEntrySection).where((RoutineEntry.section_id==section_id)|(RoutineEntrySection.section_id==section_id)).order_by(RoutineEntry.day_of_week)
+ return [routine_read(entry) for entry in db.scalars(q).unique().all() if routine_is_active_on_date(db,entry,date.today())]
 
 @student_router.get("/routines/me/today",response_model=list[RoutineRead])
 def my_routine_today(user:Annotated[User,Depends(get_current_user)],db:DbSession):
@@ -501,17 +507,19 @@ def effective_routine_read(db,effective:EffectiveClass)->EffectiveRoutineRead:
  section_names=[section.name for section in sections if section]
  occupancy_status="occupied" if section_names and not effective.cancelled else "empty"
  return EffectiveRoutineRead(routine_id=entry.id,date=effective.date,start_time=effective.start_time,end_time=effective.end_time,teacher_id=effective.teacher_id,original_teacher_id=entry.teacher_id,room=effective.room,original_room=entry.room.name,section_ids=list(sorted(effective.section_ids)),section_names=section_names,module_id=entry.module_id,class_type_id=entry.class_type_id, cancelled=effective.cancelled,override_id=effective.override_id,occupancy_status=occupancy_status)
-def effective_occurrences(db,entries:list[RoutineEntry],date_from:date,days:int)->list[EffectiveRoutineRead]:
+def effective_occurrences(db,entries:list[RoutineEntry],date_from:date,days:int,student_id:int|None=None)->list[EffectiveRoutineRead]:
  result=[]
  for offset in range(min(max(days,1),31)):
   on_date=date_from+timedelta(days=offset)
+  student_section_id=student_section_at(db,student_id,on_date) if student_id is not None else None
   for entry in entries:
-   if entry.day_of_week==on_date.weekday():result.append(effective_routine_read(db,resolve_effective_class(db,entry,on_date)))
+   if entry.day_of_week==on_date.weekday() and routine_is_active_on_date(db,entry,on_date) and (student_id is None or student_section_id in routine_section_ids(entry)):result.append(effective_routine_read(db,resolve_effective_class(db,entry,on_date)))
   end_date=date_from+timedelta(days=min(max(days,1),31)-1)
   entry_by_id={entry.id:entry for entry in entries}
   makeup_overrides=db.scalars(select(ScheduleOverride).where(ScheduleOverride.routine_entry_id.in_(entry_by_id),ScheduleOverride.is_makeup.is_(True),ScheduleOverride.status==OverrideStatus.APPROVED,ScheduleOverride.override_date.between(date_from,end_date))).all()
   existing={(item.routine_id,item.date) for item in result}
   for override in makeup_overrides:
+   if student_id is not None and student_section_at(db,student_id,override.override_date) not in routine_section_ids(entry_by_id[override.routine_entry_id]):continue
    key=(override.routine_entry_id,override.override_date)
    if key not in existing:result.append(effective_routine_read(db,resolve_effective_class(db,entry_by_id[override.routine_entry_id],override.override_date,override)))
  return sorted(result,key=lambda item:(item.date,item.start_time,item.routine_id))
@@ -519,8 +527,8 @@ def effective_occurrences(db,entries:list[RoutineEntry],date_from:date,days:int)
 @student_router.get("/routines/me/occurrences",response_model=list[EffectiveRoutineRead])
 def my_routine_occurrences(user:Annotated[User,Depends(get_current_user)],db:DbSession,date_from:date,days:int=8):
  student=current_student_profile(db,user)
- entries=db.scalars(routine_query().outerjoin(RoutineEntrySection).where((RoutineEntry.section_id==student.section_id)|(RoutineEntrySection.section_id==student.section_id))).unique().all()
- return effective_occurrences(db,entries,date_from,days)
+ entries=db.scalars(routine_query()).unique().all()
+ return effective_occurrences(db,entries,date_from,days,student_id=student.id)
 
 @student_router.get("/teachers/me/occurrences",response_model=list[EffectiveRoutineRead])
 def my_teacher_occurrences(user:Annotated[User,Depends(require_role("teacher"))],db:DbSession,date_from:date,days:int=8):

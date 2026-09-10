@@ -16,8 +16,13 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
 def get_db() -> Generator[Session, None, None]:
     db = SessionLocal()
+    db.info["college_id"] = -1  # deny data access until authenticated
     try:
         yield db
     finally:
         db.close()
 
+
+# Register global tables and ownership enforcement for every entry point.
+from app.modules.platform import models as platform_models  # noqa: E402,F401
+from app.core import tenancy  # noqa: E402,F401

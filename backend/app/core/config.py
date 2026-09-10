@@ -25,7 +25,7 @@ class Settings(BaseSettings):
     check_in_attempt_rate_limit_seconds: int = 5
     attendance_threshold_percent: float = 75
     minimum_observations: int = 4
-    college_name: str = "AntimBench College"
+    college_name: str = "Techspire College"
     smtp_host: str | None = None
     smtp_port: int = 587
     smtp_username: str | None = None
@@ -40,6 +40,19 @@ class Settings(BaseSettings):
     frontend_url: str = "http://localhost:3000"
     invitation_expire_hours: int = 168
     cors_origins: list[str] = ["http://localhost:3000"]
+    # AI assistant keys are deliberately server-only. Do not prefix them with
+    # NEXT_PUBLIC_ or expose them through a frontend route.
+    ai_enabled: bool = True
+    ai_provider_order: str = "groq,openrouter,gemini"
+    ai_groq_api_key: str | None = None
+    ai_groq_model: str = "llama-3.1-8b-instant"
+    ai_openrouter_api_key: str | None = None
+    ai_openrouter_model: str | None = None
+    ai_gemini_api_key: str | None = None
+    ai_gemini_model: str = "gemini-2.5-flash"
+    ai_request_timeout_seconds: float = Field(default=30, ge=5, le=120)
+    ai_max_tool_rounds: int = Field(default=8, ge=1, le=8)
+    ai_confirmation_expire_minutes: int = Field(default=10, ge=1, le=60)
 
 
 @lru_cache

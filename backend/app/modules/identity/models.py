@@ -1,16 +1,19 @@
 import enum
 from datetime import datetime
-from sqlalchemy import Boolean, DateTime, Enum, LargeBinary, String, func
+from sqlalchemy import Boolean, DateTime, Enum, LargeBinary, ForeignKey, Integer, String, func
 from sqlalchemy.orm import Mapped, mapped_column
 from app.core.database import Base
+from app.core.tenancy import CollegeOwned
 class UserRole(str, enum.Enum):
+    SUPER_ADMIN = "super_admin"
     STUDENT = "student"
     TEACHER = "teacher"
     ADMIN = "admin"
     COORDINATOR = "coordinator"
     PARENT = "parent"
-class User(Base):
+class User(CollegeOwned, Base):
     __tablename__ = "users"
+    college_id: Mapped[int | None] = mapped_column(Integer().evaluates_none(), ForeignKey("colleges.id"), nullable=True, index=True, default=None)
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(150))
     email: Mapped[str] = mapped_column(String(255), unique=True, index=True)

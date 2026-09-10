@@ -3,8 +3,9 @@ from datetime import date,time
 from sqlalchemy import CheckConstraint, Date,Enum,ForeignKey,Integer,String,Time,UniqueConstraint
 from sqlalchemy.orm import Mapped,mapped_column,relationship
 from app.core.database import Base
+from app.core.tenancy import CollegeOwned
 class SuggestionStatus(str,enum.Enum):PENDING="pending";APPROVED="approved";REJECTED="rejected"
-class CoursePlan(Base):
+class CoursePlan(CollegeOwned, Base):
     __tablename__ = "course_plans"
     __table_args__ = (
         UniqueConstraint("subject_id", "batch_id", name="uq_course_plan_subject_batch"),
@@ -24,7 +25,7 @@ class CoursePlan(Base):
     subject = relationship("Subject")
     module_offering = relationship("ModuleOffering")
     batch = relationship("Batch")
-class MakeupSuggestion(Base):
+class MakeupSuggestion(CollegeOwned, Base):
     __tablename__ = "makeup_suggestions"
     __table_args__ = (
         CheckConstraint(

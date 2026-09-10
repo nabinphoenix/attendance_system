@@ -14,6 +14,9 @@ class UserRead(BaseModel):
     role: str
     is_active: bool
     avatar_url: str | None = None
+    college_id: int | None = None
+    college_name: str | None = None
+    active_college_id: int | None = None
 
 class ProfileUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=150)

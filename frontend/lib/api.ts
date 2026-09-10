@@ -3,6 +3,14 @@ import axios from "axios";
 // trying to reach its own localhost:8000.
 const api = axios.create({ baseURL: process.env.NEXT_PUBLIC_API_URL || "", withCredentials: true });
 
+api.interceptors.request.use((config) => {
+  if (typeof window !== "undefined" && window.location.pathname.startsWith("/admin")) {
+    const collegeId = sessionStorage.getItem("platform_college_id");
+    if (collegeId && !config.headers["X-College-ID"]) config.headers["X-College-ID"] = collegeId;
+  }
+  return config;
+});
+
 let redirectingToLogin = false;
 
 api.interceptors.response.use(

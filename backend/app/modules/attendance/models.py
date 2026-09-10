@@ -3,10 +3,11 @@ from datetime import date, datetime
 from sqlalchemy import Boolean, Date, DateTime, Enum, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
 from app.core.database import Base
+from app.core.tenancy import CollegeOwned
 class AttendanceStatus(str, enum.Enum): PRESENT="present"; LATE="late"; ABSENT="absent"; LEAVE="leave"; BUNK="bunk"
 class AttendanceMethod(str, enum.Enum): QR_GEOFENCE="qr_geofence"; FINALIZATION="finalization"; MANUAL="manual"
 class CheckInAttemptStatus(str, enum.Enum): ACCEPTED="accepted"; PENDING="pending"; CONFIRMED="confirmed"; REJECTED="rejected"
-class AttendanceRecord(Base):
+class AttendanceRecord(CollegeOwned, Base):
     __tablename__="attendance_records"
     __table_args__=(UniqueConstraint("class_session_id","student_id",name="uq_attendance_session_student"),Index("ix_attendance_session_student","class_session_id","student_id"))
     id:Mapped[int]=mapped_column(primary_key=True)
@@ -15,7 +16,7 @@ class AttendanceRecord(Base):
     status:Mapped[AttendanceStatus]=mapped_column(Enum(AttendanceStatus))
     method:Mapped[AttendanceMethod]=mapped_column(Enum(AttendanceMethod))
     check_in_time:Mapped[datetime|None]=mapped_column(DateTime(timezone=True),nullable=True)
-class AttendanceChange(Base):
+class AttendanceChange(CollegeOwned, Base):
     __tablename__="attendance_changes"
     id:Mapped[int]=mapped_column(primary_key=True)
     attendance_record_id:Mapped[int]=mapped_column(ForeignKey("attendance_records.id"))
@@ -24,7 +25,7 @@ class AttendanceChange(Base):
     reason:Mapped[str]=mapped_column(Text)
     actor_id:Mapped[int]=mapped_column(ForeignKey("users.id"))
     changed_at:Mapped[datetime]=mapped_column(DateTime(timezone=True),server_default=func.now())
-class CheckInAttempt(Base):
+class CheckInAttempt(CollegeOwned, Base):
     __tablename__="check_in_attempts"
     __table_args__=(Index("ix_check_in_attempt_session_status","class_session_id","status"),)
     id:Mapped[int]=mapped_column(primary_key=True)
@@ -43,7 +44,7 @@ class CheckInAttempt(Base):
     reviewed_at:Mapped[datetime|None]=mapped_column(DateTime(timezone=True),nullable=True)
     decision_reason:Mapped[str|None]=mapped_column(Text,nullable=True)
     created_at:Mapped[datetime]=mapped_column(DateTime(timezone=True),server_default=func.now())
-class AttendanceChallenge(Base):
+class AttendanceChallenge(CollegeOwned, Base):
     __tablename__="attendance_challenges"
     __table_args__=(
         UniqueConstraint("class_session_id","qr_version",name="uq_attendance_challenge_session_qr_version"),
@@ -59,7 +60,7 @@ class AttendanceChallenge(Base):
     created_at:Mapped[datetime]=mapped_column(DateTime(timezone=True),server_default=func.now())
     expires_at:Mapped[datetime]=mapped_column(DateTime(timezone=True))
     revoked_at:Mapped[datetime|None]=mapped_column(DateTime(timezone=True),nullable=True)
-class PendingAttendanceVerification(Base):
+class PendingAttendanceVerification(CollegeOwned, Base):
     __tablename__="pending_attendance_verifications"
     __table_args__=(
         UniqueConstraint("token_hash",name="uq_pending_attendance_verification_token"),
@@ -81,7 +82,7 @@ class PendingAttendanceVerification(Base):
     failed_attempts:Mapped[int]=mapped_column(Integer,default=0,server_default="0")
     consumed_at:Mapped[datetime|None]=mapped_column(DateTime(timezone=True),nullable=True)
     invalidated_at:Mapped[datetime|None]=mapped_column(DateTime(timezone=True),nullable=True)
-class LeaveRequest(Base):
+class LeaveRequest(CollegeOwned, Base):
     __tablename__="leave_requests"
     id:Mapped[int]=mapped_column(primary_key=True)
     student_id:Mapped[int]=mapped_column(ForeignKey("students.id"))

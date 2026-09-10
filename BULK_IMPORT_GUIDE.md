@@ -121,6 +121,22 @@ Sita Rai,sita.raisep26@cps.edu.np,2026,A1,9800000001,SEP26-002
 
 ### Import students
 
+If the same batch and section names exist in multiple intakes, add an
+intake_code column containing the owning intake code. The importer rejects
+ambiguous matches without it. Imported students receive a dated academic
+placement that is preserved when a promotion run is applied.
+
+## Semester windows and promotions
+
+Open Admin / Academic / Promotions. Create one dated cohort-semester window
+for each intake, batch, and semester. Different intakes may overlap and may
+be in the same semester number at the same time.
+
+When the source window ends, create the next semester window using its start
+date as the promotion date, select the source and target windows, review or
+change the section mapping, preview the roster, and hold any exceptions before
+applying. The system preserves historical placements and attendance.
+
 1. Check that the batch and section already exist.
 2. Check that the section is connected to the correct intake and semester.
 3. Open **Admin → Imports** and choose **Students**.

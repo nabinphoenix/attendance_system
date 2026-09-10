@@ -34,9 +34,11 @@ export default function LoginPage() {
 
     setLoading(true);
     try {
+      sessionStorage.removeItem("platform_college_id");
       await api.post("/api/v1/auth/login", { email: email.trim().toLowerCase(), password });
       const { data: user } = await api.get<{ role: Role }>("/api/v1/auth/me");
       const destinations: Record<Role, string> = {
+        super_admin: "/super-admin/dashboard",
         admin: "/admin/dashboard",
         teacher: "/teacher/sessions",
         student: "/student/dashboard",
@@ -47,6 +49,8 @@ export default function LoginPage() {
     } catch (requestError: any) {
       if (requestError.response?.status === 401) {
         setError("Check your email and password, then try again.");
+      } else if (requestError.response?.status === 403) {
+        setError(requestError.response.data?.detail || "This account or college is inactive.");
       } else if (!requestError.response) {
         setError("We could not reach AntimBench. Make sure this phone is on the college Wi-Fi and reopen the address provided by your administrator.");
       } else {

@@ -16,6 +16,7 @@ from app.modules.operations.models import AuditLog
 from app.modules.operations.service import log_audit
 from app.modules.scheduling.models import ClassSession, OverrideStatus, ScheduleOverride, SessionStatus
 from app.modules.scheduling.service import approved_routine_override, resolve_effective_class, resolve_session_schedule, session_section_ids
+from app.modules.academic.promotion_service import routine_is_active_on_date, student_section_at, students_for_sections_as_of
 
 from .models import (
     AttendanceChange,
@@ -101,7 +102,7 @@ def student_for_user(db, user: User) -> Student:
 def ensure_student_eligible(session: ClassSession, student: Student, db) -> None:
     entry = resolve_session_schedule(session)
     if session.routine_entry_id:
-        if student.section_id not in session_section_ids(session):
+        if student_section_at(db, student.id, session.session_date) not in session_section_ids(session):
             raise HTTPException(403, "STUDENT_NOT_ELIGIBLE")
         return
     enrolled = db.scalar(
@@ -110,7 +111,7 @@ def ensure_student_eligible(session: ClassSession, student: Student, db) -> None
             StudentSubjectEnrollment.subject_id == entry.subject_id,
         )
     )
-    if student.section_id != entry.section_id or not enrolled:
+    if student_section_at(db, student.id, session.session_date) != entry.section_id or not enrolled:
         raise HTTPException(403, "STUDENT_NOT_ELIGIBLE")
 
 
@@ -440,20 +441,20 @@ def confirm_check_in(p: ChallengeConfirmationRequest, user: Annotated[User, Depe
 def session_students(session: ClassSession, db):
     entry = resolve_session_schedule(session)
     if session.routine_entry_id:
-        return db.scalars(select(Student).where(Student.section_id.in_(session_section_ids(session)))).all()
-    return db.scalars(
+        return students_for_sections_as_of(db, session_section_ids(session), session.session_date)
+    candidates = db.scalars(
         select(Student)
         .join(StudentSubjectEnrollment)
         .where(Student.section_id == entry.section_id, StudentSubjectEnrollment.subject_id == entry.subject_id)
     ).all()
+    return [
+        student for student in candidates
+        if student_section_at(db, student.id, session.session_date) == entry.section_id
+    ]
 
 
 def effective_students(effective, db) -> list[Student]:
-    return db.scalars(
-        select(Student)
-        .where(Student.section_id.in_(effective.section_ids))
-        .order_by(Student.roll_number)
-    ).all()
+    return students_for_sections_as_of(db, set(effective.section_ids), effective.date)
 
 
 def roster_rows_for_students(session_id: int | None, students: list[Student], db) -> list[RosterItem]:
@@ -510,6 +511,8 @@ def teacher_profile(db, user: User) -> Teacher:
 def teacher_routine_occurrence(db, user: User, routine_id: int, attendance_date: date):
     teacher = teacher_profile(db, user)
     entry = db.get(RoutineEntry, routine_id)
+    if not routine_is_active_on_date(db, entry, attendance_date):
+        raise HTTPException(409, 'This routine is outside its cohort semester dates')
     if not entry:
         raise HTTPException(404, "Routine entry not found")
     override = approved_routine_override(db, routine_id, attendance_date)
@@ -541,6 +544,8 @@ def teacher_attendance_entries(db, teacher_id: int, attendance_date: date) -> li
     unique_entries = {entry.id: entry for entry in entries}
     result = []
     for entry in unique_entries.values():
+        if not routine_is_active_on_date(db, entry, attendance_date):
+            continue
         effective = resolve_effective_class(db, entry, attendance_date)
         if effective.teacher_id == teacher_id:
             result.append((entry, effective))

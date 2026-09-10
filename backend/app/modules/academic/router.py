@@ -9,6 +9,7 @@ from app.modules.operations.service import log_audit
 from . import schemas
 from .models import Batch, Guardian, Intake, Program, Section, Student, StudentSubjectEnrollment, Subject, Teacher
 from .module_offering_service import synchronize_section_module_offerings
+from .models import StudentEnrollment
 from app.modules.scheduling.models import ClassSession, ScheduleOverride, TimetableEntry
 
 router = APIRouter(prefix="/academic", tags=["academic"], dependencies=[Depends(require_role("admin"))])
@@ -101,6 +102,14 @@ def update_section(id: int, p: schemas.SectionUpdate, db: DbSession):
     if p.intake_id is not None: get_or_404(db, Intake, p.intake_id, "Intake")
     section = get_or_404(db, Section, id, "Section")
     values = p.model_dump(exclude_none=True)
+    if {'batch_id', 'intake_id', 'semester_number'} & values.keys():
+        if db.scalar(select(Student.id).where(Student.section_id == id)) or db.scalar(
+            select(StudentEnrollment.id).where(StudentEnrollment.section_id == id)
+        ):
+            raise HTTPException(
+                409,
+                'This section has student history. Create a new dated section instead of changing its academic identity.',
+            )
     for key, value in values.items():
         setattr(section, key, value)
     db.flush()
@@ -137,7 +146,19 @@ def create_student(p: schemas.StudentCreate, db: DbSession):
     user = create_user(db, p.name, p.email, p.password, UserRole.STUDENT)
     subjects = [db.get(Subject, i) for i in p.subject_ids]
     if any(x is None for x in subjects): raise HTTPException(404, "Subject not found")
-    return save(db, Student(user_id=user.id, section_id=p.section_id, roll_number=p.roll_number, name=p.name, email=str(p.email), subjects=subjects))
+    student = Student(
+        user_id=user.id,
+        section_id=p.section_id,
+        roll_number=p.roll_number,
+        name=p.name,
+        email=str(p.email),
+        subjects=subjects,
+    )
+    db.add(student)
+    db.flush()
+    from .promotion_service import ensure_student_enrollment
+    ensure_student_enrollment(db, student)
+    return save(db, student)
 @router.post("/teachers", response_model=schemas.TeacherRead)
 def create_teacher(p: schemas.TeacherCreate, actor: Annotated[User, Depends(require_role("admin"))], db: DbSession):
     user = create_user(db, p.name, p.email, p.password, UserRole.TEACHER)

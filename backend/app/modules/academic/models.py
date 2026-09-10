@@ -1,28 +1,54 @@
 import enum
 from datetime import date, datetime, time
-from sqlalchemy import Boolean, Date, DateTime, Enum, Float, ForeignKey, Index, Integer, String, Time, UniqueConstraint, func
+from sqlalchemy import Boolean, CheckConstraint, Date, DateTime, Enum, Float, ForeignKey, Index, Integer, String, Time, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.core.database import Base
+from app.core.tenancy import CollegeOwned
 
-class Program(Base):
+class Program(CollegeOwned, Base):
     __tablename__ = "programs"
     id: Mapped[int] = mapped_column(primary_key=True)
-    name: Mapped[str] = mapped_column(String(150), unique=True)
+    name: Mapped[str] = mapped_column(String(150))
 
-class Intake(Base):
+class Intake(CollegeOwned, Base):
     __tablename__ = "intakes"
     id: Mapped[int] = mapped_column(primary_key=True)
-    name: Mapped[str] = mapped_column(String(100), unique=True)
-    code: Mapped[str] = mapped_column(String(50), unique=True)
+    name: Mapped[str] = mapped_column(String(100))
+    code: Mapped[str] = mapped_column(String(50))
     start_date: Mapped[date] = mapped_column(Date)
     program_id: Mapped[int] = mapped_column(ForeignKey("programs.id"))
 
-class Block(Base):
+class CohortSemester(CollegeOwned, Base):
+    __tablename__ = 'cohort_semesters'
+    __table_args__ = (
+        UniqueConstraint(
+            'intake_id',
+            'batch_id',
+            'semester_number',
+            'attempt_number',
+            name='uq_cohort_semester_context',
+        ),
+        CheckConstraint('start_date <= end_date', name='ck_cohort_semester_dates'),
+        Index('ix_cohort_semesters_context', 'intake_id', 'batch_id', 'semester_number'),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    intake_id: Mapped[int] = mapped_column(ForeignKey('intakes.id'))
+    batch_id: Mapped[int] = mapped_column(ForeignKey('batches.id'))
+    semester_number: Mapped[int] = mapped_column(Integer)
+    attempt_number: Mapped[int] = mapped_column(Integer, default=1, server_default='1')
+    start_date: Mapped[date] = mapped_column(Date)
+    end_date: Mapped[date] = mapped_column(Date)
+    status: Mapped[str] = mapped_column(String(20), default='planned', server_default='planned')
+    intake: Mapped['Intake'] = relationship()
+    batch: Mapped['Batch'] = relationship()
+
+class Block(CollegeOwned, Base):
     __tablename__ = "blocks"
     id: Mapped[int] = mapped_column(primary_key=True)
-    name: Mapped[str] = mapped_column(String(100), unique=True)
+    name: Mapped[str] = mapped_column(String(100))
 
-class Room(Base):
+class Room(CollegeOwned, Base):
     __tablename__ = "rooms"
     __table_args__ = (UniqueConstraint("block_id", "name", name="uq_room_block_name"),)
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -35,16 +61,16 @@ class Room(Base):
     geofence_radius_meters: Mapped[float | None] = mapped_column(Float, nullable=True)
     block = relationship("Block")
 
-class AcademicModule(Base):
+class AcademicModule(CollegeOwned, Base):
     __tablename__ = "modules"
     id: Mapped[int] = mapped_column(primary_key=True)
-    code: Mapped[str] = mapped_column(String(30), unique=True)
+    code: Mapped[str] = mapped_column(String(30))
     title: Mapped[str] = mapped_column(String(200))
     credits: Mapped[int] = mapped_column(Integer)
     semester_number: Mapped[int] = mapped_column(Integer)
 
 
-class ModuleOffering(Base):
+class ModuleOffering(CollegeOwned, Base):
     """A catalog module delivered to one intake, batch, and semester."""
 
     __tablename__ = "module_offerings"
@@ -66,6 +92,9 @@ class ModuleOffering(Base):
     intake_id: Mapped[int] = mapped_column(ForeignKey("intakes.id"))
     batch_id: Mapped[int] = mapped_column(ForeignKey("batches.id"))
     semester_number: Mapped[int] = mapped_column(Integer)
+    cohort_semester_id: Mapped[int | None] = mapped_column(
+        ForeignKey('cohort_semesters.id'), nullable=True, index=True
+    )
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
 
     academic_module: Mapped[AcademicModule] = relationship()
@@ -75,6 +104,7 @@ class ModuleOffering(Base):
         secondary="module_offering_sections", back_populates="module_offerings"
     )
     routines: Mapped[list["RoutineEntry"]] = relationship(back_populates="module_offering")
+    cohort_semester: Mapped[CohortSemester | None] = relationship()
 
 
 def has_consistent_module_offering_context(offering: ModuleOffering) -> bool:
@@ -82,26 +112,26 @@ def has_consistent_module_offering_context(offering: ModuleOffering) -> bool:
 
     return offering.intake.program_id == offering.batch.program_id
 
-class ClassType(Base):
+class ClassType(CollegeOwned, Base):
     __tablename__ = "class_types"
     id: Mapped[int] = mapped_column(primary_key=True)
-    name: Mapped[str] = mapped_column(String(50), unique=True)
+    name: Mapped[str] = mapped_column(String(50))
 
-class TimeSlot(Base):
+class TimeSlot(CollegeOwned, Base):
     __tablename__ = "time_slots"
-    __table_args__ = (UniqueConstraint("start_time", "end_time", name="uq_time_slot_range"),)
+    __table_args__ = (UniqueConstraint("college_id", "start_time", "end_time", name="uq_time_slot_range"),)
     id: Mapped[int] = mapped_column(primary_key=True)
     start_time: Mapped[time] = mapped_column(Time)
     end_time: Mapped[time] = mapped_column(Time)
     duration_label: Mapped[str] = mapped_column(String(30))
 
-class Batch(Base):
+class Batch(CollegeOwned, Base):
     __tablename__ = "batches"
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(100))
     program_id: Mapped[int] = mapped_column(ForeignKey("programs.id"))
 
-class Section(Base):
+class Section(CollegeOwned, Base):
     __tablename__ = "sections"
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(50))
@@ -113,19 +143,106 @@ class Section(Base):
         secondary="module_offering_sections", back_populates="sections"
     )
 
-class Student(Base):
+class Student(CollegeOwned, Base):
     __tablename__ = "students"
     id: Mapped[int] = mapped_column(primary_key=True)
     user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), unique=True, nullable=True)
     section_id: Mapped[int] = mapped_column(ForeignKey("sections.id"))
-    roll_number: Mapped[str] = mapped_column(String(50), unique=True)
+    roll_number: Mapped[str] = mapped_column(String(50))
     name: Mapped[str | None] = mapped_column(String(150), nullable=True)
     email: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
+    enrollments: Mapped[list['StudentEnrollment']] = relationship(
+        back_populates='student', cascade='all, delete-orphan'
+    )
     user = relationship("User")
     section = relationship("Section")
     subjects: Mapped[list["Subject"]] = relationship(secondary="student_subject_enrollments", back_populates="students")
 
-class Guardian(Base):
+class PromotionRun(CollegeOwned, Base):
+    '''One auditable transition from a source cohort semester to its successor.'''
+
+    __tablename__ = 'promotion_runs'
+    __table_args__ = (
+        UniqueConstraint(
+            'intake_id',
+            'batch_id',
+            'from_cohort_semester_id',
+            'to_cohort_semester_id',
+            'effective_date',
+            name='uq_promotion_run_transition',
+        ),
+        Index('ix_promotion_runs_context', 'intake_id', 'batch_id', 'effective_date'),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    intake_id: Mapped[int] = mapped_column(ForeignKey('intakes.id'))
+    batch_id: Mapped[int] = mapped_column(ForeignKey('batches.id'))
+    from_cohort_semester_id: Mapped[int] = mapped_column(ForeignKey('cohort_semesters.id'))
+    to_cohort_semester_id: Mapped[int] = mapped_column(ForeignKey('cohort_semesters.id'))
+    effective_date: Mapped[date] = mapped_column(Date)
+    status: Mapped[str] = mapped_column(String(20), default='applied', server_default='applied')
+    created_by: Mapped[int | None] = mapped_column(ForeignKey('users.id'), nullable=True)
+    applied_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    notes: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    items: Mapped[list['PromotionRunItem']] = relationship(
+        back_populates='promotion_run', cascade='all, delete-orphan'
+    )
+
+
+class StudentEnrollment(CollegeOwned, Base):
+    '''Dated student placement; historical rows are never overwritten.'''
+
+    __tablename__ = 'student_enrollments'
+    __table_args__ = (
+        CheckConstraint('ends_on IS NULL OR starts_on < ends_on', name='ck_student_enrollment_dates'),
+        Index('ix_student_enrollments_student_dates', 'student_id', 'starts_on', 'ends_on'),
+        Index('ix_student_enrollments_section_dates', 'section_id', 'starts_on', 'ends_on'),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    student_id: Mapped[int] = mapped_column(ForeignKey('students.id', ondelete='CASCADE'))
+    section_id: Mapped[int] = mapped_column(ForeignKey('sections.id'))
+    cohort_semester_id: Mapped[int | None] = mapped_column(
+        ForeignKey('cohort_semesters.id'), nullable=True, index=True
+    )
+    starts_on: Mapped[date] = mapped_column(Date)
+    ends_on: Mapped[date | None] = mapped_column(Date, nullable=True)
+    status: Mapped[str] = mapped_column(String(20), default='active', server_default='active')
+    promotion_run_id: Mapped[int | None] = mapped_column(
+        ForeignKey('promotion_runs.id'), nullable=True, index=True
+    )
+    student: Mapped['Student'] = relationship(back_populates='enrollments')
+    section: Mapped['Section'] = relationship()
+    cohort_semester: Mapped[CohortSemester | None] = relationship()
+
+
+class PromotionRunItem(CollegeOwned, Base):
+    '''Per-student decision made by a promotion run.'''
+
+    __tablename__ = 'promotion_run_items'
+    __table_args__ = (
+        UniqueConstraint('promotion_run_id', 'student_id', name='uq_promotion_run_item_student'),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    promotion_run_id: Mapped[int] = mapped_column(
+        ForeignKey('promotion_runs.id', ondelete='CASCADE')
+    )
+    student_id: Mapped[int] = mapped_column(ForeignKey('students.id', ondelete='CASCADE'))
+    source_enrollment_id: Mapped[int | None] = mapped_column(
+        ForeignKey('student_enrollments.id'), nullable=True
+    )
+    target_enrollment_id: Mapped[int | None] = mapped_column(
+        ForeignKey('student_enrollments.id'), nullable=True
+    )
+    source_section_id: Mapped[int] = mapped_column(ForeignKey('sections.id'))
+    target_section_id: Mapped[int | None] = mapped_column(ForeignKey('sections.id'), nullable=True)
+    action: Mapped[str] = mapped_column(String(20))
+    reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    promotion_run: Mapped[PromotionRun] = relationship(back_populates='items')
+
+
+class Guardian(CollegeOwned, Base):
     __tablename__ = "guardians"
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(150))
@@ -133,33 +250,37 @@ class Guardian(Base):
     user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     phone: Mapped[str | None] = mapped_column(String(30), nullable=True)
 
-class Teacher(Base):
+class Teacher(CollegeOwned, Base):
     __tablename__ = "teachers"
     id: Mapped[int] = mapped_column(primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), unique=True)
-    employee_code: Mapped[str] = mapped_column(String(50), unique=True)
+    employee_code: Mapped[str] = mapped_column(String(50))
     user = relationship("User")
 
 class Subject(Base):
     __tablename__ = "subjects"
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(150))
-    code: Mapped[str] = mapped_column(String(30), unique=True)
+    code: Mapped[str] = mapped_column(String(30))
     section_id: Mapped[int] = mapped_column(ForeignKey("sections.id"))
+    section = relationship("Section")
     students: Mapped[list[Student]] = relationship(secondary="student_subject_enrollments", back_populates="subjects")
 
-class StudentSubjectEnrollment(Base):
+class StudentSubjectEnrollment(CollegeOwned, Base):
     __tablename__ = "student_subject_enrollments"
     __table_args__ = (UniqueConstraint("student_id", "subject_id"),)
     id: Mapped[int] = mapped_column(primary_key=True)
     student_id: Mapped[int] = mapped_column(ForeignKey("students.id", ondelete="CASCADE"))
     subject_id: Mapped[int] = mapped_column(ForeignKey("subjects.id", ondelete="CASCADE"))
 
-class RoutineEntry(Base):
+class RoutineEntry(CollegeOwned, Base):
     __tablename__ = "routine_entries"
     id: Mapped[int] = mapped_column(primary_key=True)
     intake_id: Mapped[int] = mapped_column(ForeignKey("intakes.id"))
     semester_number: Mapped[int] = mapped_column(Integer)
+    cohort_semester_id: Mapped[int | None] = mapped_column(
+        ForeignKey('cohort_semesters.id'), nullable=True, index=True
+    )
     section_id: Mapped[int] = mapped_column(ForeignKey("sections.id"))
     module_id: Mapped[int] = mapped_column(ForeignKey("modules.id"))
     module_offering_id: Mapped[int | None] = mapped_column(ForeignKey("module_offerings.id"), nullable=True, index=True)
@@ -183,7 +304,10 @@ class RoutineEntry(Base):
         back_populates="routine_entry", cascade="all, delete-orphan"
     )
 
-class RoutineEntrySection(Base):
+    cohort_semester: Mapped[CohortSemester | None] = relationship()
+
+
+class RoutineEntrySection(CollegeOwned, Base):
     """The sections attending one physical recurring class."""
     __tablename__ = "routine_entry_sections"
     __table_args__ = (UniqueConstraint("routine_entry_id", "section_id", name="uq_routine_entry_section"),)
@@ -194,7 +318,7 @@ class RoutineEntrySection(Base):
     section: Mapped[Section] = relationship()
 
 
-class RoutinePendingSection(Base):
+class RoutinePendingSection(CollegeOwned, Base):
     """An intended combined-class membership whose section is not ready yet."""
 
     __tablename__ = "routine_pending_sections"
@@ -213,7 +337,7 @@ class RoutinePendingSection(Base):
     resolved_section: Mapped[Section | None] = relationship(foreign_keys=[resolved_section_id])
 
 
-class ModuleOfferingSection(Base):
+class ModuleOfferingSection(CollegeOwned, Base):
     __tablename__ = "module_offering_sections"
     __table_args__ = (
         UniqueConstraint("module_offering_id", "section_id", name="uq_module_offering_section"),
@@ -233,7 +357,7 @@ class InvitationPurpose(str, enum.Enum):
     ACTIVATION = "activation"
     PASSWORD_SETUP = "password_setup"
 
-class StudentInvitation(Base):
+class StudentInvitation(CollegeOwned, Base):
     __tablename__ = "student_invitations"
     id: Mapped[int] = mapped_column(primary_key=True)
     student_id: Mapped[int] = mapped_column(ForeignKey("students.id", ondelete="CASCADE"))
@@ -246,3 +370,7 @@ class StudentInvitation(Base):
     used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     student: Mapped[Student] = relationship()
+
+# Different colleges may use the same catalog codes and local identifiers.
+for _model, _column in ((Program, "name"), (Intake, "name"), (Intake, "code"), (Block, "name"), (AcademicModule, "code"), (ClassType, "name"), (Student, "roll_number"), (Teacher, "employee_code")):
+    _model.__table__.append_constraint(UniqueConstraint("college_id", _column, name=f"uq_{_model.__tablename__}_college_{_column}"))

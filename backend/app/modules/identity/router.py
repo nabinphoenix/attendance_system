@@ -18,6 +18,9 @@ from app.modules.identity.service import authenticate, issue_token
 from app.core.config import settings
 from app.core.profile_media import ProfileMediaNotFound, ProfileMediaStore, ProfileMediaUnavailable
 
+from app.core.tenancy import set_college_scope
+from app.modules.platform.models import College
+
 router = APIRouter(tags=["identity"])
 # Local development uses the repository folder. Production services can supply
 # a writable state directory when S3 storage has not been configured.
@@ -54,8 +57,11 @@ def browser_session(response: Response, user: User) -> TokenResponse:
     return TokenResponse(access_token=token)
 
 def invitation_from_token(db,token:str)->StudentInvitation:
-    invitation=db.scalar(select(StudentInvitation).where(StudentInvitation.token_hash==hashlib.sha256(token.encode()).hexdigest()))
+    invitation=db.scalar(select(StudentInvitation).where(StudentInvitation.token_hash==hashlib.sha256(token.encode()).hexdigest()).execution_options(tenant_bypass=True))
     if not invitation:raise HTTPException(404,"Invalid invitation")
+    college = db.get(College, invitation.college_id)
+    if college and not college.is_active:raise HTTPException(403,"College is inactive")
+    set_college_scope(db, invitation.college_id)
     if invitation.status==InvitationStatus.ACTIVATED:raise HTTPException(409,"Invitation has already been used")
     if invitation.status==InvitationStatus.REVOKED:raise HTTPException(410,"Invitation has been revoked")
     expires=invitation.expires_at.replace(tzinfo=UTC) if invitation.expires_at.tzinfo is None else invitation.expires_at
@@ -96,6 +102,13 @@ def login(payload: LoginRequest, response: Response, db: DbSession) -> TokenResp
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password")
     if not user.is_active:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account inactive. Contact an administrator.")
+    college = db.get(College, user.college_id) if user.college_id else None
+    if user.role != UserRole.SUPER_ADMIN and (not college or not college.is_active):
+        raise HTTPException(403, "College is inactive or unavailable")
+    set_college_scope(db, user.college_id)
+    db.info["actor_id"] = user.id
+    log_audit(db, user.id, "user.login", "user", user.id)
+    db.commit()
     return browser_session(response,user)
 
 @router.get("/auth/me", response_model=UserRead)
@@ -235,11 +248,15 @@ def users(user: Annotated[User, Depends(require_role("admin"))], db: DbSession):
 def update_user(id: int, payload: UserUpdate, actor: Annotated[User, Depends(require_role("admin"))], db: DbSession):
     account = db.get(User, id)
     if not account: raise HTTPException(404, "User not found")
+    if account.role == UserRole.SUPER_ADMIN:
+        raise HTTPException(403, "Platform accounts are managed in the Super Admin workspace")
     changes = payload.model_dump(exclude_none=True)
     if not changes: raise HTTPException(422, "Provide a role or active status")
     if "role" in changes:
         try: role = UserRole(changes["role"])
         except ValueError as exc: raise HTTPException(422, "Invalid role") from exc
+        if role == UserRole.SUPER_ADMIN:
+            raise HTTPException(403, "College accounts cannot be promoted to Super Admin")
         if role == UserRole.STUDENT and not db.scalar(select(Student.id).where(Student.user_id == account.id)):
             matches = db.scalars(select(Student).where(Student.user_id.is_(None), func.lower(Student.email) == account.email.lower())).all()
             if len(matches) != 1:
