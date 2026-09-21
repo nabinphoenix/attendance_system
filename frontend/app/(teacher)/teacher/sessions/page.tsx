@@ -90,7 +90,7 @@ export default function Page() {
     setStartingId(routineId);
     setError("");
     setLocationRetryRoutineId(null);
-    setStartStatus("Getting a fresh classroom location (usually within 10 seconds)…");
+    setStartStatus("Getting a classroom location (this can take up to 30 seconds on the first request)...");
     try {
       const position = await getBestFreshPosition();
       setPendingStart({ routineId, latitude: position.coords.latitude, longitude: position.coords.longitude, accuracy: position.coords.accuracy });
@@ -107,7 +107,7 @@ export default function Page() {
         setError(reason === "LOCATION_DENIED"
           ? "Location permission is required to create the classroom geofence. Allow location access and retry."
           : reason === "LOCATION_TIMEOUT"
-            ? "A fresh classroom location could not be obtained within 10 seconds. Check that location services are on, allow location for this site, then retry."
+            ? "A classroom location could not be obtained within 30 seconds. Check that location services are on, allow location for this site, then retry."
             : "Classroom location is unavailable on this device. Check location services and the browser permission, then retry.");
       }
       setStartStatus("");

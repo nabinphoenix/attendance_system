@@ -1,6 +1,9 @@
-// Request a new reading, but do not leave a student waiting for a cold GPS
-// fix indefinitely. maximumAge: 0 below prevents stale cached coordinates.
-const LOCATION_TIMEOUT_MS = 10_000;
+// A cold GPS or Wi-Fi location service often needs longer than ten seconds,
+// particularly when a teacher starts attendance from inside a classroom. A
+// recently captured reading is sufficiently current for the campus-level
+// geofence, while watchPosition continues to request a more accurate update.
+const LOCATION_TIMEOUT_MS = 30_000;
+const RECENT_LOCATION_MAX_AGE_MS = 30_000;
 // A fresh +/-100m fix is sufficient for the coarse campus/audit signal. The
 // rotating QR and spoken code remain the classroom-presence proof.
 const EARLY_ACCEPT_ACCURACY_METERS = 100;
@@ -53,7 +56,11 @@ export function getBestFreshPosition(earlyAcceptAccuracyMeters = EARLY_ACCEPT_AC
         // first fix. Keep the watcher alive until the overall timeout.
         else lastError = error;
       },
-      { enableHighAccuracy: true, maximumAge: 0, timeout: LOCATION_TIMEOUT_MS },
+      {
+        enableHighAccuracy: true,
+        maximumAge: RECENT_LOCATION_MAX_AGE_MS,
+        timeout: LOCATION_TIMEOUT_MS,
+      },
     );
   });
 }
