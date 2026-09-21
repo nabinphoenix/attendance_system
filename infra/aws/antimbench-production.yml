@@ -1,0 +1,658 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  AntimBench production VPC, private RDS PostgreSQL, load-balanced Elastic
+  Beanstalk application, private profile media, deployment bucket, and GitHub
+  Actions OIDC deployment role.
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: AntimBench
+    AllowedPattern: '^[A-Za-z][A-Za-z0-9-]{1,24}$'
+  EnvironmentName:
+    Type: String
+    Default: AntimBench-Prod
+  SolutionStackName:
+    Type: String
+    Default: 64bit Amazon Linux 2023 v6.6.5 running Node.js 22
+    Description: Set this to the current Node.js 22 Amazon Linux 2023 solution stack.
+  InstanceType:
+    Type: String
+    Default: t3.small
+  DBInstanceClass:
+    Type: String
+    Default: db.t3.micro
+  DBName:
+    Type: String
+    Default: antimbench
+    AllowedPattern: '^[a-zA-Z][a-zA-Z0-9_]{0,62}$'
+  DBUsername:
+    Type: String
+    Default: antimbench_admin
+    AllowedPattern: '^[a-zA-Z][a-zA-Z0-9_]{0,62}$'
+  DBPassword:
+    Type: String
+    NoEcho: true
+    MinLength: 16
+    AllowedPattern: '^[A-Za-z0-9]+$'
+    ConstraintDescription: Use at least 16 letters and numbers; URL-safe characters only.
+  JWTSecretKey:
+    Type: String
+    NoEcho: true
+    MinLength: 32
+  FrontendUrl:
+    Type: String
+    Default: https://antimbench.sunitanepali.com.np
+  CorsOrigins:
+    Type: String
+    Default: '["https://antimbench.sunitanepali.com.np"]'
+  CollegeName:
+    Type: String
+    Default: Techspire College
+  CertificateArn:
+    Type: String
+    Default: ''
+    Description: ACM certificate ARN for the production hostname in us-east-1.
+  ExistingGitHubOidcProviderArn:
+    Type: String
+    Default: ''
+    Description: Existing GitHub OIDC provider ARN, if the account already has one.
+  CreateGitHubOidcResources:
+    Type: String
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+    Description: Set true only when the caller can create/use the GitHub OIDC provider and role.
+  CreateElasticBeanstalkIamResources:
+    Type: String
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+    Description: Set true only when the caller can create Elastic Beanstalk IAM roles.
+  ExistingEBServiceRoleArn:
+    Type: String
+    Default: arn:aws:iam::233058052642:role/aws-service-role/elasticbeanstalk.amazonaws.com/AWSServiceRoleForElasticBeanstalk
+  ExistingEBInstanceProfileName:
+    Type: String
+    Default: LabInstanceProfile
+  ExistingEBInstanceRoleArn:
+    Type: String
+    Default: arn:aws:iam::233058052642:role/LabRole
+  GitHubRepository:
+    Type: String
+    Default: nabinphoenix/attendance_system
+  GitHubBranch:
+    Type: String
+    Default: main
+  SMTPHost:
+    Type: String
+    Default: smtp.gmail.com
+  SMTPPort:
+    Type: String
+    Default: '587'
+  SMTPUsername:
+    Type: String
+    Default: ''
+  SMTPPassword:
+    Type: String
+    NoEcho: true
+    Default: ''
+  SMTPFromEmail:
+    Type: String
+    Default: ''
+
+Conditions:
+  HasCertificate: !Not [!Equals [!Ref CertificateArn, '']]
+  UseGitHubOidcResources: !Equals [!Ref CreateGitHubOidcResources, 'true']
+  CreateElasticBeanstalkIam: !Equals [!Ref CreateElasticBeanstalkIamResources, 'true']
+  HasExistingGitHubOidcProvider: !Not [!Equals [!Ref ExistingGitHubOidcProviderArn, '']]
+  CreateGitHubOidcProvider: !And [!Equals [!Ref CreateGitHubOidcResources, 'true'], !Equals [!Ref ExistingGitHubOidcProviderArn, '']]
+  HasSmtp: !And
+    - !Not [!Equals [!Ref SMTPUsername, '']]
+    - !Not [!Equals [!Ref SMTPPassword, '']]
+  HasSmtpFromEmail: !Not [!Equals [!Ref SMTPFromEmail, '']]
+
+Resources:
+  AntimBenchVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: !Join ['-', [!Ref ProjectName, VPC]]
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Join ['-', [!Ref ProjectName, IGW]]
+
+  VPCGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref AntimBenchVPC
+      InternetGatewayId: !Ref InternetGateway
+
+  PublicSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref AntimBenchVPC
+      CidrBlock: 10.0.1.0/24
+      AvailabilityZone: !Select [0, !GetAZs '']
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Join ['-', [!Ref ProjectName, Public-A]]
+
+  PublicSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref AntimBenchVPC
+      CidrBlock: 10.0.2.0/24
+      AvailabilityZone: !Select [1, !GetAZs '']
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Join ['-', [!Ref ProjectName, Public-B]]
+
+  DBPrivateSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref AntimBenchVPC
+      CidrBlock: 10.0.11.0/24
+      AvailabilityZone: !Select [0, !GetAZs '']
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Join ['-', [!Ref ProjectName, DB-Private-A]]
+
+  DBPrivateSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref AntimBenchVPC
+      CidrBlock: 10.0.12.0/24
+      AvailabilityZone: !Select [1, !GetAZs '']
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Join ['-', [!Ref ProjectName, DB-Private-B]]
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref AntimBenchVPC
+      Tags:
+        - Key: Name
+          Value: !Join ['-', [!Ref ProjectName, Public-RT]]
+
+  PublicDefaultRoute:
+    Type: AWS::EC2::Route
+    DependsOn: VPCGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicRouteAssociationA:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref PublicSubnetA
+
+  PublicRouteAssociationB:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref PublicSubnetB
+
+  DBPrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref AntimBenchVPC
+      Tags:
+        - Key: Name
+          Value: !Join ['-', [!Ref ProjectName, DB-Private-RT]]
+
+  DBPrivateRouteAssociationA:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref DBPrivateRouteTable
+      SubnetId: !Ref DBPrivateSubnetA
+
+  DBPrivateRouteAssociationB:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref DBPrivateRouteTable
+      SubnetId: !Ref DBPrivateSubnetB
+
+  ALBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Public HTTP and HTTPS ingress for the AntimBench ALB
+      VpcId: !Ref AntimBenchVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Join ['-', [!Ref ProjectName, ALB-SG]]
+
+  AppSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Application instances accept traffic only from the ALB
+      VpcId: !Ref AntimBenchVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          SourceSecurityGroupId: !Ref ALBSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Join ['-', [!Ref ProjectName, App-SG]]
+
+  RDSSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Private PostgreSQL ingress from application instances
+      VpcId: !Ref AntimBenchVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          SourceSecurityGroupId: !Ref AppSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Join ['-', [!Ref ProjectName, RDS-SG]]
+
+  DeploymentBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireOldDeploymentBundles
+            Status: Enabled
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 30
+            ExpirationInDays: 60
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  ProfileMediaBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      VersioningConfiguration:
+        Status: Enabled
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  DBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: Private subnets for AntimBench PostgreSQL
+      SubnetIds:
+        - !Ref DBPrivateSubnetA
+        - !Ref DBPrivateSubnetB
+
+  Database:
+    Type: AWS::RDS::DBInstance
+    DeletionPolicy: Snapshot
+    UpdateReplacePolicy: Snapshot
+    Properties:
+      DBInstanceIdentifier: antimbench-prod
+      DBName: !Ref DBName
+      DBInstanceClass: !Ref DBInstanceClass
+      Engine: postgres
+      EngineVersion: '15'
+      AllocatedStorage: 20
+      MaxAllocatedStorage: 100
+      StorageType: gp3
+      StorageEncrypted: true
+      MasterUsername: !Ref DBUsername
+      MasterUserPassword: !Ref DBPassword
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      VPCSecurityGroups:
+        - !GetAtt RDSSecurityGroup.GroupId
+      PubliclyAccessible: false
+      MultiAZ: false
+      BackupRetentionPeriod: 7
+      DeletionProtection: true
+      Port: 5432
+
+  EBServiceRole:
+    Condition: CreateElasticBeanstalkIam
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Join ['-', [!Ref ProjectName, EB-ServiceRole]]
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: elasticbeanstalk.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSElasticBeanstalkEnhancedHealth
+        - arn:aws:iam::aws:policy/service-role/AWSElasticBeanstalkManagedUpdatesCustomerRolePolicy
+
+  EBInstanceRole:
+    Condition: CreateElasticBeanstalkIam
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Join ['-', [!Ref ProjectName, EB-InstanceRole]]
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AWSElasticBeanstalkWebTier
+        - arn:aws:iam::aws:policy/AWSElasticBeanstalkWorkerTier
+        - arn:aws:iam::aws:policy/AWSElasticBeanstalkMulticontainerDocker
+
+  EBInstanceProfile:
+    Condition: CreateElasticBeanstalkIam
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref EBInstanceRole
+      InstanceProfileName: !Join ['-', [!Ref ProjectName, EB-InstanceProfile]]
+
+  EBInstanceMediaPolicy:
+    Condition: CreateElasticBeanstalkIam
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: ProfileMediaReadWrite
+      Roles:
+        - !Ref EBInstanceRole
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action: [s3:GetObject, s3:PutObject, s3:DeleteObject]
+            Resource: !Join ['/', [!GetAtt ProfileMediaBucket.Arn, profile-media/*]]
+          - Effect: Allow
+            Action: s3:ListBucket
+            Resource: !GetAtt ProfileMediaBucket.Arn
+            Condition:
+              StringLike:
+                s3:prefix: [profile-media, profile-media/*]
+
+  EBServiceBundleReadPolicy:
+    Condition: CreateElasticBeanstalkIam
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: ReadDeploymentBundles
+      Roles:
+        - !Ref EBServiceRole
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action: s3:GetObject
+            Resource: !Join ['/', [!GetAtt DeploymentBucket.Arn, antimbench/*]]
+          - Effect: Allow
+            Action: s3:ListBucket
+            Resource: !GetAtt DeploymentBucket.Arn
+            Condition:
+              StringLike:
+                s3:prefix: [antimbench/*]
+
+  AntimBenchApplication:
+    Type: AWS::ElasticBeanstalk::Application
+    Properties:
+      ApplicationName: !Ref ProjectName
+      Description: AntimBench attendance system
+
+  AntimBenchEnvironment:
+    Type: AWS::ElasticBeanstalk::Environment
+    DependsOn: [Database]
+    Properties:
+      ApplicationName: !Ref AntimBenchApplication
+      EnvironmentName: !Ref EnvironmentName
+      SolutionStackName: !Ref SolutionStackName
+      OptionSettings:
+        - Namespace: aws:elasticbeanstalk:environment
+          OptionName: EnvironmentType
+          Value: LoadBalanced
+        - Namespace: aws:elasticbeanstalk:environment
+          OptionName: LoadBalancerType
+          Value: application
+        - Namespace: aws:elasticbeanstalk:environment
+          OptionName: ServiceRole
+          Value: !If [CreateElasticBeanstalkIam, !Ref EBServiceRole, !Ref ExistingEBServiceRoleArn]
+        - Namespace: aws:autoscaling:asg
+          OptionName: MinSize
+          Value: '1'
+        - Namespace: aws:autoscaling:asg
+          OptionName: MaxSize
+          Value: '4'
+        - Namespace: aws:autoscaling:launchconfiguration
+          OptionName: InstanceType
+          Value: !Ref InstanceType
+        - Namespace: aws:autoscaling:launchconfiguration
+          OptionName: IamInstanceProfile
+          Value: !If [CreateElasticBeanstalkIam, !Ref EBInstanceProfile, !Ref ExistingEBInstanceProfileName]
+        - Namespace: aws:autoscaling:launchconfiguration
+          OptionName: SecurityGroups
+          Value: !Ref AppSecurityGroup
+        - Namespace: aws:ec2:vpc
+          OptionName: VPCId
+          Value: !Ref AntimBenchVPC
+        - Namespace: aws:ec2:vpc
+          OptionName: Subnets
+          Value: !Join [',', [!Ref PublicSubnetA, !Ref PublicSubnetB]]
+        - Namespace: aws:ec2:vpc
+          OptionName: ELBSubnets
+          Value: !Join [',', [!Ref PublicSubnetA, !Ref PublicSubnetB]]
+        - Namespace: aws:ec2:vpc
+          OptionName: AssociatePublicIpAddress
+          Value: 'true'
+        - Namespace: aws:elbv2:loadbalancer
+          OptionName: SecurityGroups
+          Value: !Ref ALBSecurityGroup
+        - Namespace: aws:elasticbeanstalk:environment:process:default
+          OptionName: Port
+          Value: '80'
+        - Namespace: aws:elasticbeanstalk:environment:process:default
+          OptionName: Protocol
+          Value: HTTP
+        - Namespace: aws:elasticbeanstalk:environment:process:default
+          OptionName: HealthCheckPath
+          Value: /health
+        - Namespace: aws:elasticbeanstalk:environment:process:default
+          OptionName: MatcherHTTPCode
+          Value: '200'
+        - Namespace: aws:elbv2:listener:default
+          OptionName: ListenerEnabled
+          Value: 'true'
+        - Namespace: aws:elbv2:listener:default
+          OptionName: Protocol
+          Value: HTTP
+        - !If
+          - HasCertificate
+          - Namespace: aws:elbv2:listener:443
+            OptionName: ListenerEnabled
+            Value: 'true'
+          - !Ref AWS::NoValue
+        - !If
+          - HasCertificate
+          - Namespace: aws:elbv2:listener:443
+            OptionName: Protocol
+            Value: HTTPS
+          - !Ref AWS::NoValue
+        - !If
+          - HasCertificate
+          - Namespace: aws:elbv2:listener:443
+            OptionName: SSLCertificateArns
+            Value: !Ref CertificateArn
+          - !Ref AWS::NoValue
+        - !If
+          - HasCertificate
+          - Namespace: aws:elbv2:listener:443
+            OptionName: DefaultProcess
+            Value: default
+          - !Ref AWS::NoValue
+        - Namespace: aws:elasticbeanstalk:healthreporting:system
+          OptionName: SystemType
+          Value: enhanced
+        - Namespace: aws:elasticbeanstalk:application:environment
+          OptionName: DATABASE_URL
+          Value: !Join ['', [postgresql://, !Ref DBUsername, ':', !Ref DBPassword, '@', !GetAtt Database.Endpoint.Address, ':', !GetAtt Database.Endpoint.Port, '/', !Ref DBName]]
+        - Namespace: aws:elasticbeanstalk:application:environment
+          OptionName: JWT_SECRET_KEY
+          Value: !Ref JWTSecretKey
+        - Namespace: aws:elasticbeanstalk:application:environment
+          OptionName: AUTH_COOKIE_SECURE
+          Value: 'true'
+        - Namespace: aws:elasticbeanstalk:application:environment
+          OptionName: FRONTEND_URL
+          Value: !Ref FrontendUrl
+        - Namespace: aws:elasticbeanstalk:application:environment
+          OptionName: CORS_ORIGINS
+          Value: !Ref CorsOrigins
+        - Namespace: aws:elasticbeanstalk:application:environment
+          OptionName: COLLEGE_NAME
+          Value: !Ref CollegeName
+        - Namespace: aws:elasticbeanstalk:application:environment
+          OptionName: PROFILE_MEDIA_BUCKET
+          Value: !Ref ProfileMediaBucket
+        - Namespace: aws:elasticbeanstalk:application:environment
+          OptionName: PROFILE_MEDIA_PREFIX
+          Value: profile-media
+        - Namespace: aws:elasticbeanstalk:application:environment
+          OptionName: PROFILE_MEDIA_REGION
+          Value: !Ref AWS::Region
+        - Namespace: aws:elasticbeanstalk:application:environment
+          OptionName: SMTP_HOST
+          Value: !Ref SMTPHost
+        - Namespace: aws:elasticbeanstalk:application:environment
+          OptionName: SMTP_PORT
+          Value: !Ref SMTPPort
+        - !If
+          - HasSmtp
+          - Namespace: aws:elasticbeanstalk:application:environment
+            OptionName: SMTP_USERNAME
+            Value: !Ref SMTPUsername
+          - !Ref AWS::NoValue
+        - !If
+          - HasSmtp
+          - Namespace: aws:elasticbeanstalk:application:environment
+            OptionName: SMTP_PASSWORD
+            Value: !Ref SMTPPassword
+          - !Ref AWS::NoValue
+        - !If
+          - HasSmtp
+          - Namespace: aws:elasticbeanstalk:application:environment
+            OptionName: SMTP_FROM_EMAIL
+            Value: !If [HasSmtpFromEmail, !Ref SMTPFromEmail, !Ref SMTPUsername]
+          - !Ref AWS::NoValue
+
+  GitHubOidcProvider:
+    Condition: CreateGitHubOidcProvider
+    Type: AWS::IAM::OIDCProvider
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList:
+        - sts.amazonaws.com
+      ThumbprintList:
+        - 6938fd4d98bab03faadb97b34396831e3780aea1
+
+  GitHubDeployRole:
+    Condition: UseGitHubOidcResources
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Join ['-', [!Ref ProjectName, GitHub-Deploy-Role]]
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !If [HasExistingGitHubOidcProvider, !Ref ExistingGitHubOidcProviderArn, !Ref GitHubOidcProvider]
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+              StringLike:
+                token.actions.githubusercontent.com:sub: !Join ['', ['repo:', !Ref GitHubRepository, ':ref:refs/heads/', !Ref GitHubBranch]]
+      Policies:
+        - PolicyName: DeployElasticBeanstalk
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: [s3:PutObject, s3:AbortMultipartUpload, s3:GetObject]
+                Resource: !Join ['/', [!GetAtt DeploymentBucket.Arn, antimbench/*]]
+              - Effect: Allow
+                Action: s3:ListBucket
+                Resource: !GetAtt DeploymentBucket.Arn
+                Condition:
+                  StringLike:
+                    s3:prefix: [antimbench/*]
+              - Effect: Allow
+                Action:
+                  - elasticbeanstalk:CreateApplicationVersion
+                  - elasticbeanstalk:DescribeApplicationVersions
+                  - elasticbeanstalk:DescribeEnvironments
+                  - elasticbeanstalk:DescribeEvents
+                  - elasticbeanstalk:UpdateEnvironment
+                  - elasticbeanstalk:ListAvailableSolutionStacks
+                  - elasticbeanstalk:ValidateConfigurationSettings
+                Resource: '*'
+              - Effect: Allow
+                Action: iam:PassRole
+                Resource:
+                  - !If [CreateElasticBeanstalkIam, !GetAtt EBServiceRole.Arn, !Ref ExistingEBServiceRoleArn]
+                  - !If [CreateElasticBeanstalkIam, !GetAtt EBInstanceRole.Arn, !Ref ExistingEBInstanceRoleArn]
+
+Outputs:
+  VPCId:
+    Value: !Ref AntimBenchVPC
+  PublicSubnetIds:
+    Value: !Join [',', [!Ref PublicSubnetA, !Ref PublicSubnetB]]
+  RDSHost:
+    Value: !GetAtt Database.Endpoint.Address
+  RDSPort:
+    Value: !GetAtt Database.Endpoint.Port
+  ProfileMediaBucketName:
+    Value: !Ref ProfileMediaBucket
+  DeploymentBucketName:
+    Value: !Ref DeploymentBucket
+  EBApplicationName:
+    Value: !Ref AntimBenchApplication
+  EBEnvironmentName:
+    Value: !Ref AntimBenchEnvironment
+  EBEnvironmentURL:
+    Value: !GetAtt AntimBenchEnvironment.EndpointURL
+  GitHubDeployRoleArn:
+    Condition: UseGitHubOidcResources
+    Value: !GetAtt GitHubDeployRole.Arn

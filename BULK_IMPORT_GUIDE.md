@@ -310,7 +310,7 @@ For emails to arrive, the backend must have these settings:
 - `FRONTEND_URL`
 
 `FRONTEND_URL` must be the website students open, for example:
-`https://antimbench-https-proxy.vercel.app`.
+`https://antimbench.sunitanepali.com.np`.
 
 The background email worker must also be running:
 

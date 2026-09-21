@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     auth_cookie_name: str = "antimbench_session"
     auth_cookie_secure: bool = False
     geofence_radius_meters: float = 150
+    attendance_max_geofence_radius_meters: float = Field(default=2000, ge=10, le=5000)
     geolocation_max_accuracy_meters: float = 100
     attendance_window_minutes: int = 240
     attendance_self_checkin_window_minutes: int = Field(default=15, ge=1, le=240)
@@ -26,6 +27,7 @@ class Settings(BaseSettings):
     attendance_threshold_percent: float = 75
     minimum_observations: int = 4
     college_name: str = "Techspire College"
+    academic_timezone: str = "Asia/Kathmandu"
     smtp_host: str | None = None
     smtp_port: int = 587
     smtp_username: str | None = None

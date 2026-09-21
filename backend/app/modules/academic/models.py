@@ -1,6 +1,6 @@
 import enum
 from datetime import date, datetime, time
-from sqlalchemy import Boolean, CheckConstraint, Date, DateTime, Enum, Float, ForeignKey, Index, Integer, String, Time, UniqueConstraint, func
+from sqlalchemy import Boolean, CheckConstraint, Date, DateTime, Enum, Float, ForeignKey, Index, Integer, LargeBinary, String, Time, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.core.database import Base
 from app.core.tenancy import CollegeOwned
@@ -374,3 +374,35 @@ class StudentInvitation(CollegeOwned, Base):
 # Different colleges may use the same catalog codes and local identifiers.
 for _model, _column in ((Program, "name"), (Intake, "name"), (Intake, "code"), (Block, "name"), (AcademicModule, "code"), (ClassType, "name"), (Student, "roll_number"), (Teacher, "employee_code")):
     _model.__table__.append_constraint(UniqueConstraint("college_id", _column, name=f"uq_{_model.__tablename__}_college_{_column}"))
+
+class AcademicCalendar(CollegeOwned, Base):
+    __tablename__ = "academic_calendars"
+    __table_args__ = (
+        UniqueConstraint("cohort_semester_id", name="uq_academic_calendar_semester"),
+        CheckConstraint("size_bytes > 0 AND size_bytes <= 10485760", name="ck_calendar_size"),
+    )
+    id: Mapped[int] = mapped_column(primary_key=True)
+    cohort_semester_id: Mapped[int] = mapped_column(ForeignKey("cohort_semesters.id"))
+    filename: Mapped[str] = mapped_column(String(255))
+    pdf_data: Mapped[bytes] = mapped_column(LargeBinary, deferred=True)
+    size_bytes: Mapped[int] = mapped_column(Integer)
+    uploaded_by: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    uploaded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class TeacherFeedback(CollegeOwned, Base):
+    __tablename__ = "teacher_feedback"
+    __table_args__ = (
+        UniqueConstraint("cohort_semester_id", "teacher_id", name="uq_teacher_feedback_semester"),
+        CheckConstraint("opens_on <= closes_on", name="ck_teacher_feedback_dates"),
+    )
+    id: Mapped[int] = mapped_column(primary_key=True)
+    cohort_semester_id: Mapped[int] = mapped_column(ForeignKey("cohort_semesters.id"))
+    teacher_id: Mapped[int] = mapped_column(ForeignKey("teachers.id"))
+    title: Mapped[str] = mapped_column(String(200))
+    form_url: Mapped[str] = mapped_column(String(2048))
+    opens_on: Mapped[date] = mapped_column(Date)
+    closes_on: Mapped[date] = mapped_column(Date)
+    is_published: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    created_by: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    teacher: Mapped[Teacher] = relationship()

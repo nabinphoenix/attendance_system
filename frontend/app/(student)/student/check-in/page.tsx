@@ -148,15 +148,18 @@ export default function Page() {
       await reader.start(
         { facingMode: "environment" },
         {
-          fps: 12,
+          // A large scan box and a higher decode cadence help students scan a
+          // projector-sized QR from the back of the room without cropping its
+          // quiet zone.
+          fps: 15,
           qrbox: (viewfinderWidth, viewfinderHeight) => {
-            const side = Math.floor(Math.min(viewfinderWidth, viewfinderHeight) * 0.9);
+            const side = Math.floor(Math.min(viewfinderWidth, viewfinderHeight) * 0.96);
             return { width: side, height: side };
           },
           videoConstraints: {
             facingMode: { ideal: "environment" },
-            width: { ideal: 1920 },
-            height: { ideal: 1080 },
+            width: { ideal: 2560 },
+            height: { ideal: 1440 },
           },
         },
         async (decoded) => {

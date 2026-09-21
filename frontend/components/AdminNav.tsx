@@ -1,6 +1,7 @@
 import Link from "next/link";
 
 const links = [
+  ["Semester resources", "/admin/academic/semester-resources"],
   ['AI assistant', '/admin/assistant'],
   ['Promotions', '/admin/academic/promotions'],
   ["Dashboard", "/admin/dashboard"],

@@ -397,6 +397,21 @@ def test_inside_boundary_outside_and_room_specific_radius(attendance_env):
         assert attempt.distance_meters > 90 and attempt.allowed_radius_meters == 50 and attempt.geofence_pass is False
 
 
+def test_teacher_cannot_choose_an_unbounded_session_boundary(attendance_env):
+    client, _, auth, ids, _ = attendance_env
+    response = client.post(
+        f"/api/v1/routine-sessions/{ids['routine']}/start",
+        headers=auth["teacher"],
+        json={
+            "latitude": ROOM_LATITUDE,
+            "longitude": ROOM_LONGITUDE,
+            "accuracy_meters": 69,
+            "geofence_radius_meters": settings.attendance_max_geofence_radius_meters + 1,
+        },
+    )
+    assert response.status_code == 422
+    assert "Campus boundary cannot exceed" in response.json()["detail"]
+
 def test_coarse_geofence_does_not_apply_a_classroom_accuracy_margin(attendance_env):
     client, _, auth, _, new_session = attendance_env
     session_id = new_session(geofence_radius_meters=40, teacher_accuracy=10)

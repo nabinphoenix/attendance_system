@@ -98,7 +98,7 @@ def protect_college_writes(db, flush_context, instances):
 
 # Capture ordinary CRUD operations as well as the explicit domain audit events.
 # Secrets, uploaded binaries, and message bodies are never copied into the log.
-_AUDIT_PRIVATE = {"password_hash", "token_hash", "avatar_data", "avatar_key", "body", "html_body", "payload_json", "preview_json", "details", "errors_json", "results_json"}
+_AUDIT_PRIVATE = {"password_hash", "token_hash", "avatar_data", "avatar_key", "pdf_data", "body", "html_body", "payload_json", "preview_json", "details", "errors_json", "results_json"}
 
 @event.listens_for(Session, "before_flush")
 def collect_audit_changes(db, flush_context, instances):

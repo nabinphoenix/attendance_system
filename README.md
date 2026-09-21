@@ -5,6 +5,7 @@ AntimBench is a college attendance, academic-routine, student-support, and repor
 ## What the system does
 
 - Administrators maintain programmes, intakes, batches, sections, modules, offerings, rooms, class types, and time slots.
+- Administrators publish mid-semester Google Forms feedback for teachers and upload semester academic calendar PDFs. See [Semester resources](SEMESTER_RESOURCES.md).
 - Administrators import students and routine data from CSV/XLSX files, review import errors, and download templates.
 - A successful student import creates a student account and queues a secure account-setup email. The student chooses their own password through a single-use link before signing in.
 - Teachers start a class session, capture a campus location, show a rotating QR code and classroom code, review exceptions, and finalize attendance.
@@ -70,6 +71,8 @@ The current SQLAlchemy metadata contains **37 application tables**. Alembic migr
 | `sections` | Student sections linked to batches and optionally intake/semester. |
 | `modules` | Canonical academic modules: code, title, credits, and semester. |
 | `module_offerings` | Makes a module active for a particular intake, batch, semester, and set of sections. |
+| `academic_calendars` | One private PDF academic calendar per dated cohort semester. |
+| `teacher_feedback` | One Google Forms feedback configuration per teacher and dated cohort semester. |
 | `module_offering_sections` | Many-to-many membership between module offerings and sections. |
 | `subjects` | Legacy subject records retained for historic timetable data. |
 | `student_subject_enrollments` | Many-to-many enrollment between students and legacy subjects. |
@@ -296,14 +299,14 @@ For a live dashboard test, import one test student with an inbox you control, or
 
 ## Configuration and deployment
 
-Production uses AWS Elastic Beanstalk for the backend and PostgreSQL in AWS. The deployment workflow applies the version, runs Alembic migrations, configures SMTP/environment values, and restarts both the API and notification worker. The frontend URL in this deployment is `https://antimbench-https-proxy.vercel.app` unless an environment variable overrides it.
+Production uses one AWS Elastic Beanstalk environment for the Next.js frontend, FastAPI backend, nginx reverse proxy, and notification worker. PostgreSQL runs on private Amazon RDS. The deployment workflow tests, packages, migrates, and deploys the complete application to https://antimbench.sunitanepali.com.np using GitHub Actions OIDC; no separate Vercel frontend or public backend hostname is used.
 
 ```env
 DATABASE_URL=postgresql://USER:URL_ENCODED_PASSWORD@HOST:5432/antimbench
 JWT_SECRET_KEY=replace-with-a-long-random-secret
 AUTH_COOKIE_SECURE=true
-FRONTEND_URL=https://antimbench-https-proxy.vercel.app
-CORS_ORIGINS=["https://antimbench-https-proxy.vercel.app"]
+FRONTEND_URL=https://antimbench.sunitanepali.com.np
+CORS_ORIGINS=["https://antimbench.sunitanepali.com.np"]
 SMTP_HOST=smtp.gmail.com
 SMTP_PORT=587
 SMTP_USERNAME=sender@example.com

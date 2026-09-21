@@ -191,7 +191,9 @@ def update_teacher(id: int, p: schemas.TeacherUpdate, db: DbSession):
 @router.delete("/teachers/{id}",status_code=204)
 def delete_teacher(id:int,user:Annotated[User,Depends(require_role("admin"))],db:DbSession):
     teacher=get_or_404(db,Teacher,id,"Teacher")
-    from .models import RoutineEntry
+    from .models import RoutineEntry, TeacherFeedback
+    if db.scalar(select(TeacherFeedback.id).where(TeacherFeedback.teacher_id == id)):
+        raise HTTPException(409, "Remove the teacher's semester feedback forms before deleting this teacher")
     if db.scalar(select(TimetableEntry.id).where(TimetableEntry.teacher_id==id)) or db.scalar(select(RoutineEntry.id).where(RoutineEntry.teacher_id==id)) or db.scalar(select(ScheduleOverride.id).where(ScheduleOverride.new_teacher_id==id)) or db.scalar(select(ClassSession.id).where(ClassSession.effective_teacher_id==id)):raise HTTPException(409,"Cannot delete a teacher with timetable, routine, override, or session history")
     account=teacher.user;entity_id=teacher.id;db.delete(teacher);db.flush();db.delete(account);log_audit(db,user.id,"teacher.deleted","teacher",entity_id,{"user_id":account.id},None);db.commit()
 @router.post("/students/{id}/enrollments", response_model=schemas.SubjectRead)

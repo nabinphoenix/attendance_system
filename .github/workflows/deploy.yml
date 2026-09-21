@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: read
+  id-token: write
 
 concurrency:
   group: antimbench-production-deploy
@@ -229,14 +230,22 @@ jobs:
           echo "version_label=${VERSION_LABEL}" >> "${GITHUB_OUTPUT}"
           echo "artifact_path=${ARTIFACT_PATH}" >> "${GITHUB_OUTPUT}"
 
-      - name: Configure AWS credentials
+      - name: Configure AWS credentials with GitHub OIDC
         uses: aws-actions/configure-aws-credentials@v6.2.3
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          role-session-name: antimbench-github-${{ github.run_id }}
           aws-region: ${{ env.AWS_REGION }}
           mask-aws-account-id: true
+
+      - name: Validate deployment bucket
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! aws s3api head-bucket --bucket "${EB_S3_BUCKET}" --region "${AWS_REGION}" >/dev/null; then
+            echo "::error title=Deployment bucket not found::EB_S3_BUCKET=${EB_S3_BUCKET} does not exist or is not accessible in ${AWS_REGION}. Set it to the DeploymentBucketName output from the production CloudFormation stack."
+            exit 1
+          fi
 
       - name: Upload Elastic Beanstalk source bundle
         id: upload
@@ -349,57 +358,13 @@ jobs:
         shell: bash
         env:
           VERSION_LABEL: ${{ steps.package.outputs.version_label }}
-          SMTP_HOST: ${{ vars.SMTP_HOST || 'smtp.gmail.com' }}
-          SMTP_PORT: ${{ vars.SMTP_PORT || '587' }}
-          SMTP_FROM_EMAIL: ${{ vars.SMTP_FROM_EMAIL }}
-          SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
-          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
-          FRONTEND_URL: ${{ vars.FRONTEND_URL || 'https://antimbench-https-proxy.vercel.app' }}
         run: |
           set -euo pipefail
-
-          update_args=(
-            --application-name "${EB_APPLICATION_NAME}"
-            --environment-name "${EB_ENVIRONMENT_NAME}"
-            --version-label "${VERSION_LABEL}"
-            --region "${AWS_REGION}"
-          )
-
-          if [[ -n "${SMTP_USERNAME}" || -n "${SMTP_PASSWORD}" ]]; then
-            if [[ -z "${SMTP_USERNAME}" || -z "${SMTP_PASSWORD}" ]]; then
-              echo "::error title=Incomplete SMTP configuration::Set both SMTP_USERNAME and SMTP_PASSWORD as production GitHub secrets."
-              exit 1
-            fi
-            if [[ ! "${SMTP_PORT}" =~ ^[0-9]+$ ]]; then
-              echo "::error title=Invalid SMTP port::SMTP_PORT must be numeric."
-              exit 1
-            fi
-
-            smtp_from_email="${SMTP_FROM_EMAIL:-${SMTP_USERNAME}}"
-            smtp_settings_file="${RUNNER_TEMP}/antimbench-smtp-settings.json"
-            jq -n \
-              --arg host "${SMTP_HOST}" \
-              --arg port "${SMTP_PORT}" \
-              --arg username "${SMTP_USERNAME}" \
-              --arg password "${SMTP_PASSWORD}" \
-              --arg from_email "${smtp_from_email}" \
-              --arg frontend_url "${FRONTEND_URL}" \
-              '[
-                {Namespace:"aws:elasticbeanstalk:application:environment",OptionName:"SMTP_HOST",Value:$host},
-                {Namespace:"aws:elasticbeanstalk:application:environment",OptionName:"SMTP_PORT",Value:$port},
-                {Namespace:"aws:elasticbeanstalk:application:environment",OptionName:"SMTP_USERNAME",Value:$username},
-                {Namespace:"aws:elasticbeanstalk:application:environment",OptionName:"SMTP_PASSWORD",Value:$password},
-                {Namespace:"aws:elasticbeanstalk:application:environment",OptionName:"SMTP_FROM_EMAIL",Value:$from_email},
-                {Namespace:"aws:elasticbeanstalk:application:environment",OptionName:"FRONTEND_URL",Value:$frontend_url}
-              ]' > "${smtp_settings_file}"
-            update_args+=(--option-settings "file://${smtp_settings_file}")
-            echo "Deploying with SMTP environment properties from GitHub production secrets."
-          else
-            echo "SMTP GitHub secrets are not set; retaining the Elastic Beanstalk environment's existing SMTP properties."
-          fi
-
-          aws elasticbeanstalk update-environment "${update_args[@]}" >/dev/null
-
+          aws elasticbeanstalk update-environment \
+            --application-name "${EB_APPLICATION_NAME}" \
+            --environment-name "${EB_ENVIRONMENT_NAME}" \
+            --version-label "${VERSION_LABEL}" \
+            --region "${AWS_REGION}" >/dev/null
       - name: Wait for a healthy Elastic Beanstalk environment
         shell: bash
         env:
@@ -451,42 +416,3 @@ jobs:
             --query 'Events[].[EventDate,Severity,Message]' \
             --output table
           exit 1
-
-  deploy-vercel:
-    name: Deploy Vercel frontend
-    needs: ci
-    # The explicit variable keeps the existing Elastic Beanstalk deployment
-    # unaffected until Vercel is linked and its secrets have been added.
-    if: github.ref == 'refs/heads/main' && vars.VERCEL_DEPLOY_ENABLED == 'true'
-    runs-on: ubuntu-latest
-    environment:
-      name: production
-    env:
-      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
-      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
-      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
-
-    steps:
-      - name: Check out source
-        uses: actions/checkout@v6
-
-      - name: Set up Node.js 22
-        uses: actions/setup-node@v6
-        with:
-          node-version: "22"
-
-      - name: Validate Vercel deployment configuration
-        run: |
-          test -n "${VERCEL_TOKEN}"
-          test -n "${VERCEL_ORG_ID}"
-          test -n "${VERCEL_PROJECT_ID}"
-
-      - name: Build and deploy the Vercel frontend
-        run: |
-          set -euo pipefail
-          # The Vercel project defines `frontend` as its Root Directory. Run
-          # from the repository root so the CLI does not resolve it as
-          # `frontend/frontend`.
-          npx --yes vercel@latest pull --yes --environment=production --token="${VERCEL_TOKEN}"
-          npx --yes vercel@latest build --prod --token="${VERCEL_TOKEN}"
-          npx --yes vercel@latest deploy --prebuilt --prod --token="${VERCEL_TOKEN}"

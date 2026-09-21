@@ -1,142 +1,213 @@
-# AntimBench Elastic Beanstalk deployment
+# AntimBench production deployment
 
-## Demo architecture and limitations
+This repository deploys the complete application to one load-balanced Elastic
+Beanstalk environment in us-east-1.
 
-This repository targets **one Elastic Beanstalk instance** and an existing
-Amazon RDS PostgreSQL instance in `us-east-1`:
+~~~text
+Cloudflare
+  -> antimbench.sunitanepali.com.np
+  -> ACM certificate and Application Load Balancer
+  -> Elastic Beanstalk (Node.js 22 / Amazon Linux 2023)
+  -> nginx
+       /       -> Next.js standalone server
+       /api/*  -> FastAPI on 127.0.0.1:8000
+       /health -> FastAPI health endpoint
+  -> private Amazon RDS PostgreSQL
+~~~
 
-```text
-Internet -> nginx (public port 80)
-               |- /api/* and /health -> FastAPI (127.0.0.1:8000)
-               `- all other requests -> Next.js (internal EB Node.js listener)
+The environment runs Next.js, FastAPI, the notification worker, and nginx on
+each instance. Elastic Beanstalk manages the load balancer and Auto Scaling
+Group with minimum 1, desired 1, and maximum 4 instances. Ports 3000, 8000,
+and 5432 are never public.
 
-PostgreSQL -> Amazon RDS (private endpoint)
-```
+## Security first
 
-Use the Node.js 22 Amazon Linux 2023 Elastic Beanstalk platform, application
-`AntimBench`, environment `AntimBench-Prod`, and a single `t3.micro` instance.
-The Node.js platform supervises the `web` command in the root `Procfile`; FastAPI
-is a `systemd` service created by the post-deploy hook. The Node.js platform
-supplies the internal listener port to Next.js (it defaults to port 3000 outside
-Elastic Beanstalk). FastAPI explicitly binds to `127.0.0.1:8000`.
+Never commit AWS keys, session tokens, database passwords, JWT secrets, SMTP
+passwords, or GitHub tokens. Credentials pasted into chat, a terminal, or a
+repository must be revoked and replaced immediately.
 
-RDS owns the database lifecycle. Keep its deletion protection and backup
-retention enabled, and do not expose port 5432 publicly. The Elastic Beanstalk
-security group must be allowed to reach the RDS security group on port 5432.
-Deployments never create, replace, delete, or alter ownership of the RDS
-database; they only run Alembic upgrades against the configured database. S3 is
-used only to hold Elastic Beanstalk application-version bundles. The instance
-needs ordinary outbound HTTPS access to the Amazon Linux package repositories to
-install Python; use a public subnet with an internet gateway or provide NAT when
-placing it in a private subnet.
+Production deployment uses GitHub Actions OIDC. The workflow does not accept
+AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_SESSION_TOKEN, or Vercel
+credentials.
 
-## Required Elastic Beanstalk environment properties
+## Provision the AWS foundation
 
-Set these through **Elastic Beanstalk -> Environment -> Configuration -> Updates,
-monitoring, and logging -> Runtime environment variables**. Do not commit these
-values or put them in the GitHub workflow.
+infra/aws/antimbench-production.yml is the reproducible CloudFormation
+foundation. It creates:
 
-| Property | Required | Purpose |
-| --- | --- | --- |
-| `DATABASE_URL` | Yes | `postgresql://<user>:<URL_ENCODED_PASSWORD>@<rds-endpoint>:5432/antimbench` |
-| `PROFILE_MEDIA_BUCKET` | No | Existing private S3 bucket used for durable profile-image storage. When unset, the single-instance service uses its managed local state directory. |
-| `PROFILE_MEDIA_PREFIX` | No | Object prefix for profile images; defaults to `profile-media`. |
-| `PROFILE_MEDIA_REGION` | No | Bucket region when it differs from the instance's region. |
-| `JWT_SECRET_KEY` | Yes | Backend signing key; use a strong unique value. |
-| `AUTH_COOKIE_SECURE` | Yes | Set `false` for plain HTTP; set `true` as soon as HTTPS is introduced. |
-| `FRONTEND_URL` | Yes | For plain HTTP, `http://<elastic-beanstalk-cname>`. |
-| `CORS_ORIGINS` | Yes | JSON array, for example `["http://<elastic-beanstalk-cname>"]`. |
-| `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM_EMAIL` | Optional | Needed only when notification email delivery is enabled. |
-| `COLLEGE_NAME`, `ATTENDANCE_THRESHOLD_PERCENT`, `MINIMUM_OBSERVATIONS` | Optional | Branding and attendance-analysis behaviour. |
+- the 10.0.0.0/16 VPC, two public subnets, and two private database subnets;
+- the internet gateway and public/private route tables;
+- ALB, application, and RDS security groups;
+- encrypted, non-public PostgreSQL 15 RDS with a two-subnet DB subnet group;
+- encrypted S3 buckets for deployment bundles and private profile media;
+- Elastic Beanstalk application/environment roles and instance profile;
+- the load-balanced AntimBench-Prod Node.js 22 environment;
+- a GitHub Actions OIDC deployment role restricted to
+  nabinphoenix/attendance_system on main.
 
-The backend Settings model also supports `JWT_ALGORITHM`,
-`ACCESS_TOKEN_EXPIRE_MINUTES`, `AUTH_COOKIE_NAME`, QR/geofence limits,
-notification-worker polling settings, and `INVITATION_EXPIRE_HOURS`; their safe
-defaults are in `backend/app/core/config.py`.
+The template enables the HTTPS listener when CertificateArn is supplied. The
+ACM certificate must be issued in us-east-1 for
+antimbench.sunitanepali.com.np. If the account already has the GitHub OIDC
+provider, pass its ARN as ExistingGitHubOidcProviderArn; otherwise the stack
+creates it.
 
-The pre-deploy hook accepts a managed PostgreSQL URL and never performs local
-PostgreSQL initialisation, role changes, database creation, or ownership
-changes. It runs `python -m alembic upgrade head` using the deployment's
-prebuilt package tree and never echoes the database URL or password.
+Use a fresh, URL-safe database password and a unique JWT secret through the
+CloudFormation console or a secrets-aware deployment process. Do not place
+either value in a committed parameter file.
 
-Profile images are served through the authenticated application path. When
-`PROFILE_MEDIA_BUCKET` is configured, they are stored privately in that bucket;
-grant the environment instance profile only `s3:GetObject`, `s3:PutObject`, and
-`s3:DeleteObject` for the configured prefix. Without a bucket, the single
-Elastic Beanstalk instance stores them in its managed writable state directory.
+~~~bash
+aws cloudformation deploy \
+  --region us-east-1 \
+  --stack-name AntimBench-Production \
+  --template-file infra/aws/antimbench-production.yml \
+  --capabilities CAPABILITY_NAMED_IAM \
+  --parameter-overrides \
+    DBPassword="$DB_PASSWORD" \
+    JWTSecretKey="$JWT_SECRET_KEY" \
+    CertificateArn="$ACM_CERTIFICATE_ARN"
+~~~
 
-The browser uses relative `/api/...` requests by default. nginx proxies those
-requests to local FastAPI, so no `NEXT_PUBLIC_API_URL`, public backend URL, or
-hard-coded Elastic Beanstalk hostname is required.
+The Node.js solution stack changes over time. Before creating or updating the
+stack, confirm the current value:
 
-## GitHub Actions configuration
+~~~bash
+aws elasticbeanstalk list-available-solution-stacks \
+  --region us-east-1 \
+  --query "SolutionStacks[?contains(@, 'Node.js 22') && contains(@, 'Amazon Linux 2023')]"
+~~~
 
-The workflow is [.github/workflows/deploy.yml](.github/workflows/deploy.yml),
-named **AntimBench CI/CD**. It first runs backend migrations and tests against a
-throwaway PostgreSQL 15 service container, then runs `npm ci`, TypeScript,
-lint, and a production frontend build. After CI succeeds, it deploys the
-self-contained Elastic Beanstalk bundle and, when Vercel credentials are
-configured, deploys the production Vercel frontend too.
+Pass the current result as SolutionStackName when it differs from the template
+default.
 
-Add these **GitHub Secrets**:
+## RDS migration
 
-| Name | Purpose |
-| --- | --- |
-| `AWS_ACCESS_KEY_ID` | Temporary AWS access-key ID. |
-| `AWS_SECRET_ACCESS_KEY` | Matching temporary AWS secret access key. |
-| `AWS_SESSION_TOKEN` | Matching temporary AWS session token. |
-| `VERCEL_TOKEN` | Vercel account token with permission to deploy `antimbench-https-proxy`. |
-| `VERCEL_ORG_ID` | Vercel team or personal-account ID that owns the project. |
-| `VERCEL_PROJECT_ID` | Vercel project ID for `antimbench-https-proxy`. |
+The stack creates a new private RDS instance and does not modify a local
+database. Migrate the existing local PostgreSQL database explicitly:
 
-Add these **GitHub Variables**:
+~~~bash
+pg_dump --format=custom --no-owner --no-acl "$LOCAL_DATABASE_URL" > antimbench.dump
+pg_restore --clean --if-exists --no-owner --no-acl \
+  --dbname "$RDS_DATABASE_URL" antimbench.dump
+~~~
 
-| Name | Purpose |
-| --- | --- |
-| `AWS_REGION` | `us-east-1` for this environment. |
-| `EB_APPLICATION_NAME` | `AntimBench`. |
-| `EB_ENVIRONMENT_NAME` | `AntimBench-Prod`. |
-| `EB_S3_BUCKET` | Existing bucket for application-version bundles. |
-| `VERCEL_DEPLOY_ENABLED` | Set to `true` after all three Vercel secrets are configured. |
+Confirm the row counts, application tables, and Alembic version on RDS. The
+Elastic Beanstalk pre-deploy hook then runs:
 
-AWS Academy credentials expire. Refresh all three AWS secrets together before
-they expire; the workflow supports the required session token. The deployment
-job validates its non-secret variables, uploads a uniquely named ZIP, waits for
-Elastic Beanstalk to process the application version and for the environment to
-be `Ready`, updates the existing environment, and then waits for `Ready` plus
-`Green` health. It does not create infrastructure.
+~~~bash
+python -m alembic upgrade head
+~~~
 
-The Vercel job is skipped until all Vercel secrets are supplied. Create
-`VERCEL_TOKEN` in **Vercel Account Settings → Tokens**, then copy the team and
-project IDs from **Project Settings → General** into `VERCEL_ORG_ID` and
-`VERCEL_PROJECT_ID`. The project keeps its existing production environment
-variables, including `API_PROXY_TARGET`, when the workflow deploys it.
+It never creates a database, changes roles, or initializes local PostgreSQL.
 
-## Bundle and service behaviour
+## Elastic Beanstalk configuration
 
-The generated ZIP includes `Procfile`, hidden `.platform` hooks and nginx
-configuration, backend source/migrations/lockfile, a locked Linux Python
-package tree, and the traced Next.js standalone runtime. The two bundled
-production runtimes deliberately contain the Node and Python packages needed to
-start the app; the instance does not run `npm ci`, download `uv`, or resolve
-PyPI packages while Elastic Beanstalk is deploying. The workflow rejects other
-`.env` files, Git metadata, virtual environments, local databases, certificates,
-test caches, and development build diagnostics.
+The CloudFormation environment supplies:
 
-`01-start-api-service.sh` creates the existing unprivileged `DynamicUser`
-FastAPI service with its working directory under `backend`, an internal
-`127.0.0.1:8000` Uvicorn command, restart policy, and the Elastic Beanstalk
-environment-property file. Secrets are not copied into a new world-readable
-file. nginx proxies only `/api/` and `/health` to FastAPI; it never exposes
-PostgreSQL or port 8000 publicly.
+~~~text
+DATABASE_URL
+JWT_SECRET_KEY
+AUTH_COOKIE_SECURE=true
+FRONTEND_URL=https://antimbench.sunitanepali.com.np
+CORS_ORIGINS=["https://antimbench.sunitanepali.com.np"]
+PROFILE_MEDIA_BUCKET=<private S3 bucket>
+PROFILE_MEDIA_PREFIX=profile-media
+PROFILE_MEDIA_REGION=us-east-1
+COLLEGE_NAME
+SMTP_HOST, SMTP_PORT, SMTP_USERNAME, SMTP_PASSWORD, SMTP_FROM_EMAIL
+~~~
 
-## Deploying and rollback
+SMTP values are optional, but account setup and notification delivery require a
+working SMTP configuration. The instance role can only read, write, and delete
+objects under the private profile-media/ prefix.
 
-Push to `main` or manually run **AntimBench CI/CD** from the Actions tab after
-configuring the existing Elastic Beanstalk application, environment, S3 bucket,
-and GitHub settings. The security group does not need SSH for this workflow.
+## ACM and Cloudflare
 
-For rollback, select a previous healthy application version in Elastic
-Beanstalk and deploy it to the same environment. Confirm database-migration
-compatibility before rolling back code; a database backup is essential before
-replacing the single instance.
+1. Request an ACM DNS-validated certificate in us-east-1 for
+   antimbench.sunitanepali.com.np.
+2. Add the ACM validation CNAME to Cloudflare with proxying disabled.
+3. Wait for ACM status ISSUED.
+4. Pass the certificate ARN to the CloudFormation stack.
+5. Point the Cloudflare antimbench CNAME at the Elastic Beanstalk/ALB
+   hostname. Keep the root and www records unchanged.
+6. Configure the ALB port 80 listener to redirect to HTTPS 443 after the HTTPS
+   listener is healthy. Use Cloudflare Full (strict) after the origin
+   certificate is active.
+
+The public application URL is:
+
+~~~text
+https://antimbench.sunitanepali.com.np
+~~~
+
+## GitHub Actions
+
+The workflow .github/workflows/deploy.yml runs:
+
+1. PostgreSQL-backed backend migrations and tests;
+2. frontend TypeScript, lint, and production build;
+3. a self-contained Elastic Beanstalk bundle with the Next.js standalone
+   runtime, backend runtime packages, hooks, nginx configuration, and worker;
+4. an S3 upload and Elastic Beanstalk application version;
+5. a deployment to AntimBench-Prod;
+6. a wait for Ready, Green, and the expected version label.
+
+Configure these GitHub repository settings:
+
+### Secret
+
+~~~text
+AWS_DEPLOY_ROLE_ARN
+~~~
+
+This is the ARN output by the CloudFormation stack. Do not add static AWS key
+secrets.
+
+### Variables
+
+~~~text
+AWS_REGION=us-east-1
+EB_APPLICATION_NAME=AntimBench
+EB_ENVIRONMENT_NAME=AntimBench-Prod
+EB_S3_BUCKET=<DeploymentBucketName output>
+~~~
+
+`EB_S3_BUCKET` must be the exact `DeploymentBucketName` output from the
+`AntimBench-Production` CloudFormation stack. Do not construct a bucket name
+manually from the account ID or region. Retrieve the current value with:
+
+~~~bash
+aws cloudformation describe-stacks \
+  --region us-east-1 \
+  --stack-name AntimBench-Production \
+  --query "Stacks[0].Outputs[?OutputKey=='DeploymentBucketName'].OutputValue" \
+  --output text
+~~~
+
+Update the production environment variable with that value before rerunning a
+deployment. The workflow performs an S3 preflight check after assuming the
+GitHub OIDC role, so a stale bucket variable fails with an actionable error
+before the upload step.
+
+There are no Vercel variables or deployment stages. The frontend and backend
+are always delivered by the same Elastic Beanstalk version.
+
+Push to main after the environment is provisioned. For a rollback, deploy a
+previous healthy Elastic Beanstalk application version and confirm that its
+database migrations remain compatible before replacing the current version.
+
+## Local verification
+
+For a local deployment-bundle check:
+
+~~~bash
+cd frontend
+npm ci
+npm run build
+
+cd ../backend
+uv sync --locked --no-dev
+~~~
+
+The GitHub workflow is the authoritative production packaging path. It rejects
+environment files, Git metadata, local databases, certificates, caches, and
+development build artifacts from the bundle.

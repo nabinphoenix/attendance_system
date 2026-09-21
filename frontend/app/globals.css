@@ -61,6 +61,7 @@ html[data-theme="dark"] {
 
 @layer components {
   .page-container { @apply mx-auto w-full max-w-screen-2xl px-4 py-5 sm:px-6 sm:py-6 lg:px-8 lg:py-8; }
+  .page-container > * { min-width: 0; }
   .panel { @apply rounded-xl border; border-color: rgb(var(--border)); background: rgb(var(--surface)); box-shadow: var(--shadow); }
   .field-label { @apply mb-1.5 block text-sm font-medium; color: rgb(var(--text)); }
   .helper-text { @apply mt-1.5 text-sm; color: rgb(var(--text-muted)); }
@@ -208,6 +209,7 @@ html[data-theme="light"] .assistant-markdown tbody tr:hover { background: rgb(va
 
 html[data-theme="light"] .text-slate-50, html[data-theme="light"] .text-slate-100, html[data-theme="light"] .text-slate-200, html[data-theme="light"] .text-slate-300 { color: rgb(var(--text)); }
 html[data-theme="light"] .text-slate-400, html[data-theme="light"] .text-slate-500 { color: rgb(var(--text-muted)); }
+html[data-theme="light"] .text-slate-600 { color: rgb(71 85 80); }
 html[data-theme="light"] .bg-slate-950, html[data-theme="light"] .bg-slate-950\/70, html[data-theme="light"] .bg-slate-900, html[data-theme="light"] .bg-slate-900\/85, html[data-theme="light"] .bg-slate-900\/75, html[data-theme="light"] .bg-slate-900\/60 { background-color: rgb(var(--surface)); }
 html[data-theme="light"] .bg-slate-800, html[data-theme="light"] .bg-slate-800\/70 { background-color: rgb(var(--surface-muted)); }
 html[data-theme="light"] .border-slate-800, html[data-theme="light"] .border-slate-700 { border-color: rgb(var(--border)); }
@@ -236,7 +238,9 @@ html[data-theme="light"] .bg-slate-900\/85 { background-color: rgb(var(--surface
 html[data-theme="light"] .bg-slate-800,
 html[data-theme="light"] .bg-slate-800\/60,
 html[data-theme="light"] .bg-slate-800\/70,
+html[data-theme="light"] .bg-slate-800\/80,
 html[data-theme="light"] .bg-slate-700 { background-color: rgb(var(--surface-muted)); }
+html[data-theme="light"] .bg-slate-600 { background-color: rgb(var(--surface-strong)); }
 
 html[data-theme="light"] .bg-emerald-950\/30,
 html[data-theme="light"] .bg-emerald-950\/70 { background-color: rgb(236 253 245); }
@@ -263,14 +267,26 @@ html[data-theme="light"] .text-amber-300,
 html[data-theme="light"] .text-amber-400 { color: rgb(146 64 14); }
 
 html[data-theme="light"] .text-blue-200,
-html[data-theme="light"] .text-blue-300 { color: rgb(29 78 216); }
-html[data-theme="light"] .text-sky-200 { color: rgb(3 105 161); }
+html[data-theme="light"] .text-blue-300,
+html[data-theme="light"] .text-blue-400 { color: rgb(29 78 216); }
+html[data-theme="light"] .text-sky-200,
+html[data-theme="light"] .text-sky-300 { color: rgb(3 105 161); }
 html[data-theme="light"] .text-teal-200 { color: rgb(15 118 110); }
 html[data-theme="light"] .text-violet-200 { color: rgb(109 40 217); }
 html[data-theme="light"] .hover\:bg-slate-800\/60:hover { background-color: rgb(var(--surface-muted)); }
 html[data-theme="light"] .hover\:text-white:hover { color: rgb(var(--text)); }
 html[data-theme="light"] .hover\:text-emerald-200:hover,
 html[data-theme="light"] .hover\:text-emerald-300:hover { color: rgb(4 120 87); }
+html[data-theme="light"] .border-slate-600,
+html[data-theme="light"] .border-slate-500 { border-color: rgb(var(--border)); }
+
+@media (max-width: 639px) {
+  .page-container table:not(.no-mobile-scroll) { display: block; max-width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; white-space: nowrap; }
+  .page-container table:not(.no-mobile-scroll) > thead,
+  .page-container table:not(.no-mobile-scroll) > tbody { display: table; min-width: 38rem; width: 100%; }
+  .page-container form, .page-container section, .page-container article, .page-container [role="dialog"] { min-width: 0; }
+  .page-container button, .page-container a { max-width: 100%; }
+}
 
 @media (max-width: 860px) {
   .landing-hero { grid-template-columns: 1fr; gap: 2.25rem; padding-top: 2.5rem; }

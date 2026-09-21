@@ -54,7 +54,7 @@ export default function Home() {
     </section>
 
     <section className="landing-features">
-      <p className="landing-section-kicker">DESIGNED FOR NEPAL?S COLLEGE DAY</p>
+      <p className="landing-section-kicker">DESIGNED FOR NEPAL&apos;S COLLEGE DAY</p>
       <h2 className="landing-section-title">Everything important, without making the work feel heavier.</h2>
       <div className="landing-feature-grid">
         {features.map((feature) => <article className="landing-feature" key={feature.title}><span className="landing-feature-icon" aria-hidden="true">{feature.icon}</span><h3>{feature.title}</h3><p>{feature.copy}</p></article>)}

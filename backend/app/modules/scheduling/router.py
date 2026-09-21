@@ -31,7 +31,9 @@ def start_routine_session(routine_id:int,p:SessionGeofenceCapture,user:Annotated
     if effective.teacher_id!=teacher.id:raise HTTPException(403,"This session is assigned to another teacher")
     session=db.scalar(select(ClassSession).where(ClassSession.routine_entry_id==routine_id,ClassSession.session_date==today,ClassSession.status==SessionStatus.ACTIVE).order_by(ClassSession.started_at.desc(),ClassSession.id.desc()).with_for_update())
     if not session:
-        captured_at=datetime.now(UTC);radius=p.geofence_radius_meters or settings.geofence_radius_meters
+        radius=p.geofence_radius_meters or settings.geofence_radius_meters
+        if radius > settings.attendance_max_geofence_radius_meters: raise HTTPException(422, f"Campus boundary cannot exceed {int(settings.attendance_max_geofence_radius_meters)} meters")
+        captured_at=datetime.now(UTC);
         # GPS is retained as coarse campus/audit evidence. It must not block an
         # authorized teacher from starting a session because indoor readings
         # commonly report wide accuracy circles (for example, +/-69m).
