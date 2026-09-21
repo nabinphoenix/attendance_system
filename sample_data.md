@@ -5,7 +5,7 @@ These accounts are for local development and demonstration only. Change or remov
 | Role | Email | Password | Notes |
 | --- | --- | --- | --- |
 | Super admin | `superadmin@antimbench.example.com` | `SuperAdmin123!` | Stored as the `admin` role; use for full administration. |
-| Admin | `admin@antimbench.example.com` | `Admin123!` | Academic setup, routine management, imports, and administration. |
+| Admin | `nabin.nepalisep23@cps.edu.np` | `Admin123!` | Academic setup, routine management, imports, and administration. |
 | Routine verification student | `routine.student.verify@example.com` | `Verify123!` | Assigned to the live routine-verification section. |
 
 ## Bulk-import accounts
