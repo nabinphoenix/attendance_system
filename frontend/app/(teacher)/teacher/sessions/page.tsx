@@ -9,6 +9,8 @@ import { Badge } from "@/components/ui/Badge";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { EmptyState, ErrorState, LoadingState } from "@/components/ui/States";
 import { RoutineScheduleCards } from "@/components/RoutineScheduleCards";
+import { ModuleScheduleCard } from "@/components/ModuleScheduleCard";
+import { ScheduleFilterBar } from "@/components/ScheduleFilterBar";
 import RoomAvailabilityPanel from "@/components/RoomAvailabilityPanel";
 
 const days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
@@ -81,6 +83,8 @@ export default function Page() {
     if (key === "rooms") return `${data.blocks?.find((entry) => entry.id === item.block_id)?.name ?? ""} / ${item.name}`;
     return item.name || item.code;
   }, [data]);
+  const moduleCode = (id: number) => data.modules?.find((entry) => entry.id === id)?.code ?? "";
+  const moduleTitle = (id: number) => data.modules?.find((entry) => entry.id === id)?.title ?? text("modules", id);
 
   async function start(routineId: number) {
     if (!hasSecureDeviceContext()) {
@@ -170,31 +174,59 @@ export default function Page() {
   }), [filters, occurrences, text]);
   const today = filteredOccurrences.filter((item) => item.date === localDate());
   const next = filteredOccurrences.find((item) => !item.cancelled);
-  const occurrenceCard = (item: any) => <article key={`${item.routine_id}-${item.date}`} className={`panel p-5 ${item.cancelled ? "border-red-500/40 bg-red-500/5" : ""}`}>
-    <div className="flex items-start justify-between gap-3"><p className="text-lg font-semibold text-slate-100">{item.start_time.slice(0, 5)}–{item.end_time.slice(0, 5)}</p><Badge tone={item.cancelled?"danger":"info"}>{item.cancelled?"Cancelled":text("class-types", item.class_type_id)}</Badge></div>
-    <h3 className="mt-3 text-lg font-semibold">{text("modules", item.module_id)}</h3>
-    <p className="mt-2 text-sm text-slate-300">{item.section_names.join(" + ")} · {item.room}</p>
-    {item.room !== item.original_room && <p className="text-amber-300">Original room: {item.original_room} · Effective room: {item.room}</p>}
-    {item.teacher_id !== item.original_teacher_id && <p className="text-amber-300">Substitute assignment</p>}
-    {!item.cancelled&&item.can_start&&<div className="mt-4">{pendingStart?.routineId===item.routine_id?<div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-4"><div className="flex flex-wrap items-center justify-between gap-2"><p className="font-semibold text-emerald-100">Location captured</p><Badge tone="success">+/-{Math.round(pendingStart?.accuracy ?? 0)}m accuracy</Badge></div><div className="mt-4 grid gap-3 sm:grid-cols-3"><label><span className="field-label">Campus boundary (meters)</span><input className="w-full" type="number" min="1" max={MAX_GEOFENCE_RADIUS_METERS} step="1" inputMode="decimal" value={radiusInput} onChange={(event)=>setRadiusInput(event.target.value)} aria-describedby={`boundary-help-${item.routine_id}`}/></label><label><span className="field-label">Check-in window (minutes)</span><input className="w-full" type="number" min="1" max="240" step="1" inputMode="numeric" value={selfCheckinInput} onChange={(event)=>setSelfCheckinInput(event.target.value)} aria-describedby={`settings-help-${item.routine_id}`}/></label><label><span className="field-label">QR + code rotation (seconds)</span><input className="w-full" type="number" min="15" max="300" step="1" inputMode="numeric" value={rotationInput} onChange={(event)=>setRotationInput(event.target.value)} aria-describedby={`settings-help-${item.routine_id}`}/></label></div><span id={`boundary-help-${item.routine_id}`} className="helper-text">Location is a campus-level audit signal. The rotating QR and the spoken 5-digit classroom code verify that the student is in class.</span><span id={`settings-help-${item.routine_id}`} className="helper-text">Students can check in during the selected window. The QR and spoken code rotate together at the selected interval.</span><div className="mt-4 flex flex-wrap gap-2"><Button size="lg" loading={startingId===item.routine_id} disabled={startingId!==null} onClick={()=>void startSession()}>{startingId===item.routine_id?"Starting QR session…":"Start QR attendance"}</Button><Button type="button" variant="ghost" disabled={startingId!==null} onClick={()=>{setPendingStart(null);setStartStatus("")}}>Cancel</Button></div></div>:<Button size="lg" loading={startingId===item.routine_id} disabled={startingId!==null||pendingStart!==null} onClick={()=>void start(item.routine_id)}>{startingId===item.routine_id?"Getting location…":"Use location & set boundary"}</Button>}</div>}
-  </article>;
-
-  return <div>
-    <PageHeader title="My classes" description="Filter your teaching schedule, then start today’s attendance session from the classroom."/>
-    <section className="panel mb-6 p-5">
-      <div className="mb-4 flex flex-wrap items-end justify-between gap-3"><div><h2 className="text-lg font-semibold">Schedule filters</h2><p className="mt-1 text-sm text-slate-400">Filters apply to today, your next class, and the full timetable.</p></div><Button type="button" variant="ghost" onClick={() => setFilters({ query: "", module: "", section: "", classType: "", day: "" })}>Clear filters</Button></div>
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
-        <label><span className="field-label">Search</span><input placeholder="Course, section, or room" value={filters.query} onChange={(event) => setFilters((current) => ({ ...current, query: event.target.value }))} /></label>
-        <label><span className="field-label">Module</span><select value={filters.module} onChange={(event) => setFilters((current) => ({ ...current, module: event.target.value }))}><option value="">All modules</option>{(data.modules || []).map((entry) => <option key={entry.id} value={entry.id}>{entry.code} — {entry.title}</option>)}</select></label>
-        <label><span className="field-label">Section</span><input placeholder="Any section" value={filters.section} onChange={(event) => setFilters((current) => ({ ...current, section: event.target.value }))} /></label>
-        <label><span className="field-label">Class type</span><select value={filters.classType} onChange={(event) => setFilters((current) => ({ ...current, classType: event.target.value }))}><option value="">All class types</option>{(data["class-types"] || []).map((entry) => <option key={entry.id} value={entry.id}>{entry.name}</option>)}</select></label>
-        <label><span className="field-label">Timetable day</span><select value={filters.day} onChange={(event) => setFilters((current) => ({ ...current, day: event.target.value }))}><option value="">All days</option>{days.map((day, index) => <option key={day} value={index}>{day}</option>)}</select></label>
+  const occurrenceCard = (item: any) => (
+    <ModuleScheduleCard
+    key={`${item.routine_id}-${item.date}`}
+    code={moduleCode(item.module_id)}
+    title={moduleTitle(item.module_id)}
+    startTime={item.start_time.slice(0, 5)}
+    endTime={item.end_time.slice(0, 5)}
+    classType={text("class-types", item.class_type_id)}
+    status={item.cancelled ? "Cancelled" : undefined}
+    cancelled={item.cancelled}
+    accentIndex={item.room_id ?? item.module_id}
+    details={[{ label: "Sections", value: item.section_names.join(" + "), icon: "group" }, { label: "Room", value: item.room, icon: "pin" }]}
+  >
+    {item.room !== item.original_room && <p className="mt-3 text-sm font-medium text-amber-600 dark:text-amber-300">Original room: {item.original_room} · Effective room: {item.room}</p>}
+    {item.teacher_id !== item.original_teacher_id && <p className="mt-2 text-sm font-medium text-amber-600 dark:text-amber-300">Substitute assignment</p>}
+    {!item.cancelled && item.can_start && (
+      <div className="mt-4">
+        {pendingStart?.routineId === item.routine_id ? (
+          <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-4">
+            <div className="flex flex-wrap items-center justify-between gap-2"><p className="font-semibold text-emerald-100">Location captured</p><Badge tone="success">+/-{Math.round(pendingStart?.accuracy ?? 0)}m accuracy</Badge></div>
+            <div className="mt-4 grid gap-3 sm:grid-cols-3">
+              <label><span className="field-label">Campus boundary (meters)</span><input className="w-full" type="number" min="1" max={MAX_GEOFENCE_RADIUS_METERS} step="1" inputMode="decimal" value={radiusInput} onChange={(event) => setRadiusInput(event.target.value)} aria-describedby={`boundary-help-${item.routine_id}`} /></label>
+              <label><span className="field-label">Check-in window (minutes)</span><input className="w-full" type="number" min="1" max="240" step="1" inputMode="numeric" value={selfCheckinInput} onChange={(event) => setSelfCheckinInput(event.target.value)} aria-describedby={`settings-help-${item.routine_id}`} /></label>
+              <label><span className="field-label">QR + code rotation (seconds)</span><input className="w-full" type="number" min="15" max="300" step="1" inputMode="numeric" value={rotationInput} onChange={(event) => setRotationInput(event.target.value)} aria-describedby={`settings-help-${item.routine_id}`} /></label>
+            </div>
+            <span id={`boundary-help-${item.routine_id}`} className="helper-text">Location is a campus-level audit signal. The rotating QR and the spoken 5-digit classroom code verify that the student is in class.</span>
+            <span id={`settings-help-${item.routine_id}`} className="helper-text">Students can check in during the selected window. The QR and spoken code rotate together at the selected interval.</span>
+            <div className="mt-4 flex flex-wrap gap-2"><Button size="lg" loading={startingId === item.routine_id} disabled={startingId !== null} onClick={() => void startSession()}>{startingId === item.routine_id ? "Starting QR session…" : "Start QR attendance"}</Button><Button type="button" variant="ghost" disabled={startingId !== null} onClick={() => { setPendingStart(null); setStartStatus(""); }}>Cancel</Button></div>
+          </div>
+        ) : <Button size="lg" loading={startingId === item.routine_id} disabled={startingId !== null || pendingStart !== null} onClick={() => void start(item.routine_id)}>{startingId === item.routine_id ? "Getting location…" : "Use location & set boundary"}</Button>}
       </div>
-    </section>
-    {startStatus && <p className="mb-3 rounded border border-emerald-800 bg-emerald-950/30 p-3 text-emerald-300">{startStatus}</p>}
-    {error&&<div className="mb-4"><ErrorState title="Unable to continue" description={error} onRetry={()=>locationRetryRoutineId!==null?void start(locationRetryRoutineId):void load()}/></div>}
-    {loading?<LoadingState label="Loading teaching schedule"/>:<><section><h2 className="mb-3 text-lg font-semibold">Today&apos;s classes</h2><div className="grid gap-4 md:grid-cols-2">{today.map(occurrenceCard)}{!today.length&&<div className="panel md:col-span-2"><EmptyState title="No classes scheduled today" description="Your next scheduled class will appear below."/></div>}</div></section>
-    <section className="mt-8"><h2 className="mb-3 text-xl font-semibold">Next Class</h2>{next ? <div><p className="mb-2 text-slate-400">{next.date}</p>{occurrenceCard(next)}</div> : <p className="text-slate-400">No upcoming class.</p>}</section>
-    <section className="mt-8"><h2 className="mb-3 text-lg font-semibold">Full timetable</h2><RoutineScheduleCards rows={filteredRows} colorRows={rows} days={days} colorBy="room_id" colorMeaning="Classroom" time={(row) => text("time-slots", row.time_slot_id)} title={(row) => text("modules", row.module_id)} classType={(row) => text("class-types", row.class_type_id)} details={(row) => [{ label: "Sections", value: row.section_names?.join(" + ") || "Not assigned" }, { label: "Room", value: text("rooms", row.room_id) }]} /></section><section className="mt-8"><RoomAvailabilityPanel /></section></>}
-  </div>;
+    )}
+    </ModuleScheduleCard>
+  );
+
+  return (
+    <div>
+      <PageHeader title="My classes" description="Filter your teaching schedule, then start today's attendance session from the classroom." />
+      <section className="mb-6">
+        <div className="mb-3"><h2 className="text-lg font-bold">Schedule filters</h2><p className="mt-1 text-sm text-slate-400">Filter today, the next class, and the full timetable by the same controls.</p></div>
+        <ScheduleFilterBar days={days} day={filters.day} onDayChange={(day) => setFilters((current) => ({ ...current, day }))} classType={filters.classType} onClassTypeChange={(classType) => setFilters((current) => ({ ...current, classType }))} classTypes={(data["class-types"] || []).map((entry) => ({ value: String(entry.id), label: entry.name }))} module={filters.module} onModuleChange={(module) => setFilters((current) => ({ ...current, module }))} modules={(data.modules || []).map((entry) => ({ value: String(entry.id), label: `${entry.code} — ${entry.title}` }))} section={filters.section} onSectionChange={(section) => setFilters((current) => ({ ...current, section }))} search={filters.query} onSearchChange={(query) => setFilters((current) => ({ ...current, query }))} searchPlaceholder="Course, section, or room" onClear={() => setFilters({ query: "", module: "", section: "", classType: "", day: "" })} />
+      </section>
+      {startStatus && <p className="mb-3 rounded border border-emerald-800 bg-emerald-950/30 p-3 text-emerald-300">{startStatus}</p>}
+      {error && <div className="mb-4"><ErrorState title="Unable to continue" description={error} onRetry={() => locationRetryRoutineId !== null ? void start(locationRetryRoutineId) : void load()} /></div>}
+      {loading ? <LoadingState label="Loading teaching schedule" /> : <>
+        <section>
+          <div className="mb-3 flex items-center justify-between gap-3"><h2 className="text-lg font-bold">Today&apos;s Schedule</h2><span className="text-sm text-slate-500 dark:text-slate-400">{today.length} class{today.length === 1 ? "" : "es"} scheduled</span></div>
+          <div className="grid gap-4 md:grid-cols-2">{today.map(occurrenceCard)}{!today.length && <div className="panel md:col-span-2"><EmptyState title="No classes scheduled today" description="Your next scheduled class will appear below." /></div>}</div>
+        </section>
+        <section className="mt-8"><h2 className="mb-3 text-xl font-semibold">Next Class</h2>{next ? <div><p className="mb-2 text-slate-400">{next.date}</p>{occurrenceCard(next)}</div> : <p className="text-slate-400">No upcoming class.</p>}</section>
+        <section className="mt-8"><h2 className="mb-3 text-lg font-bold">Full timetable</h2><RoutineScheduleCards rows={filteredRows} colorRows={rows} days={days} colorBy="room_id" colorMeaning="Classroom" code={(row) => moduleCode(row.module_id)} time={(row) => text("time-slots", row.time_slot_id)} title={(row) => moduleTitle(row.module_id)} classType={(row) => text("class-types", row.class_type_id)} details={(row) => [{ label: "Sections", value: row.section_names?.join(" + ") || "Not assigned", icon: "group" }, { label: "Room", value: text("rooms", row.room_id), icon: "pin" }]} /></section>
+        <section className="mt-8"><RoomAvailabilityPanel /></section>
+      </>}
+    </div>
+  );
 }

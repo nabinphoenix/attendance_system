@@ -10,6 +10,8 @@ import { Button } from "@/components/ui/Button";
 import { EmptyState, ErrorState, LoadingState } from "@/components/ui/States";
 import { downloadFile } from "@/lib/download";
 import RoomAvailabilityPanel from "@/components/RoomAvailabilityPanel";
+import { ModuleScheduleCard } from "@/components/ModuleScheduleCard";
+import { ScheduleFilterBar } from "@/components/ScheduleFilterBar";
 
 type RoutineOccurrence = {
   routine_id: number;
@@ -92,6 +94,7 @@ function shiftDate(days: number) {
 const initialDateTo = localDate();
 const initialDateFrom = shiftDate(-29);
 const scheduleDateMax = localDate(new Date(Date.now() + 7 * 86400000));
+const scheduleDays = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 
 type AnalysisMode = "day" | "subject";
 type Period = "last-30" | "this-month" | "all-time" | "custom";
@@ -131,7 +134,7 @@ export default function Page() {
   const [scheduleLoading, setScheduleLoading] = useState(true);
   const [attendanceLoading, setAttendanceLoading] = useState(true);
   const [attendance, setAttendance] = useState<AttendanceReport | null>(null);
-  const [scheduleFilters, setScheduleFilters] = useState({ date: "", module: "", teacher: "", classType: "", query: "" });
+  const [scheduleFilters, setScheduleFilters] = useState({ date: "", day: "", module: "", teacher: "", classType: "", query: "" });
   const [dateFrom, setDateFrom] = useState(initialDateFrom);
   const [dateTo, setDateTo] = useState(initialDateTo);
   const [subjectFilter, setSubjectFilter] = useState("");
@@ -186,8 +189,10 @@ export default function Page() {
     return item ? (key === "modules" ? item.title : item.name) : "—";
   }, [catalog]);
 
+  const moduleCode = (id: number) => catalog.modules?.find((entry) => entry.id === id)?.code ?? "";
   const filteredSchedule = useMemo(() => occurrences.filter((item) => {
     if (scheduleFilters.date && item.date !== scheduleFilters.date) return false;
+    if (scheduleFilters.day && String((new Date(`${item.date}T12:00:00`).getDay() + 6) % 7) !== scheduleFilters.day) return false;
     if (scheduleFilters.module && String(item.module_id) !== scheduleFilters.module) return false;
     if (scheduleFilters.teacher && String(item.teacher_id) !== scheduleFilters.teacher) return false;
     if (scheduleFilters.classType && String(item.class_type_id) !== scheduleFilters.classType) return false;
@@ -198,19 +203,22 @@ export default function Page() {
     return true;
   }), [name, occurrences, scheduleFilters]);
   const scheduleStart = scheduleFilters.date || localDate();
-  const today = filteredSchedule.filter((item) => item.date === scheduleStart);
+  const today = filteredSchedule.filter((item) => scheduleFilters.day ? ((new Date(`${item.date}T12:00:00`).getDay() + 6) % 7) === Number(scheduleFilters.day) : item.date === scheduleStart);
   const next = filteredSchedule.find((item) => item.date >= scheduleStart && !item.cancelled);
-  const card = (item: RoutineOccurrence) => (
-    <article key={`${item.routine_id}-${item.date}`} className={`panel p-5 ${item.cancelled ? "border-red-500/30 bg-red-500/5" : ""}`}>
-      <div className="flex items-start justify-between gap-3">
-        <p className="text-lg font-semibold">{item.start_time.slice(0, 5)}–{item.end_time.slice(0, 5)}</p>
-        <Badge tone={item.cancelled ? "danger" : "info"}>{item.cancelled ? "Cancelled" : name("class-types", item.class_type_id)}</Badge>
-      </div>
-      <h3 className="mt-3 text-lg font-semibold">{name("modules", item.module_id)}</h3>
-      <p className="mt-2 text-sm text-slate-400">{name("teachers", item.teacher_id)} · {item.room}</p>
-      {item.room !== item.original_room && !item.cancelled && <p className="mt-2 text-sm text-amber-300">Room changed from {item.original_room}</p>}
-    </article>
-  );
+  const card = (item: RoutineOccurrence) => <ModuleScheduleCard
+    key={`${item.routine_id}-${item.date}`}
+    code={moduleCode(item.module_id)}
+    title={name("modules", item.module_id)}
+    startTime={item.start_time.slice(0, 5)}
+    endTime={item.end_time.slice(0, 5)}
+    classType={name("class-types", item.class_type_id)}
+    status={item.cancelled ? "Cancelled" : undefined}
+    cancelled={item.cancelled}
+    accentIndex={item.module_id}
+    details={[{ label: "Lecturer", value: name("teachers", item.teacher_id), icon: "person" }, { label: "Room", value: item.room, icon: "pin" }]}
+  >
+    {item.room !== item.original_room && !item.cancelled && <p className="mt-3 text-sm font-medium text-amber-600 dark:text-amber-300">Room changed from {item.original_room}</p>}
+  </ModuleScheduleCard>;
 
   const view = useMemo(() => {
     if (!attendance) return { records: [], days: [], subjects: [], classTypes: [] as AttendanceClassType[], present: 0, absent: 0, total: 0, overall: 0 };
@@ -343,15 +351,9 @@ export default function Page() {
 
       {scheduleError && <ErrorState title="Unable to load your schedule" description={scheduleError} onRetry={() => void loadSchedule()} />}
       {scheduleLoading ? <LoadingState label="Loading student dashboard" /> : <>
-        <section className="panel mb-6 p-5">
-          <div className="mb-4 flex flex-wrap items-end justify-between gap-3"><div><h2 className="text-lg font-semibold">Schedule filters</h2><p className="mt-1 text-sm text-slate-400">Filter the classes loaded for today and the next 7 days.</p></div><Button type="button" variant="ghost" onClick={() => setScheduleFilters({ date: "", module: "", teacher: "", classType: "", query: "" })}>Clear filters</Button></div>
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
-            <label><span className="field-label">Class date</span><input type="date" min={localDate()} max={scheduleDateMax} value={scheduleFilters.date} onChange={(event) => setScheduleFilters((current) => ({ ...current, date: event.target.value }))} /></label>
-            <label><span className="field-label">Module</span><select value={scheduleFilters.module} onChange={(event) => setScheduleFilters((current) => ({ ...current, module: event.target.value }))}><option value="">All modules</option>{(catalog.modules || []).map((entry) => <option key={entry.id} value={entry.id}>{entry.code} — {entry.title}</option>)}</select></label>
-            <label><span className="field-label">Teacher</span><select value={scheduleFilters.teacher} onChange={(event) => setScheduleFilters((current) => ({ ...current, teacher: event.target.value }))}><option value="">All teachers</option>{(catalog.teachers || []).map((entry) => <option key={entry.id} value={entry.id}>{entry.name}</option>)}</select></label>
-            <label><span className="field-label">Class type</span><select value={scheduleFilters.classType} onChange={(event) => setScheduleFilters((current) => ({ ...current, classType: event.target.value }))}><option value="">All class types</option>{(catalog["class-types"] || []).map((entry) => <option key={entry.id} value={entry.id}>{entry.name}</option>)}</select></label>
-            <label><span className="field-label">Search</span><input placeholder="Course or room" value={scheduleFilters.query} onChange={(event) => setScheduleFilters((current) => ({ ...current, query: event.target.value }))} /></label>
-          </div>
+        <section className="mb-6">
+          <div className="mb-3"><h2 className="text-lg font-bold">Schedule filters</h2><p className="mt-1 text-sm text-slate-400">Filter the classes loaded for today and the next 7 days.</p></div>
+          <ScheduleFilterBar days={scheduleDays} day={scheduleFilters.day} onDayChange={(day) => setScheduleFilters((current) => ({ ...current, day }))} classType={scheduleFilters.classType} onClassTypeChange={(classType) => setScheduleFilters((current) => ({ ...current, classType }))} classTypes={(catalog["class-types"] || []).map((entry) => ({ value: String(entry.id), label: entry.name }))} module={scheduleFilters.module} onModuleChange={(module) => setScheduleFilters((current) => ({ ...current, module }))} modules={(catalog.modules || []).map((entry) => ({ value: String(entry.id), label: `${entry.code} — ${entry.title}` }))} teacher={scheduleFilters.teacher} onTeacherChange={(teacher) => setScheduleFilters((current) => ({ ...current, teacher }))} teachers={(catalog.teachers || []).map((entry) => ({ value: String(entry.id), label: entry.name }))} date={scheduleFilters.date} onDateChange={(date) => setScheduleFilters((current) => ({ ...current, date }))} minDate={localDate()} maxDate={scheduleDateMax} search={scheduleFilters.query} onSearchChange={(query) => setScheduleFilters((current) => ({ ...current, query }))} searchPlaceholder="Course, lecturer, or room" onClear={() => setScheduleFilters({ date: "", day: "", module: "", teacher: "", classType: "", query: "" })} />
         </section>
         <section>
           <h2 className="mb-3 text-lg font-semibold">{scheduleFilters.date ? `Classes on ${scheduleFilters.date}` : "Today's classes"}</h2>
