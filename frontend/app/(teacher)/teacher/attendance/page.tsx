@@ -15,6 +15,7 @@ type StudentRow = {
   student_name: string;
   roll_number: string;
   status: string;
+  ip_status: string;
 };
 
 type AttendanceClass = {
@@ -36,6 +37,11 @@ type PendingChange = { classItem: AttendanceClass; row: StudentRow; status: stri
 
 const localDate = (value = new Date()) => `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, "0")}-${String(value.getDate()).padStart(2, "0")}`;
 const editableStatuses = ["present", "late", "absent", "leave", "bunk"];
+function NetworkBadge({ status }: { status: string }) {
+  const verified = status === "campus" || status === "same_as_teacher";
+  return <Badge tone={verified ? "success" : status === "outside" ? "danger" : "neutral"}>{verified ? "Network verified" : status === "outside" ? "Outside network" : "Unknown"}</Badge>;
+}
+
 
 export default function Page() {
   const today = localDate();
@@ -113,7 +119,7 @@ export default function Page() {
           <div><div className="flex flex-wrap items-center gap-2"><span className="text-sm font-semibold uppercase tracking-wider text-emerald-400">{item.module_code}</span>{classStatus(item)}</div><h2 className="mt-2 text-xl font-semibold">{item.module_title}</h2><p className="mt-1 text-sm text-slate-400">{item.section_names.join(" + ")} · {item.start_time.slice(0, 5)}–{item.end_time.slice(0, 5)} · {item.room}</p></div>
           <p className="max-w-sm text-sm leading-6 text-slate-400">{item.session_id ? "Attendance session available for editing." : "No session exists yet. Your first manual change will create this date’s attendance session."}</p>
         </div>
-        <div className="table-wrap rounded-none border-0"><table><thead><tr><th>Student</th><th>Roll</th><th>Current status</th><th>Change attendance</th></tr></thead><tbody>{item.students.map(row => <tr key={row.student_id}><td className="font-medium text-slate-200">{row.student_name}</td><td>{row.roll_number}</td><td><StatusBadge status={row.status} /></td><td><select aria-label={`Change attendance for ${row.student_name}`} disabled={item.cancelled} value={row.status} onChange={event => { if (editableStatuses.includes(event.target.value) && event.target.value !== row.status) setDialog({ classItem: item, row, status: event.target.value }); }}><option value={row.status}>{row.status.replaceAll("_", " ")}</option>{editableStatuses.filter(status => status !== row.status).map(status => <option key={status} value={status}>{status.replaceAll("_", " ")}</option>)}</select></td></tr>)}</tbody></table></div>
+        <div className="table-wrap rounded-none border-0"><table><thead><tr><th>Student</th><th>Roll</th><th>Current status</th><th>Network</th><th>Change attendance</th></tr></thead><tbody>{item.students.map(row => <tr key={row.student_id}><td className="font-medium text-slate-200">{row.student_name}</td><td>{row.roll_number}</td><td><StatusBadge status={row.status} /></td><td><NetworkBadge status={row.ip_status} /></td><td><select aria-label={`Change attendance for ${row.student_name}`} disabled={item.cancelled} value={row.status} onChange={event => { if (editableStatuses.includes(event.target.value) && event.target.value !== row.status) setDialog({ classItem: item, row, status: event.target.value }); }}><option value={row.status}>{row.status.replaceAll("_", " ")}</option>{editableStatuses.filter(status => status !== row.status).map(status => <option key={status} value={status}>{status.replaceAll("_", " ")}</option>)}</select></td></tr>)}</tbody></table></div>
       </section>)}
     </div>}
     {dialog && <ConfirmDialog open title={`Change ${dialog.row.student_name} to ${dialog.status.replaceAll("_", " ")}?`} description="This correction applies to the selected class date and is recorded in the attendance audit trail." confirmLabel="Save correction" requireReason onClose={() => setDialog(null)} onConfirm={saveChange} />}

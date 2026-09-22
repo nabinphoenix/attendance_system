@@ -44,6 +44,7 @@ class QRResponse(BaseModel):
     self_checkin_closes_at: datetime
     classroom_code: str = Field(pattern=r"^\d{5}$")
     challenge_id: int
+    teacher_ip_status: str | None = None
 
 
 class ChallengeConfirmationRequest(BaseModel):
@@ -62,6 +63,7 @@ class RosterItem(BaseModel):
     distance_meters: float | None = None
     allowed_radius_meters: float | None = None
     location_accuracy_meters: float | None = None
+    ip_status: str = "unknown"
 
 
 class TeacherAttendanceClass(BaseModel):
@@ -90,6 +92,38 @@ class CheckInExceptionRead(BaseModel):
     accuracy_meters: float | None
     created_at: datetime
     status: str
+    ip_status: str = "unknown"
+
+
+class CampusNetworkRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    label: str
+    cidr: str
+    is_active: bool
+    created_by: int
+    created_at: datetime
+
+
+class CampusNetworkCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    label: str = Field(min_length=1, max_length=120)
+    cidr: str = Field(min_length=3, max_length=64)
+    force: bool = False
+
+
+class CurrentNetworkConfirm(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    label: str = Field(min_length=1, max_length=120)
+
+
+class NetworkPolicyRead(BaseModel):
+    ip_policy: Literal["off", "flag"]
+
+
+class NetworkPolicyUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    ip_policy: Literal["off", "flag"]
 
 
 class ExceptionDecision(BaseModel):

@@ -7,7 +7,7 @@ from app.core.security import hash_password
 from app.modules.identity.models import User, UserRole
 from app.modules.operations.service import log_audit
 from . import schemas
-from .models import Batch, Guardian, Intake, Program, Section, Student, StudentSubjectEnrollment, Subject, Teacher
+from .models import Batch, CohortSemester, Guardian, Intake, Program, Section, Student, StudentSubjectEnrollment, Subject, Teacher
 from .module_offering_service import synchronize_section_module_offerings
 from .models import StudentEnrollment
 from app.modules.scheduling.models import ClassSession, ScheduleOverride, TimetableEntry
@@ -47,6 +47,23 @@ def page(db: Session, query, response_type, page_number: int, page_size: int):
 def delete_with_audit(db: Session, obj: T, actor_id: int, action: str, entity_type: str) -> None:
     entity_id=obj.id; db.delete(obj); log_audit(db,actor_id,action,entity_type,entity_id,{"id":entity_id},None); db.commit()
 
+def section_context_values(db: Session, values: dict) -> dict:
+    """Use an explicit CohortSemester as the section's academic identity."""
+    cohort_semester_id = values.get('cohort_semester_id')
+    if cohort_semester_id is None:
+        return values
+    period = get_or_404(db, CohortSemester, cohort_semester_id, 'Cohort semester')
+    for field, expected in (
+        ('batch_id', period.batch_id),
+        ('intake_id', period.intake_id),
+        ('semester_number', period.semester_number),
+    ):
+        supplied = values.get(field)
+        if supplied is not None and supplied != expected:
+            raise HTTPException(422, f'{field} does not match the selected cohort semester')
+        values[field] = expected
+    return values
+
 @router.post("/programs", response_model=schemas.ProgramRead)
 def create_program(p: schemas.ProgramCreate, user: Annotated[User, Depends(require_role("admin"))], db: DbSession): return save_with_audit(db, Program(**p.model_dump()), user.id, "program.created", "program", p.model_dump())
 @router.get("/programs", response_model=list[schemas.ProgramRead])
@@ -81,13 +98,14 @@ def delete_batch(id:int,user:Annotated[User,Depends(require_role("admin"))],db:D
 
 @router.post("/sections", response_model=schemas.SectionRead)
 def create_section(p: schemas.SectionCreate, user: Annotated[User, Depends(require_role("admin"))], db: DbSession):
-    get_or_404(db, Batch, p.batch_id, "Batch")
-    if p.intake_id is not None: get_or_404(db, Intake, p.intake_id, "Intake")
-    section = Section(**p.model_dump())
+    values = section_context_values(db, p.model_dump())
+    get_or_404(db, Batch, values['batch_id'], "Batch")
+    if values.get('intake_id') is not None: get_or_404(db, Intake, values['intake_id'], "Intake")
+    section = Section(**values)
     db.add(section)
     db.flush()
     inherited = synchronize_section_module_offerings(db, section)
-    after = p.model_dump() | {"inherited_module_offering_ids": [offering.id for offering in inherited]}
+    after = values | {"inherited_module_offering_ids": [offering.id for offering in inherited]}
     log_audit(db, user.id, "section.created", "section", section.id, None, after)
     db.commit()
     db.refresh(section)
@@ -98,11 +116,11 @@ def sections(db: DbSession): return db.scalars(select(Section).order_by(Section.
 def section_page(db:DbSession,page_number:int=1,page_size:int=20):return page(db,select(Section).order_by(Section.name),schemas.SectionPage,page_number,page_size)
 @router.patch("/sections/{id}", response_model=schemas.SectionRead)
 def update_section(id: int, p: schemas.SectionUpdate, db: DbSession):
-    if p.batch_id is not None: get_or_404(db, Batch, p.batch_id, "Batch")
-    if p.intake_id is not None: get_or_404(db, Intake, p.intake_id, "Intake")
     section = get_or_404(db, Section, id, "Section")
-    values = p.model_dump(exclude_none=True)
-    if {'batch_id', 'intake_id', 'semester_number'} & values.keys():
+    values = section_context_values(db, p.model_dump(exclude_none=True))
+    if values.get('batch_id') is not None: get_or_404(db, Batch, values['batch_id'], "Batch")
+    if values.get('intake_id') is not None: get_or_404(db, Intake, values['intake_id'], "Intake")
+    if {'batch_id', 'intake_id', 'semester_number', 'cohort_semester_id'} & values.keys():
         if db.scalar(select(Student.id).where(Student.section_id == id)) or db.scalar(
             select(StudentEnrollment.id).where(StudentEnrollment.section_id == id)
         ):

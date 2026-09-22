@@ -9,7 +9,7 @@ import { EmptyState, ErrorState, LoadingState } from "@/components/ui/States";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { SystemFeedback } from "@/components/ui/SystemFeedback";
 
-const blank = { academic_module_id: "", intake_id: "", batch_id: "", semester_number: "", is_active: true };
+const blank = { academic_module_id: "", intake_id: "", batch_id: "", semester_number: "", cohort_semester_id: "", section_ids: [], is_active: true };
 
 export default function Page() {
   const [data, setData] = useState<Record<string, any[]>>({});
@@ -25,10 +25,10 @@ export default function Page() {
   async function load() {
     setLoading(true);
     try {
-      const names = ["modules", "intakes", "batches", "sections", "module-offerings"];
+      const names = ["modules", "intakes", "batches", "sections", "cohort-semesters", "module-offerings"];
       const responses = await Promise.all(names.map((name) => api.get(`/api/v1/academic/${name}`)));
       setData(Object.fromEntries(names.map((name, index) => [name, responses[index].data])));
-      setRows(responses[4].data);
+      setRows(responses[5].data);
       setError("");
     } catch (requestError: any) {
       setError(requestError.response?.data?.detail ?? "Unable to load module offerings.");
@@ -44,11 +44,13 @@ export default function Page() {
   const cohortSections = useMemo(
     () => (data.sections || []).filter(
       (section) =>
-        (!form.batch_id || section.batch_id === Number(form.batch_id)) &&
-        (!form.intake_id || section.intake_id === null || section.intake_id === Number(form.intake_id)) &&
-        (!form.semester_number || section.semester_number === null || section.semester_number === Number(form.semester_number)),
+        form.cohort_semester_id
+          ? section.cohort_semester_id === Number(form.cohort_semester_id)
+          : (!form.batch_id || section.batch_id === Number(form.batch_id)) &&
+            (!form.intake_id || section.intake_id === null || section.intake_id === Number(form.intake_id)) &&
+            (!form.semester_number || section.semester_number === null || section.semester_number === Number(form.semester_number)),
     ),
-    [data.sections, form.batch_id, form.intake_id, form.semester_number],
+    [data.sections, form.batch_id, form.intake_id, form.semester_number, form.cohort_semester_id],
   );
 
   function closeEdit() {
@@ -61,12 +63,14 @@ export default function Page() {
     const editing = edit;
     setSaving(true);
     setError("");
+    const period = (data["cohort-semesters"] || []).find((item) => item.id === Number(form.cohort_semester_id));
     const payload = {
       ...form,
       academic_module_id: Number(form.academic_module_id),
-      intake_id: Number(form.intake_id),
-      batch_id: Number(form.batch_id),
-      semester_number: Number(form.semester_number),
+      intake_id: period?.intake_id ?? Number(form.intake_id),
+      batch_id: period?.batch_id ?? Number(form.batch_id),
+      semester_number: period?.semester_number ?? Number(form.semester_number),
+      cohort_semester_id: form.cohort_semester_id ? Number(form.cohort_semester_id) : undefined,
     };
     try {
       if (editing !== null) await api.patch(`/api/v1/academic/module-offerings/${editing}`, payload);
@@ -102,11 +106,27 @@ export default function Page() {
       intake_id: String(row.intake_id),
       batch_id: String(row.batch_id),
       semester_number: String(row.semester_number),
+      cohort_semester_id: row.cohort_semester_id ? String(row.cohort_semester_id) : "",
+      section_ids: row.section_ids || [],
       is_active: row.is_active,
     });
   }
 
   const offeringFields = (autoFocusFirst = false) => <>
+    <label>
+      <span className="field-label">Cohort semester</span>
+      <select required className="w-full" value={form.cohort_semester_id} onChange={(event) => {
+        const cohort = (data["cohort-semesters"] || []).find((item) => item.id === Number(event.target.value));
+        setForm({ ...form, cohort_semester_id: event.target.value, intake_id: cohort ? String(cohort.intake_id) : "", batch_id: cohort ? String(cohort.batch_id) : "", semester_number: cohort ? String(cohort.semester_number) : "", section_ids: [] });
+      }}>
+        <option value="">Select cohort semester</option>
+        {(data["cohort-semesters"] || []).map((item) => {
+          const intake = (data.intakes || []).find((value) => value.id === item.intake_id);
+          const batch = (data.batches || []).find((value) => value.id === item.batch_id);
+          return <option key={item.id} value={item.id}>Semester {item.semester_number} — {batch?.name || `Batch ${item.batch_id}`} — {intake?.code || `Intake ${item.intake_id}`}</option>;
+        })}
+      </select>
+    </label>
     {["academic_module_id", "intake_id", "batch_id"].map((key, index) => {
       const label = key === "academic_module_id" ? "Module" : key === "intake_id" ? "Intake" : "Batch";
       const kind = key === "academic_module_id" ? "modules" : key === "intake_id" ? "intakes" : "batches";
@@ -125,10 +145,10 @@ export default function Page() {
       <input className="w-full" required type="number" min="1" value={form.semester_number} onChange={(event) => setForm({ ...form, semester_number: event.target.value })} />
     </label>
 
-    <section className="rounded-lg border border-slate-700 bg-slate-950/70 p-3 md:col-span-2" aria-label="Inherited sections">
-      <p className="text-sm font-medium text-slate-100">Inherited sections</p>
-      <p className="mt-1 text-sm text-slate-400">This module will be available to every matching section now and to matching sections added later.</p>
-      {cohortSections.length ? <div className="mt-3 flex flex-wrap gap-2">{cohortSections.map((section) => <Badge key={section.id} tone="neutral">{section.name}</Badge>)}</div> : <p className="mt-3 text-sm text-amber-300">No matching section exists yet. Future matching sections will inherit this offering.</p>}
+    <section className="rounded-lg border border-slate-700 bg-slate-950/70 p-3 md:col-span-2" aria-label="Offering sections">
+      <p className="text-sm font-medium text-slate-100">Sections taught</p>
+      <p className="mt-1 text-sm text-slate-400">Choose the sections that receive this course. If no sections exist yet, they can be added to the cohort later.</p>
+      {cohortSections.length ? <div className="mt-3 flex flex-wrap gap-3">{cohortSections.map((section) => <label key={section.id} className="flex items-center gap-2"><input type="checkbox" checked={form.section_ids.includes(section.id)} onChange={(event) => setForm({ ...form, section_ids: event.target.checked ? [...form.section_ids, section.id] : form.section_ids.filter((id: number) => id !== section.id) })} /><Badge tone="neutral">{section.name}</Badge></label>)}</div> : <p className="mt-3 text-sm text-amber-300">No sections exist for this cohort semester yet.</p>}
     </section>
 
     <label className="flex items-center gap-2 self-end">

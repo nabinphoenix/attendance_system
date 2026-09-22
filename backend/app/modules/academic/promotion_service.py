@@ -138,6 +138,8 @@ def ensure_student_enrollment(
     period = (
         db.get(CohortSemester, cohort_semester_id)
         if cohort_semester_id is not None
+        else db.get(CohortSemester, section.cohort_semester_id)
+        if section.cohort_semester_id is not None
         else period_for_context(
             db,
             section.intake_id,
@@ -164,10 +166,13 @@ def source_sections(db: Session, period: CohortSemester) -> list[Section]:
         select(Section)
         .where(
             Section.batch_id == period.batch_id,
-            or_(Section.intake_id == period.intake_id, Section.intake_id.is_(None)),
             or_(
-                Section.semester_number == period.semester_number,
-                Section.semester_number.is_(None),
+                Section.cohort_semester_id == period.id,
+                (
+                    Section.cohort_semester_id.is_(None)
+                    & or_(Section.intake_id == period.intake_id, Section.intake_id.is_(None))
+                    & or_(Section.semester_number == period.semester_number, Section.semester_number.is_(None))
+                ),
             ),
         )
         .order_by(Section.name, Section.id)
@@ -179,8 +184,14 @@ def target_sections(db: Session, period: CohortSemester) -> list[Section]:
         select(Section)
         .where(
             Section.batch_id == period.batch_id,
-            Section.intake_id == period.intake_id,
-            Section.semester_number == period.semester_number,
+            or_(
+                Section.cohort_semester_id == period.id,
+                (
+                    Section.cohort_semester_id.is_(None)
+                    & (Section.intake_id == period.intake_id)
+                    & (Section.semester_number == period.semester_number)
+                ),
+            ),
         )
         .order_by(Section.name, Section.id)
     ).all()
@@ -254,7 +265,7 @@ def _source_students(
 
 def validate_promotion_context(
     db: Session,
-    intake_id: int,
+    intake_id: int | None,
     batch_id: int,
     from_cohort_semester_id: int,
     to_cohort_semester_id: int,
@@ -266,10 +277,10 @@ def validate_promotion_context(
     target = db.get(CohortSemester, to_cohort_semester_id)
     if source is None or target is None:
         raise PromotionValidationError('Both cohort semesters are required')
-    if source.intake_id != intake_id or source.batch_id != batch_id:
-        raise PromotionValidationError('Source semester does not match intake and batch')
-    if target.intake_id != intake_id or target.batch_id != batch_id:
-        raise PromotionValidationError('Target semester does not match intake and batch')
+    if source.batch_id != batch_id or target.batch_id != batch_id:
+        raise PromotionValidationError('Both semesters must belong to the selected stable batch')
+    if intake_id is not None and source.intake_id != intake_id:
+        raise PromotionValidationError('The provided intake does not match the source semester')
     if target.semester_number != source.semester_number + 1:
         raise PromotionValidationError('Promotions must advance exactly one semester')
     if effective_date != target.start_date:
@@ -312,7 +323,7 @@ def validate_promotion_context(
 
 def preview_promotion(
     db: Session,
-    intake_id: int,
+    intake_id: int | None,
     batch_id: int,
     from_cohort_semester_id: int,
     to_cohort_semester_id: int,
@@ -352,7 +363,7 @@ def preview_promotion(
 def apply_promotion(
     db: Session,
     *,
-    intake_id: int,
+    intake_id: int | None,
     batch_id: int,
     from_cohort_semester_id: int,
     to_cohort_semester_id: int,
@@ -375,7 +386,7 @@ def apply_promotion(
     if errors:
         raise PromotionValidationError('; '.join(errors))
     run = PromotionRun(
-        intake_id=intake_id,
+        intake_id=source.intake_id,
         batch_id=batch_id,
         from_cohort_semester_id=source.id,
         to_cohort_semester_id=target.id,
@@ -453,10 +464,15 @@ def release_held_student(
     target_section = db.get(Section, target_section_id)
     if target is None or target_section is None:
         raise PromotionValidationError('Target semester or section not found')
-    if (
-        target_section.batch_id != target.batch_id
-        or target_section.intake_id != target.intake_id
-        or target_section.semester_number != target.semester_number
+    if target_section.batch_id != target.batch_id or (
+        target_section.cohort_semester_id is not None
+        and target_section.cohort_semester_id != target.id
+    ) or (
+        target_section.cohort_semester_id is None
+        and (
+            target_section.intake_id != target.intake_id
+            or target_section.semester_number != target.semester_number
+        )
     ):
         raise PromotionValidationError('Target section does not belong to the promotion target semester')
     source = db.get(StudentEnrollment, item.source_enrollment_id)
@@ -500,7 +516,6 @@ def process_due_promotions(db: Session, on_date: date | None = None) -> int:
         source = db.scalar(
             select(CohortSemester)
             .where(
-                CohortSemester.intake_id == target.intake_id,
                 CohortSemester.batch_id == target.batch_id,
                 CohortSemester.semester_number == target.semester_number - 1,
                 CohortSemester.end_date < target.start_date,
@@ -519,7 +534,7 @@ def process_due_promotions(db: Session, on_date: date | None = None) -> int:
         try:
             apply_promotion(
                 db,
-                intake_id=target.intake_id,
+                intake_id=source.intake_id,
                 batch_id=target.batch_id,
                 from_cohort_semester_id=source.id,
                 to_cohort_semester_id=target.id,

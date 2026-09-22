@@ -117,7 +117,7 @@ export default function AcademicSetupPage({ config }: { config: AcademicSetupCon
 
   const display = (row: Row, column: Column) => {
     const match = column.optionsEndpoint ? options[column.optionsEndpoint]?.find((item) => item.id === row[column.field]) : null;
-    return String(match ? match.name ?? match.code ?? "—" : row[column.field] ?? "—");
+    return String(match ? match.name ?? match.code ?? match.label ?? "—" : row[column.field] ?? "—");
   };
 
   const fields = (autoFocusFirst = false) => config.fields.map((field, index) => (
@@ -133,7 +133,7 @@ export default function AcademicSetupPage({ config }: { config: AcademicSetupCon
         >
           <option value="">Select {field.label.toLowerCase()}</option>
           {(options[field.optionsEndpoint] || []).map((option) => (
-            <option key={option.id} value={option.id}>{String(option.name ?? option.code ?? "")}</option>
+            <option key={option.id} value={option.id}>{String(option.name ?? option.code ?? option.label ?? "")}</option>
           ))}
         </select>
       ) : (

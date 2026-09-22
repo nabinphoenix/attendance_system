@@ -17,7 +17,7 @@ Environment=PYTHONUNBUFFERED=1
 Environment=PYTHONPATH=${APP_DIR}/backend/runtime-site-packages
 Environment=PROFILE_MEDIA_LOCAL_DIRECTORY=/var/lib/antimbench-api/profile-media
 EnvironmentFile=-/opt/elasticbeanstalk/deployment/env
-ExecStart=/usr/bin/python3.12 -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+ExecStart=/usr/bin/python3.12 -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --no-proxy-headers
 Restart=always
 RestartSec=5
 StateDirectory=antimbench-api

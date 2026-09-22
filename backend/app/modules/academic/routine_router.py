@@ -32,15 +32,15 @@ class RoomUpdate(BaseModel):
  latitude:float|None=Field(default=None,ge=-90,le=90);longitude:float|None=Field(default=None,ge=-180,le=180);geofence_radius_meters:float|None=Field(default=None,gt=0)
 class RoomRead(ORM):
  id:int;block_id:int;name:str;room_type:str;capacity:int;latitude:float|None;longitude:float|None;geofence_radius_meters:float|None
-class ModuleCreate(BaseModel):code:str;title:str;credits:int;semester_number:int
+class ModuleCreate(BaseModel):code:str;title:str;credits:int;semester_number:int|None=None
 class ModuleUpdate(BaseModel):code:str|None=None;title:str|None=None;credits:int|None=None;semester_number:int|None=None
-class ModuleRead(ORM):id:int;code:str;title:str;credits:int;semester_number:int
+class ModuleRead(ORM):id:int;code:str;title:str;credits:int;semester_number:int|None=None
 class ModuleOfferingCreate(BaseModel):
- academic_module_id:int;intake_id:int;batch_id:int;semester_number:int;section_ids:list[int]=Field(default_factory=list,description="Deprecated: cohort sections are inherited automatically.");is_active:bool=True
+ academic_module_id:int;intake_id:int;batch_id:int;semester_number:int;cohort_semester_id:int|None=None;section_ids:list[int]=Field(default_factory=list,description="Optional explicit sections; empty keeps legacy all-section inheritance.");is_active:bool=True
 class ModuleOfferingUpdate(BaseModel):
- academic_module_id:int|None=None;intake_id:int|None=None;batch_id:int|None=None;semester_number:int|None=None;section_ids:list[int]|None=Field(default=None,description="Deprecated: cohort sections are inherited automatically.");is_active:bool|None=None
+ academic_module_id:int|None=None;intake_id:int|None=None;batch_id:int|None=None;semester_number:int|None=None;cohort_semester_id:int|None=None;section_ids:list[int]|None=Field(default=None,description="Optional explicit sections; omit to keep current membership.");is_active:bool|None=None
 class ModuleOfferingRead(BaseModel):
- id:int;academic_module_id:int;module_code:str;module_title:str;intake_id:int;intake_code:str;batch_id:int;batch_name:str;semester_number:int;section_ids:list[int];section_names:list[str];is_active:bool
+ id:int;academic_module_id:int;module_code:str;module_title:str;intake_id:int;intake_code:str;batch_id:int;batch_name:str;semester_number:int;cohort_semester_id:int|None;section_ids:list[int];section_names:list[str];is_active:bool
 class ClassTypeCreate(BaseModel):name:str
 class ClassTypeUpdate(BaseModel):name:str|None=None
 class ClassTypeRead(ORM):id:int;name:str
@@ -48,12 +48,12 @@ class TimeSlotCreate(BaseModel):start_time:time;end_time:time;duration_label:str
 class TimeSlotUpdate(BaseModel):start_time:time|None=None;end_time:time|None=None;duration_label:str|None=None
 class TimeSlotRead(ORM):id:int;start_time:time;end_time:time;duration_label:str
 class RoutineCreate(BaseModel):
- intake_id:int;semester_number:int;section_id:int;module_id:int;class_type_id:int;teacher_id:int;room_id:int;day_of_week:int;time_slot_id:int
+ intake_id:int;semester_number:int;cohort_semester_id:int|None=None;section_id:int;module_id:int;class_type_id:int;teacher_id:int;room_id:int;day_of_week:int;time_slot_id:int
  section_ids:list[int]=[]
 class RoutineUpdate(BaseModel):
- intake_id:int|None=None;semester_number:int|None=None;section_id:int|None=None;module_id:int|None=None;class_type_id:int|None=None;teacher_id:int|None=None;room_id:int|None=None;day_of_week:int|None=None;time_slot_id:int|None=None;section_ids:list[int]|None=None
+ intake_id:int|None=None;semester_number:int|None=None;cohort_semester_id:int|None=None;section_id:int|None=None;module_id:int|None=None;class_type_id:int|None=None;teacher_id:int|None=None;room_id:int|None=None;day_of_week:int|None=None;time_slot_id:int|None=None;section_ids:list[int]|None=None
 class RoutineRead(ORM):
- id:int;intake_id:int;semester_number:int;section_id:int;module_id:int;module_offering_id:int;class_type_id:int;teacher_id:int;room_id:int;day_of_week:int;time_slot_id:int
+ id:int;intake_id:int;semester_number:int;cohort_semester_id:int|None;section_id:int;module_id:int;module_offering_id:int;class_type_id:int;teacher_id:int;room_id:int;day_of_week:int;time_slot_id:int
  section_ids:list[int]=[]; section_names:list[str]=[]
 class RoutinePage(BaseModel):
  items:list[RoutineRead];total:int;page:int;page_size:int
@@ -148,8 +148,14 @@ def valid_routine(db,p:RoutineCreate):
  for section_id in payload_section_ids(p):
   section=get(db,Section,section_id,"Section");sections.append(section)
   if (section.intake_id is not None and section.intake_id!=intake.id) or (section.semester_number is not None and section.semester_number!=p.semester_number):raise HTTPException(422,"Section does not belong to the selected intake and semester")
- if module.semester_number!=p.semester_number:raise HTTPException(422,"Module does not belong to the selected semester")
- return resolve_active_module_offering(db,module=module,intake=intake,semester_number=p.semester_number,sections=sections)
+ cohort_semester_id=p.cohort_semester_id
+ section_period_ids={item.cohort_semester_id for item in sections if item.cohort_semester_id is not None}
+ if cohort_semester_id is None and len(section_period_ids)==1:cohort_semester_id=next(iter(section_period_ids))
+ if cohort_semester_id is not None:
+  period=get(db,CohortSemester,cohort_semester_id,"Cohort semester")
+  if period.intake_id!=intake.id or period.semester_number!=p.semester_number:raise HTTPException(422,"Cohort semester does not match the selected intake and semester")
+  if any(item.cohort_semester_id not in (None,period.id) for item in sections):raise HTTPException(422,"All routine sections must belong to the selected cohort semester")
+ return resolve_active_module_offering(db,module=module,intake=intake,semester_number=p.semester_number,sections=sections,cohort_semester_id=cohort_semester_id)
 @router.post("/intakes",response_model=IntakeRead)
 def create_intake(p:IntakeCreate,user:Annotated[User,Depends(require_role("admin"))],db:DbSession):return save(db,Intake(**p.model_dump()),user,"intake.created","intake")
 @router.get("/intakes",response_model=list[IntakeRead])
@@ -200,7 +206,7 @@ def module_offering_query():
  return select(ModuleOffering).options(joinedload(ModuleOffering.academic_module),joinedload(ModuleOffering.intake),joinedload(ModuleOffering.batch),joinedload(ModuleOffering.sections))
 def module_offering_read(offering:ModuleOffering)->ModuleOfferingRead:
  sections=sorted(offering.sections,key=lambda section:(section.name,section.id))
- return ModuleOfferingRead(id=offering.id,academic_module_id=offering.academic_module_id,module_code=offering.academic_module.code,module_title=offering.academic_module.title,intake_id=offering.intake_id,intake_code=offering.intake.code,batch_id=offering.batch_id,batch_name=offering.batch.name,semester_number=offering.semester_number,section_ids=[section.id for section in sections],section_names=[section.name for section in sections],is_active=offering.is_active)
+ return ModuleOfferingRead(id=offering.id,academic_module_id=offering.academic_module_id,module_code=offering.academic_module.code,module_title=offering.academic_module.title,intake_id=offering.intake_id,intake_code=offering.intake.code,batch_id=offering.batch_id,batch_name=offering.batch.name,semester_number=offering.semester_number,cohort_semester_id=offering.cohort_semester_id,section_ids=[section.id for section in sections],section_names=[section.name for section in sections],is_active=offering.is_active)
 def get_module_offering(db,id:int)->ModuleOffering:
  offering=db.scalar(module_offering_query().where(ModuleOffering.id==id))
  if not offering:raise HTTPException(404,"Module offering not found")
@@ -208,24 +214,25 @@ def get_module_offering(db,id:int)->ModuleOffering:
 
 @router.post("/module-offerings",response_model=ModuleOfferingRead)
 def create_module_offering(p:ModuleOfferingCreate,user:Annotated[User,Depends(require_role("admin"))],db:DbSession):
- validate_offering_context(db,academic_module_id=p.academic_module_id,intake_id=p.intake_id,batch_id=p.batch_id,semester_number=p.semester_number,section_ids=set())
+ validate_offering_context(db,academic_module_id=p.academic_module_id,intake_id=p.intake_id,batch_id=p.batch_id,semester_number=p.semester_number,cohort_semester_id=p.cohort_semester_id,section_ids=set(p.section_ids))
  if db.scalar(select(ModuleOffering.id).where(ModuleOffering.academic_module_id==p.academic_module_id,ModuleOffering.intake_id==p.intake_id,ModuleOffering.batch_id==p.batch_id,ModuleOffering.semester_number==p.semester_number)):
   raise HTTPException(409,"A module offering already exists for this module, intake, batch, and semester")
- period=period_for_context(db,p.intake_id,p.batch_id,p.semester_number)
- offering=ModuleOffering(academic_module_id=p.academic_module_id,intake_id=p.intake_id,batch_id=p.batch_id,semester_number=p.semester_number,cohort_semester_id=period.id if period else None,is_active=p.is_active)
+ period=get(db,CohortSemester,p.cohort_semester_id,"Cohort semester") if p.cohort_semester_id is not None else period_for_context(db,p.intake_id,p.batch_id,p.semester_number)
+ offering=ModuleOffering(academic_module_id=p.academic_module_id,intake_id=p.intake_id,batch_id=p.batch_id,semester_number=p.semester_number,cohort_semester_id=period.id if period else None,inherit_all_sections=not bool(p.section_ids),is_active=p.is_active)
  try:
-  db.add(offering);db.flush();sections=synchronize_offering_sections(db,offering);after=p.model_dump(exclude={"section_ids"})|{"inherited_section_ids":[section.id for section in sections]};log_audit(db,user.id,"module_offering.created","module_offering",offering.id,None,after);db.commit()
+  db.add(offering);db.flush();sections=synchronize_offering_sections(db,offering,set(p.section_ids) if p.section_ids else None);after=p.model_dump(exclude={"section_ids"})|{"section_ids":[section.id for section in sections]};log_audit(db,user.id,"module_offering.created","module_offering",offering.id,None,after);db.commit()
  except IntegrityError:
   db.rollback();raise HTTPException(409,"A module offering already exists for this module, intake, batch, and semester")
  return module_offering_read(get_module_offering(db,offering.id))
 
 @router.get("/module-offerings",response_model=list[ModuleOfferingRead])
-def module_offerings(db:DbSession,academic_module_id:int|None=None,intake_id:int|None=None,batch_id:int|None=None,semester_number:int|None=None,section_id:int|None=None,is_active:bool|None=None):
+def module_offerings(db:DbSession,academic_module_id:int|None=None,intake_id:int|None=None,batch_id:int|None=None,semester_number:int|None=None,cohort_semester_id:int|None=None,section_id:int|None=None,is_active:bool|None=None):
  q=module_offering_query()
  if academic_module_id is not None:q=q.where(ModuleOffering.academic_module_id==academic_module_id)
  if intake_id is not None:q=q.where(ModuleOffering.intake_id==intake_id)
  if batch_id is not None:q=q.where(ModuleOffering.batch_id==batch_id)
  if semester_number is not None:q=q.where(ModuleOffering.semester_number==semester_number)
+ if cohort_semester_id is not None:q=q.where(ModuleOffering.cohort_semester_id==cohort_semester_id)
  if section_id is not None:q=q.join(ModuleOffering.sections).where(Section.id==section_id)
  if is_active is not None:q=q.where(ModuleOffering.is_active==is_active)
  return [module_offering_read(offering) for offering in db.scalars(q.order_by(ModuleOffering.id)).unique().all()]
@@ -235,18 +242,20 @@ def module_offering(id:int,db:DbSession):return module_offering_read(get_module_
 
 @router.patch("/module-offerings/{id}",response_model=ModuleOfferingRead)
 def update_module_offering(id:int,p:ModuleOfferingUpdate,user:Annotated[User,Depends(require_role("admin"))],db:DbSession):
- offering=get_module_offering(db,id);values=p.model_dump(exclude_none=True);values.pop("section_ids",None);identity={key for key in ("academic_module_id","intake_id","batch_id","semester_number") if key in values}
+ offering=get_module_offering(db,id);values=p.model_dump(exclude_none=True);requested_section_ids=values.pop("section_ids",None);identity={key for key in ("academic_module_id","intake_id","batch_id","semester_number","cohort_semester_id") if key in values}
  if identity and db.scalar(select(RoutineEntry.id).where(RoutineEntry.module_offering_id==id)):
   changed=any(values[key]!=getattr(offering,key) for key in identity)
   if changed:raise HTTPException(409,"Cannot change a module offering context while routine entries are linked to it")
- module_id=values.get("academic_module_id",offering.academic_module_id);intake_id=values.get("intake_id",offering.intake_id);batch_id=values.get("batch_id",offering.batch_id);semester=values.get("semester_number",offering.semester_number)
- validate_offering_context(db,academic_module_id=module_id,intake_id=intake_id,batch_id=batch_id,semester_number=semester,section_ids=set())
+ module_id=values.get("academic_module_id",offering.academic_module_id);intake_id=values.get("intake_id",offering.intake_id);batch_id=values.get("batch_id",offering.batch_id);semester=values.get("semester_number",offering.semester_number);cohort_id=values.get("cohort_semester_id",offering.cohort_semester_id)
+ validate_offering_context(db,academic_module_id=module_id,intake_id=intake_id,batch_id=batch_id,semester_number=semester,cohort_semester_id=cohort_id,section_ids=set(requested_section_ids or set()))
  duplicate=db.scalar(select(ModuleOffering.id).where(ModuleOffering.academic_module_id==module_id,ModuleOffering.intake_id==intake_id,ModuleOffering.batch_id==batch_id,ModuleOffering.semester_number==semester,ModuleOffering.id!=id))
  if duplicate:raise HTTPException(409,"A module offering already exists for this module, intake, batch, and semester")
- for key in ("academic_module_id","intake_id","batch_id","semester_number","is_active"):
+ if requested_section_ids is not None:
+  offering.inherit_all_sections=not bool(requested_section_ids)
+ for key in ("academic_module_id","intake_id","batch_id","semester_number","cohort_semester_id","is_active"):
   if key in values:setattr(offering,key,values[key])
  try:
-  db.flush();sections=synchronize_offering_sections(db,offering);after=values|{"inherited_section_ids":[section.id for section in sections]};log_audit(db,user.id,"module_offering.updated","module_offering",offering.id,None,after);db.commit()
+  db.flush();sections=synchronize_offering_sections(db,offering,set(requested_section_ids) if requested_section_ids is not None else None);after=values|{"section_ids":[section.id for section in sections]};log_audit(db,user.id,"module_offering.updated","module_offering",offering.id,None,after);db.commit()
  except IntegrityError:
   db.rollback();raise HTTPException(409,"A module offering already exists for this module, intake, batch, and semester")
  return module_offering_read(get_module_offering(db,id))

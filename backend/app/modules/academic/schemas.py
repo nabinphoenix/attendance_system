@@ -9,9 +9,9 @@ class BatchCreate(BaseModel): name: str; program_id: int
 class BatchRead(ORMModel): id: int; name: str; program_id: int
 class BatchUpdate(BaseModel): name: str | None = None; program_id: int | None = None
 class BatchPage(BaseModel): items: list[BatchRead]; total: int; page: int; page_size: int
-class SectionCreate(BaseModel): name: str; batch_id: int; intake_id: int | None = None; semester_number: int | None = None; combined_with: str | None = None
-class SectionRead(ORMModel): id: int; name: str; batch_id: int; intake_id: int | None = None; semester_number: int | None = None; combined_with: str | None = None
-class SectionUpdate(BaseModel): name: str | None = None; batch_id: int | None = None; intake_id: int | None = None; semester_number: int | None = None; combined_with: str | None = None
+class SectionCreate(BaseModel): name: str; batch_id: int; intake_id: int | None = None; semester_number: int | None = None; cohort_semester_id: int | None = None; combined_with: str | None = None
+class SectionRead(ORMModel): id: int; name: str; batch_id: int; intake_id: int | None = None; semester_number: int | None = None; cohort_semester_id: int | None = None; combined_with: str | None = None
+class SectionUpdate(BaseModel): name: str | None = None; batch_id: int | None = None; intake_id: int | None = None; semester_number: int | None = None; cohort_semester_id: int | None = None; combined_with: str | None = None
 class SectionPage(BaseModel): items: list[SectionRead]; total: int; page: int; page_size: int
 class SubjectCreate(BaseModel): name: str; code: str; section_id: int
 class SubjectRead(ORMModel): id: int; name: str; code: str; section_id: int

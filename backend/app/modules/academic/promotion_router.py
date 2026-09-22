@@ -21,7 +21,7 @@ from .promotion_service import (
 class CohortSemesterCreate(BaseModel):
     intake_id: int
     batch_id: int
-    semester_number: int = Field(ge=1)
+    semester_number: int = Field(ge=1, le=6)
     attempt_number: int = Field(default=1, ge=1)
     start_date: date
     end_date: date
@@ -31,10 +31,21 @@ class CohortSemesterCreate(BaseModel):
 class CohortSemesterRead(CohortSemesterCreate):
     model_config = ConfigDict(from_attributes=True)
     id: int
+    intake_code: str | None = None
+    batch_name: str | None = None
+    label: str | None = None
+
+
+class CohortSemesterUpdate(BaseModel):
+    start_date: date | None = None
+    end_date: date | None = None
+    status: str | None = None
 
 
 class PromotionRequest(BaseModel):
-    intake_id: int
+    # Retained for old clients as the source-intake context. A cohort may move
+    # to a new intake after Semester 2 or Semester 4.
+    intake_id: int | None = None
     batch_id: int
     from_cohort_semester_id: int
     to_cohort_semester_id: int
@@ -101,7 +112,19 @@ router = APIRouter(
 
 
 def _semester_read(semester: CohortSemester) -> CohortSemesterRead:
-    return CohortSemesterRead.model_validate(semester)
+    return CohortSemesterRead(
+        id=semester.id,
+        intake_id=semester.intake_id,
+        batch_id=semester.batch_id,
+        semester_number=semester.semester_number,
+        attempt_number=semester.attempt_number,
+        start_date=semester.start_date,
+        end_date=semester.end_date,
+        status=semester.status,
+        intake_code=semester.intake.code if semester.intake else None,
+        batch_name=semester.batch.name if semester.batch else None,
+        label=f'Semester {semester.semester_number} — {semester.batch.name if semester.batch else semester.batch_id} — {semester.intake.code if semester.intake else semester.intake_id}',
+    )
 
 
 def _preview_response(source, target, students, errors) -> PromotionPreviewRead:
@@ -153,7 +176,7 @@ def _run_read(db, run: PromotionRun) -> PromotionRunRead:
 
 @router.get('/cohort-semesters', response_model=list[CohortSemesterRead])
 def cohort_semesters(db: DbSession):
-    return db.scalars(
+    semesters = db.scalars(
         select(CohortSemester).order_by(
             CohortSemester.start_date,
             CohortSemester.intake_id,
@@ -161,6 +184,7 @@ def cohort_semesters(db: DbSession):
             CohortSemester.semester_number,
         )
     ).all()
+    return [_semester_read(semester) for semester in semesters]
 
 
 @router.post('/cohort-semesters', response_model=CohortSemesterRead, status_code=201)
@@ -192,7 +216,30 @@ def create_cohort_semester(
     log_audit(db, actor.id, 'cohort_semester.created', 'cohort_semester', semester.id, None, payload.model_dump(mode='json'))
     db.commit()
     db.refresh(semester)
-    return semester
+    return _semester_read(semester)
+
+
+@router.patch('/cohort-semesters/{semester_id}', response_model=CohortSemesterRead)
+def update_cohort_semester(
+    semester_id: int,
+    payload: CohortSemesterUpdate,
+    actor: Annotated[User, Depends(require_role('admin'))],
+    db: DbSession,
+):
+    semester = db.get(CohortSemester, semester_id)
+    if semester is None:
+        raise HTTPException(404, 'Cohort semester not found')
+    values = payload.model_dump(exclude_none=True)
+    start_date = values.get('start_date', semester.start_date)
+    end_date = values.get('end_date', semester.end_date)
+    if start_date > end_date:
+        raise HTTPException(422, 'Start date must be on or before end date')
+    for key, value in values.items():
+        setattr(semester, key, value)
+    log_audit(db, actor.id, 'cohort_semester.updated', 'cohort_semester', semester.id, None, values)
+    db.commit()
+    db.refresh(semester)
+    return _semester_read(semester)
 
 
 @router.post('/promotions/preview', response_model=PromotionPreviewRead)

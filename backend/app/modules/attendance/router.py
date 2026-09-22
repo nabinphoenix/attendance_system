@@ -1,8 +1,9 @@
 import secrets
+from ipaddress import ip_address, ip_network
 from datetime import UTC, date, datetime, timedelta
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
@@ -14,12 +15,14 @@ from app.modules.course_completion.models import CoursePlan
 from app.modules.identity.models import User
 from app.modules.operations.models import AuditLog
 from app.modules.operations.service import log_audit
+from app.modules.platform.models import College
 from app.modules.scheduling.models import ClassSession, OverrideStatus, ScheduleOverride, SessionStatus
 from app.modules.scheduling.service import approved_routine_override, resolve_effective_class, resolve_session_schedule, session_section_ids
 from app.modules.academic.promotion_service import routine_is_active_on_date, student_section_at, students_for_sections_as_of
 
 from .models import (
     AttendanceChange,
+    CampusNetwork,
     AttendanceChallenge,
     AttendanceMethod,
     AttendanceRecord,
@@ -29,12 +32,18 @@ from .models import (
     LeaveRequest,
     PendingAttendanceVerification,
 )
+from .network import active_campus_cidrs, classify_ip, get_client_ip
 from .schemas import (
+    CampusNetworkCreate,
+    CampusNetworkRead,
     CheckInExceptionRead,
     ChallengeConfirmationRequest,
     CheckInRequest,
     CheckInResponse,
     ExceptionDecision,
+    CurrentNetworkConfirm,
+    NetworkPolicyRead,
+    NetworkPolicyUpdate,
     QRResponse,
     RosterItem,
     StatusChange,
@@ -43,6 +52,117 @@ from .schemas import (
 from .service import QRClaims, QRValidationError, challenge_is_current, classroom_code_matches, distance_meters, issue_qr_challenge, utc, validate_qr_token, verification_token_digest
 
 router = APIRouter(tags=["attendance"])
+
+
+# TODO: Remove this temporary proxy-chain diagnostics endpoint after production verification.
+@router.get("/debug/ip", dependencies=[Depends(require_role("super_admin"))])
+def debug_ip(request: Request) -> dict[str, str | None]:
+    return {
+        "client_host": request.client.host if request.client else None,
+        "x_forwarded_for": request.headers.get("x-forwarded-for"),
+        "x_real_ip": request.headers.get("x-real-ip"),
+        "cf_connecting_ip": request.headers.get("cf-connecting-ip"),
+        "computed": get_client_ip(request),
+    }
+
+
+def scoped_college_id(user: User) -> int:
+    college_id = getattr(user, "active_college_id", None) or user.college_id
+    if college_id is None:
+        raise HTTPException(400, "Select a college before managing campus networks")
+    return college_id
+
+
+def normalize_cidr(value: str, force: bool) -> str:
+    try:
+        network = ip_network(value.strip(), strict=False)
+    except ValueError as exc:
+        raise HTTPException(422, "A valid IPv4 or IPv6 CIDR is required") from exc
+    minimum_prefix = 16 if network.version == 4 else 48
+    if network.prefixlen < minimum_prefix and not force:
+        raise HTTPException(422, f"Network ranges wider than /{minimum_prefix} require force=true")
+    return str(network)
+
+
+def save_campus_network(db, user: User, label: str, cidr: str, force: bool) -> CampusNetwork:
+    label = label.strip()
+    if not label:
+        raise HTTPException(422, "A network label is required")
+    college_id = scoped_college_id(user)
+    network = CampusNetwork(
+        college_id=college_id,
+        label=label,
+        cidr=normalize_cidr(cidr, force),
+        created_by=user.id,
+        is_active=True,
+    )
+    db.add(network)
+    db.flush()
+    log_audit(db, user.id, "campus_network.added", "campus_network", network.id, None, {"label": network.label, "cidr": network.cidr})
+    db.commit()
+    db.refresh(network)
+    return network
+
+
+@router.get("/campus-networks", response_model=list[CampusNetworkRead])
+def list_campus_networks(user: Annotated[User, Depends(require_role("admin"))], db: DbSession):
+    return db.scalars(
+        select(CampusNetwork).order_by(CampusNetwork.is_active.desc(), CampusNetwork.created_at.desc(), CampusNetwork.id.desc())
+    ).all()
+
+
+@router.post("/campus-networks", response_model=CampusNetworkRead, status_code=201)
+def add_campus_network(payload: CampusNetworkCreate, user: Annotated[User, Depends(require_role("admin"))], db: DbSession):
+    return save_campus_network(db, user, payload.label, payload.cidr, payload.force)
+
+
+@router.post("/campus-networks/{network_id}/deactivate", response_model=CampusNetworkRead)
+def deactivate_campus_network(network_id: int, user: Annotated[User, Depends(require_role("admin"))], db: DbSession):
+    college_id = scoped_college_id(user)
+    network = db.scalar(select(CampusNetwork).where(CampusNetwork.id == network_id, CampusNetwork.college_id == college_id))
+    if not network:
+        raise HTTPException(404, "Campus network not found")
+    if network.is_active:
+        network.is_active = False
+        log_audit(db, user.id, "campus_network.deactivated", "campus_network", network.id, {"is_active": True}, {"is_active": False})
+        db.commit()
+        db.refresh(network)
+    return network
+
+
+@router.get("/campus-networks/current")
+def detect_current_network(request: Request, user: Annotated[User, Depends(require_role("admin"))]) -> dict[str, str | None]:
+    return {"detected_ip": get_client_ip(request)}
+
+
+@router.post("/campus-networks/current/confirm", response_model=CampusNetworkRead, status_code=201)
+def confirm_current_network(payload: CurrentNetworkConfirm, request: Request, user: Annotated[User, Depends(require_role("admin"))], db: DbSession):
+    detected_ip = get_client_ip(request)
+    if detected_ip is None:
+        raise HTTPException(400, "The current client IP could not be determined")
+    address = ip_address(detected_ip)
+    host_cidr = f"{detected_ip}/{32 if address.version == 4 else 128}"
+    return save_campus_network(db, user, payload.label, host_cidr, False)
+
+
+@router.get("/campus-networks/policy", response_model=NetworkPolicyRead)
+def get_network_policy(user: Annotated[User, Depends(require_role("admin"))], db: DbSession):
+    college = db.get(College, scoped_college_id(user))
+    if not college:
+        raise HTTPException(404, "College not found")
+    return {"ip_policy": college.ip_policy}
+
+
+@router.patch("/campus-networks/policy", response_model=NetworkPolicyRead)
+def update_network_policy(payload: NetworkPolicyUpdate, user: Annotated[User, Depends(require_role("admin"))], db: DbSession):
+    college = db.get(College, scoped_college_id(user))
+    if not college:
+        raise HTTPException(404, "College not found")
+    before = college.ip_policy
+    college.ip_policy = payload.ip_policy
+    log_audit(db, user.id, "college.ip_policy_changed", "college", college.id, {"ip_policy": before}, {"ip_policy": college.ip_policy})
+    db.commit()
+    return {"ip_policy": college.ip_policy}
 
 
 def teacher_session(db, user: User, session_id: int) -> ClassSession:
@@ -128,6 +248,14 @@ def current_challenge(db, session: ClassSession, claims: QRClaims) -> Attendance
     return challenge
 
 
+def session_ip_status(db, session: ClassSession, client_ip: str | None) -> str:
+    return classify_ip(
+        client_ip,
+        active_campus_cidrs(db, session.college_id),
+        session.teacher_ip,
+        session.teacher_ip_status,
+    )
+
 def pending_attempt(
     db,
     session: ClassSession,
@@ -140,6 +268,8 @@ def pending_attempt(
     accuracy: float | None = None,
     distance: float | None = None,
     radius: float | None = None,
+    client_ip: str | None = None,
+    ip_status: str = "unknown",
 ) -> CheckInAttempt:
     latest = db.scalar(
         select(CheckInAttempt)
@@ -166,6 +296,8 @@ def pending_attempt(
         distance_meters=distance,
         allowed_radius_meters=radius,
         geofence_pass=False,
+        client_ip=client_ip,
+        ip_status=ip_status,
     )
     db.add(attempt)
     db.flush()
@@ -228,6 +360,7 @@ def teacher_qr_response(id: int, user: User, db, *, force: bool = False) -> QRRe
         self_checkin_closes_at=self_checkin_closes_at(session),
         classroom_code=code,
         challenge_id=challenge.id,
+        teacher_ip_status=session.teacher_ip_status,
     )
 
 
@@ -242,7 +375,7 @@ def regenerate_challenge(id: int, user: Annotated[User, Depends(require_role("te
 
 
 @router.post("/check-ins", response_model=CheckInResponse)
-def check_in(p: CheckInRequest, user: Annotated[User, Depends(require_role("student"))], db: DbSession):
+def check_in(request: Request, p: CheckInRequest, user: Annotated[User, Depends(require_role("student"))], db: DbSession):
     """Validate a QR scan and create a single-use pending classroom-code verification."""
 
     student = student_for_user(db, user)
@@ -266,8 +399,11 @@ def check_in(p: CheckInRequest, user: Annotated[User, Depends(require_role("stud
     if existing:
         raise HTTPException(409, "ALREADY_CHECKED_IN")
 
+    client_ip = get_client_ip(request)
+    ip_status = session_ip_status(db, session, client_ip)
+
     if p.location_failure_reason:
-        pending_attempt(db, session, student, claims, p.location_failure_reason)
+        pending_attempt(db, session, student, claims, p.location_failure_reason, client_ip=client_ip, ip_status=ip_status)
         log_audit(db, user.id, "attendance.check_in_pending", "class_session", session.id, None, {"reason": p.location_failure_reason})
         db.commit()
         return pending_response(session, db, p.location_failure_reason)
@@ -275,7 +411,7 @@ def check_in(p: CheckInRequest, user: Annotated[User, Depends(require_role("stud
         raise HTTPException(422, "Location coordinates and accuracy are required")
     if p.accuracy > settings.geolocation_max_accuracy_meters:
         reason = "LOW_LOCATION_ACCURACY"
-        pending_attempt(db, session, student, claims, reason, latitude=p.latitude, longitude=p.longitude, accuracy=p.accuracy)
+        pending_attempt(db, session, student, claims, reason, latitude=p.latitude, longitude=p.longitude, accuracy=p.accuracy, client_ip=client_ip, ip_status=ip_status)
         log_audit(db, user.id, "attendance.check_in_pending", "class_session", session.id, None, {"reason": reason})
         db.commit()
         return pending_response(session, db, reason)
@@ -289,14 +425,14 @@ def check_in(p: CheckInRequest, user: Annotated[User, Depends(require_role("stud
         radius = settings.geofence_radius_meters
     else:
         reason = "SESSION_GEOFENCE_NOT_CONFIGURED"
-        pending_attempt(db, session, student, claims, reason, latitude=p.latitude, longitude=p.longitude, accuracy=p.accuracy)
+        pending_attempt(db, session, student, claims, reason, latitude=p.latitude, longitude=p.longitude, accuracy=p.accuracy, client_ip=client_ip, ip_status=ip_status)
         log_audit(db, user.id, "attendance.check_in_pending", "class_session", session.id, None, {"reason": reason})
         db.commit()
         return pending_response(session, db, reason)
     distance = distance_meters(p.latitude, p.longitude, center_latitude, center_longitude)
     if distance > radius:
         reason = "OUTSIDE_GEOFENCE"
-        pending_attempt(db, session, student, claims, reason, latitude=p.latitude, longitude=p.longitude, accuracy=p.accuracy, distance=distance, radius=radius)
+        pending_attempt(db, session, student, claims, reason, latitude=p.latitude, longitude=p.longitude, accuracy=p.accuracy, distance=distance, radius=radius, client_ip=client_ip, ip_status=ip_status)
         log_audit(db, user.id, "attendance.check_in_pending", "class_session", session.id, None, {"reason": reason, "distance_meters": distance})
         db.commit()
         return pending_response(session, db, reason)
@@ -331,8 +467,25 @@ def check_in(p: CheckInRequest, user: Annotated[User, Depends(require_role("stud
         expires_at=verification_expires_at,
     )
     db.add(verification)
+    db.add(
+        CheckInAttempt(
+            class_session_id=session.id,
+            student_id=student.id,
+            status=CheckInAttemptStatus.PENDING,
+            failure_reason=None,
+            qr_version=claims.version,
+            latitude=p.latitude,
+            longitude=p.longitude,
+            accuracy_meters=p.accuracy,
+            distance_meters=distance,
+            allowed_radius_meters=radius,
+            geofence_pass=True,
+            client_ip=client_ip,
+            ip_status=ip_status,
+        )
+    )
     db.flush()
-    log_audit(db, user.id, "attendance.qr_scanned", "pending_attendance_verification", verification.id, None, {"class_session_id": session.id, "challenge_id": challenge.id})
+    log_audit(db, user.id, "attendance.qr_scanned", "pending_attendance_verification", verification.id, None, {"class_session_id": session.id, "challenge_id": challenge.id, "client_ip": client_ip, "ip_status": ip_status})
     db.commit()
     title, _, room, start, _ = session_metadata(session, db)
     return CheckInResponse(
@@ -348,7 +501,7 @@ def check_in(p: CheckInRequest, user: Annotated[User, Depends(require_role("stud
 
 
 @router.post("/check-ins/confirm", response_model=CheckInResponse)
-def confirm_check_in(p: ChallengeConfirmationRequest, user: Annotated[User, Depends(require_role("student"))], db: DbSession):
+def confirm_check_in(request: Request, p: ChallengeConfirmationRequest, user: Annotated[User, Depends(require_role("student"))], db: DbSession):
     student = student_for_user(db, user)
     pending = db.scalar(
         select(PendingAttendanceVerification)
@@ -384,13 +537,29 @@ def confirm_check_in(p: ChallengeConfirmationRequest, user: Annotated[User, Depe
         pending.consumed_at = now
         db.commit()
         raise HTTPException(409, "ALREADY_CHECKED_IN")
+    confirm_client_ip = get_client_ip(request)
+    confirm_ip_status = session_ip_status(db, session, confirm_client_ip)
+    attempt = db.scalar(
+        select(CheckInAttempt)
+        .where(
+            CheckInAttempt.class_session_id == session.id,
+            CheckInAttempt.student_id == student.id,
+            CheckInAttempt.status == CheckInAttemptStatus.PENDING,
+            CheckInAttempt.failure_reason.is_(None),
+        )
+        .order_by(CheckInAttempt.created_at.desc())
+        .with_for_update()
+    )
+    if attempt:
+        attempt.confirm_client_ip = confirm_client_ip
+        attempt.confirm_ip_status = confirm_ip_status
     if len(p.code) != settings.attendance_code_length or not classroom_code_matches(challenge, p.code):
         pending.failed_attempts += 1
         remaining = settings.attendance_max_code_attempts - pending.failed_attempts
         exhausted = remaining <= 0
         if exhausted:
             pending.invalidated_at = now
-        log_audit(db, user.id, "attendance.challenge_failed", "pending_attendance_verification", pending.id, None, {"failed_attempts": pending.failed_attempts})
+        log_audit(db, user.id, "attendance.challenge_failed", "pending_attendance_verification", pending.id, None, {"failed_attempts": pending.failed_attempts, "confirm_client_ip": confirm_client_ip, "confirm_ip_status": confirm_ip_status})
         db.commit()
         if exhausted:
             raise HTTPException(400, "VERIFICATION_FAILED")
@@ -401,14 +570,16 @@ def confirm_check_in(p: ChallengeConfirmationRequest, user: Annotated[User, Depe
         student_id=student.id,
         status=AttendanceStatus.PRESENT,
         method=AttendanceMethod.QR_GEOFENCE,
+        ip_status=confirm_ip_status,
+        network_method="public_ip",
         check_in_time=now,
     )
     try:
         db.add(record)
         db.flush()
         pending.consumed_at = now
-        db.add(
-            CheckInAttempt(
+        if attempt is None:
+            attempt = CheckInAttempt(
                 class_session_id=session.id,
                 student_id=student.id,
                 status=CheckInAttemptStatus.ACCEPTED,
@@ -419,9 +590,15 @@ def confirm_check_in(p: ChallengeConfirmationRequest, user: Annotated[User, Depe
                 distance_meters=pending.distance_meters,
                 allowed_radius_meters=pending.allowed_radius_meters,
                 geofence_pass=True,
+                confirm_client_ip=confirm_client_ip,
+                confirm_ip_status=confirm_ip_status,
             )
-        )
-        log_audit(db, user.id, "attendance.challenge_confirmed", "attendance_record", record.id, None, {"class_session_id": session.id, "challenge_id": challenge.id, "status": "present"})
+            db.add(attempt)
+        else:
+            attempt.status = CheckInAttemptStatus.ACCEPTED
+            attempt.confirm_client_ip = confirm_client_ip
+            attempt.confirm_ip_status = confirm_ip_status
+        log_audit(db, user.id, "attendance.challenge_confirmed", "attendance_record", record.id, None, {"class_session_id": session.id, "challenge_id": challenge.id, "status": "present", "confirm_client_ip": confirm_client_ip, "confirm_ip_status": confirm_ip_status})
         db.commit()
     except IntegrityError as exc:
         db.rollback()
@@ -492,6 +669,7 @@ def roster_rows_for_students(session_id: int | None, students: list[Student], db
                 distance_meters=latest_attempt.distance_meters if latest_attempt else None,
                 allowed_radius_meters=latest_attempt.allowed_radius_meters if latest_attempt else None,
                 location_accuracy_meters=latest_attempt.accuracy_meters if latest_attempt else None,
+                ip_status=record.ip_status if record else (latest_attempt.ip_status if latest_attempt else "unknown"),
             )
         )
     return result
@@ -696,6 +874,7 @@ def apply_manual_status(db, session: ClassSession, student: Student, status: str
         student_name=student.user.name if student.user else student.name or student.roll_number,
         roll_number=student.roll_number,
         status=record.status.value,
+        ip_status=record.ip_status,
     )
 
 
@@ -824,6 +1003,7 @@ def decide_exception(
         accuracy_meters=attempt.accuracy_meters,
         created_at=attempt.created_at,
         status=attempt.status.value,
+        ip_status=attempt.ip_status,
     )
 
 

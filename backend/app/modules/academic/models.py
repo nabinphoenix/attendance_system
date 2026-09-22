@@ -35,7 +35,9 @@ class CohortSemester(CollegeOwned, Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     intake_id: Mapped[int] = mapped_column(ForeignKey('intakes.id'))
     batch_id: Mapped[int] = mapped_column(ForeignKey('batches.id'))
-    semester_number: Mapped[int] = mapped_column(Integer)
+    # Optional legacy metadata only. The authoritative semester for delivery
+    # is ModuleOffering.cohort_semester_id.
+    semester_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
     attempt_number: Mapped[int] = mapped_column(Integer, default=1, server_default='1')
     start_date: Mapped[date] = mapped_column(Date)
     end_date: Mapped[date] = mapped_column(Date)
@@ -95,6 +97,7 @@ class ModuleOffering(CollegeOwned, Base):
     cohort_semester_id: Mapped[int | None] = mapped_column(
         ForeignKey('cohort_semesters.id'), nullable=True, index=True
     )
+    inherit_all_sections: Mapped[bool] = mapped_column(Boolean, default=True, server_default='true')
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
 
     academic_module: Mapped[AcademicModule] = relationship()
@@ -138,7 +141,11 @@ class Section(CollegeOwned, Base):
     batch_id: Mapped[int] = mapped_column(ForeignKey("batches.id"))
     intake_id: Mapped[int | None] = mapped_column(ForeignKey("intakes.id"), nullable=True)
     semester_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    cohort_semester_id: Mapped[int | None] = mapped_column(
+        ForeignKey('cohort_semesters.id'), nullable=True, index=True
+    )
     combined_with: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    cohort_semester: Mapped[CohortSemester | None] = relationship()
     module_offerings: Mapped[list[ModuleOffering]] = relationship(
         secondary="module_offering_sections", back_populates="sections"
     )

@@ -2,7 +2,7 @@ from fastapi import HTTPException
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
-from .models import AcademicModule, Batch, Intake, ModuleOffering, RoutineEntry, RoutineEntrySection, Section
+from .models import AcademicModule, Batch, CohortSemester, Intake, ModuleOffering, RoutineEntry, RoutineEntrySection, Section
 
 
 def offering_section_ids(db: Session, offering: ModuleOffering) -> set[int]:
@@ -15,6 +15,7 @@ def cohort_sections(
     intake_id: int,
     batch_id: int,
     semester_number: int,
+    cohort_semester_id: int | None = None,
 ) -> list[Section]:
     """Return every section that belongs to an offering's cohort.
 
@@ -23,17 +24,17 @@ def cohort_sections(
     the same compatibility rule used by routine validation.
     """
 
-    return list(
-        db.scalars(
-            select(Section)
-            .where(
-                Section.batch_id == batch_id,
-                or_(Section.intake_id == intake_id, Section.intake_id.is_(None)),
-                or_(Section.semester_number == semester_number, Section.semester_number.is_(None)),
-            )
-            .order_by(Section.name, Section.id)
-        )
-    )
+    if cohort_semester_id is not None:
+        return list(db.scalars(select(Section).where(
+            Section.batch_id == batch_id,
+            Section.cohort_semester_id == cohort_semester_id,
+        ).order_by(Section.name, Section.id)))
+    return list(db.scalars(select(Section).where(
+        Section.batch_id == batch_id,
+        Section.cohort_semester_id.is_(None),
+        or_(Section.intake_id == intake_id, Section.intake_id.is_(None)),
+        or_(Section.semester_number == semester_number, Section.semester_number.is_(None)),
+    ).order_by(Section.name, Section.id)))
 
 
 def routine_uses_offering_section(db: Session, offering_id: int, section_id: int) -> bool:
@@ -51,15 +52,26 @@ def routine_uses_offering_section(db: Session, offering_id: int, section_id: int
     )
 
 
-def synchronize_offering_sections(db: Session, offering: ModuleOffering) -> list[Section]:
-    """Make an offering cover all and only its intake/batch/semester sections."""
+def synchronize_offering_sections(
+    db: Session,
+    offering: ModuleOffering,
+    requested_section_ids: set[int] | None = None,
+) -> list[Section]:
+    """Keep offering membership inside its cohort, honoring explicit sections."""
 
     sections = cohort_sections(
         db,
         intake_id=offering.intake_id,
         batch_id=offering.batch_id,
         semester_number=offering.semester_number,
+        cohort_semester_id=offering.cohort_semester_id,
     )
+    available_ids = {section.id for section in sections}
+    if requested_section_ids is not None:
+        missing = requested_section_ids - available_ids
+        if missing:
+            raise HTTPException(422, f"Section {min(missing)} does not belong to this cohort semester")
+        sections = [section for section in sections if section.id in requested_section_ids]
     requested_ids = {section.id for section in sections}
     for section_id in offering_section_ids(db, offering) - requested_ids:
         if routine_uses_offering_section(db, offering.id, section_id):
@@ -74,21 +86,45 @@ def synchronize_offering_sections(db: Session, offering: ModuleOffering) -> list
 
 
 def synchronize_section_module_offerings(db: Session, section: Section) -> list[ModuleOffering]:
-    """Attach a section to every offering in its cohort and detach stale links."""
+    """Keep existing offering memberships valid when a section changes identity.
+
+    New sections are not silently added to existing offerings: membership is an
+    explicit course-assignment decision and must remain historical.
+    """
 
     current = list(section.module_offerings)
-    if section.intake_id is None or section.semester_number is None:
-        desired: list[ModuleOffering] = []
-    else:
-        desired = list(
-            db.scalars(
-                select(ModuleOffering).where(
-                    ModuleOffering.intake_id == section.intake_id,
-                    ModuleOffering.batch_id == section.batch_id,
-                    ModuleOffering.semester_number == section.semester_number,
-                )
-            )
+    desired = [
+        offering
+        for offering in current
+        if (
+            section.cohort_semester_id is not None
+            and offering.cohort_semester_id == section.cohort_semester_id
         )
+        or (
+            section.cohort_semester_id is None
+            and section.intake_id is not None
+            and section.semester_number is not None
+            and offering.intake_id == section.intake_id
+            and offering.batch_id == section.batch_id
+            and offering.semester_number == section.semester_number
+        )
+    ]
+    inherited_query = select(ModuleOffering).where(ModuleOffering.inherit_all_sections.is_(True))
+    if section.cohort_semester_id is not None:
+        inherited_query = inherited_query.where(
+            ModuleOffering.cohort_semester_id == section.cohort_semester_id
+        )
+    elif section.intake_id is not None and section.semester_number is not None:
+        inherited_query = inherited_query.where(
+            ModuleOffering.intake_id == section.intake_id,
+            ModuleOffering.batch_id == section.batch_id,
+            ModuleOffering.semester_number == section.semester_number,
+        )
+    else:
+        inherited_query = inherited_query.where(False)
+    for offering in db.scalars(inherited_query):
+        if offering not in desired:
+            desired.append(offering)
     desired_ids = {offering.id for offering in desired}
     for offering in current:
         if offering.id not in desired_ids and routine_uses_offering_section(db, offering.id, section.id):
@@ -108,6 +144,7 @@ def validate_offering_context(
     intake_id: int,
     batch_id: int,
     semester_number: int,
+    cohort_semester_id: int | None = None,
     section_ids: set[int],
 ) -> tuple[AcademicModule, Intake, Batch, list[Section]]:
     module = db.get(AcademicModule, academic_module_id)
@@ -121,8 +158,15 @@ def validate_offering_context(
         raise HTTPException(404, "Batch not found")
     if intake.program_id != batch.program_id:
         raise HTTPException(422, "The selected intake and batch must belong to the same program")
-    if module.semester_number != semester_number:
-        raise HTTPException(422, "Module does not belong to the selected semester")
+    period = db.get(CohortSemester, cohort_semester_id) if cohort_semester_id is not None else None
+    if cohort_semester_id is not None and period is None:
+        raise HTTPException(404, "Cohort semester not found")
+    if period is not None and (
+        period.intake_id != intake_id
+        or period.batch_id != batch_id
+        or period.semester_number != semester_number
+    ):
+        raise HTTPException(422, "Cohort semester does not match the selected intake, batch, and semester")
 
     sections = list(db.scalars(select(Section).where(Section.id.in_(section_ids)))) if section_ids else []
     found_ids = {section.id for section in sections}
@@ -132,6 +176,8 @@ def validate_offering_context(
     for section in sections:
         if section.batch_id != batch_id:
             raise HTTPException(422, f"Section {section.name} does not belong to the selected batch")
+        if period is not None and section.cohort_semester_id not in (None, period.id):
+            raise HTTPException(422, f"Section {section.name} does not belong to the selected cohort semester")
         if section.intake_id is not None and section.intake_id != intake_id:
             raise HTTPException(422, f"Section {section.name} does not belong to the selected intake")
         if section.semester_number is not None and section.semester_number != semester_number:
@@ -146,6 +192,7 @@ def resolve_active_module_offering(
     intake: Intake,
     semester_number: int,
     sections: list[Section],
+    cohort_semester_id: int | None = None,
 ) -> ModuleOffering:
     """Resolve the explicit active offering for a routine without creating one."""
 
@@ -163,17 +210,22 @@ def resolve_active_module_offering(
         intake_id=intake.id,
         batch_id=batch.id,
         semester_number=semester_number,
+        cohort_semester_id=cohort_semester_id,
         section_ids={section.id for section in sections},
     )
-    offering = db.scalar(
-        select(ModuleOffering).where(
-            ModuleOffering.academic_module_id == module.id,
+    filters = [
+        ModuleOffering.academic_module_id == module.id,
+        ModuleOffering.batch_id == batch.id,
+        ModuleOffering.is_active.is_(True),
+    ]
+    if cohort_semester_id is not None:
+        filters.append(ModuleOffering.cohort_semester_id == cohort_semester_id)
+    else:
+        filters.extend((
             ModuleOffering.intake_id == intake.id,
-            ModuleOffering.batch_id == batch.id,
             ModuleOffering.semester_number == semester_number,
-            ModuleOffering.is_active.is_(True),
-        )
-    )
+        ))
+    offering = db.scalar(select(ModuleOffering).where(*filters))
     semester_label = f"Semester {semester_number}"
     if offering is None:
         raise HTTPException(
@@ -211,8 +263,21 @@ def validate_routine_entry_module_offering(db: Session, routine: RoutineEntry, o
         raise HTTPException(422, "Routine intake does not match its module offering")
     if routine.semester_number != offering.semester_number:
         raise HTTPException(422, "Routine semester does not match its module offering")
+    if offering.cohort_semester_id is not None:
+        period = db.get(CohortSemester, offering.cohort_semester_id)
+        if period is None or (
+            period.intake_id != offering.intake_id
+            or period.batch_id != offering.batch_id
+            or period.semester_number != offering.semester_number
+        ):
+            raise HTTPException(422, "Module offering cohort context is inconsistent")
+        if routine.cohort_semester_id not in (None, period.id):
+            raise HTTPException(422, "Routine cohort semester does not match its module offering")
     allowed_sections = offering_section_ids(db, offering)
     for section_id in routine_section_ids(db, routine):
         section = db.get(Section, section_id)
-        if section is None or section.batch_id != offering.batch_id or section_id not in allowed_sections:
+        if section is None or section.batch_id != offering.batch_id or (
+            section.cohort_semester_id is not None
+            and section.cohort_semester_id != offering.cohort_semester_id
+        ) or section_id not in allowed_sections:
             raise HTTPException(422, "Routine sections must belong to the linked module offering")

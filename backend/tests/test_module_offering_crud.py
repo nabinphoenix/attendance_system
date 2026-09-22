@@ -1,6 +1,8 @@
 from datetime import date, time
 
 from fastapi.testclient import TestClient
+from fastapi import HTTPException
+import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -64,22 +66,21 @@ def test_module_offering_admin_crud_validation_filters_and_routine_safety():
     assert created.json()["module_code"] == "CT004"
     assert created.json()["section_names"] == ["A1", "A2"]
     assert client.post("/api/v1/academic/module-offerings", headers=admin_headers, json=payload).status_code == 409
-    for invalid in (
-        {**payload, "batch_id": ids["other_batch"]},
-        {**payload, "academic_module_id": ids["wrong_module"]},
-    ):
+    for invalid in ({**payload, "batch_id": ids["other_batch"]},):
         assert client.post("/api/v1/academic/module-offerings", headers=admin_headers, json=invalid).status_code == 422
     for query in (f"academic_module_id={ids['module']}", f"intake_id={ids['intake']}", f"batch_id={ids['batch']}", "semester_number=6", f"section_id={ids['section']}", f"section_id={ids['unused']}"):
         listed = client.get(f"/api/v1/academic/module-offerings?{query}", headers=admin_headers)
         assert listed.status_code == 200 and [item["id"] for item in listed.json()] == [offering_id]
+    flexible = client.post("/api/v1/academic/module-offerings", headers=admin_headers, json={**payload, "academic_module_id": ids["wrong_module"]})
+    assert flexible.status_code == 200, flexible.text
 
     added = client.patch(f"/api/v1/academic/module-offerings/{offering_id}", headers=admin_headers, json={"section_ids": [ids["section"]]})
-    assert added.status_code == 200 and set(added.json()["section_ids"]) == {ids["section"], ids["unused"]}
+    assert added.status_code == 200 and set(added.json()["section_ids"]) == {ids["section"]}
     inherited = client.post("/api/v1/academic/sections", headers=admin_headers, json={"name": "A5", "batch_id": ids["batch"], "intake_id": ids["intake"], "semester_number": 6})
     assert inherited.status_code == 200, inherited.text
     a5_id = inherited.json()["id"]
     reloaded = client.get(f"/api/v1/academic/module-offerings/{offering_id}", headers=admin_headers)
-    assert reloaded.status_code == 200 and set(reloaded.json()["section_ids"]) == {ids["section"], ids["unused"], a5_id}
+    assert reloaded.status_code == 200 and set(reloaded.json()["section_ids"]) == {ids["section"]}
 
     with Session() as db:
         offering = db.get(ModuleOffering, offering_id)
@@ -101,11 +102,12 @@ def test_module_offering_admin_crud_validation_filters_and_routine_safety():
         routine.section_id = ids["unused"]
         db.add(routine)
         db.flush()
-        validate_routine_entry_module_offering(db, routine, offering)
+        with pytest.raises(HTTPException):
+            validate_routine_entry_module_offering(db, routine, offering)
         db.rollback()
 
     retained = client.patch(f"/api/v1/academic/module-offerings/{offering_id}", headers=admin_headers, json={"section_ids": []})
-    assert retained.status_code == 200 and set(retained.json()["section_ids"]) == {ids["section"], ids["unused"], a5_id}
+    assert retained.status_code == 409
     assert client.patch(f"/api/v1/academic/module-offerings/{offering_id}/activation?is_active=false", headers=admin_headers).json()["is_active"] is False
     assert client.delete(f"/api/v1/academic/module-offerings/{offering_id}", headers=admin_headers).status_code == 409
     app.dependency_overrides.clear()

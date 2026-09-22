@@ -1,5 +1,5 @@
 from datetime import datetime
-from sqlalchemy import Boolean, DateTime, String, func
+from sqlalchemy import Boolean, CheckConstraint, DateTime, String, func
 from sqlalchemy.orm import Mapped, mapped_column
 from app.core.database import Base
 
@@ -12,7 +12,9 @@ class College(Base):
     contact_email: Mapped[str | None] = mapped_column(String(255), nullable=True)
     address: Mapped[str | None] = mapped_column(String(500), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    ip_policy: Mapped[str] = mapped_column(String(10), default="flag", server_default="flag", nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    __table_args__ = (CheckConstraint("ip_policy IN ('off', 'flag')", name="ck_colleges_ip_policy"),)
 
 
 class PlatformConfiguration(Base):

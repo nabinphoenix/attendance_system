@@ -211,8 +211,13 @@ def section_summary(id:int,user:Annotated[User,Depends(require_roles("admin","te
     return SectionSummary(section_id=id,overall_percentage=round(100*all_present/all_total,2) if all_total else 0,students=items)
 @router.get("/selective-absence",response_model=list[SelectiveCandidate])
 def selective(date:date,batch_id:int,user:Annotated[User,Depends(require_roles("admin","teacher"))],db:DbSession):
-    rows=db.execute(select(AttendanceRecord.student_id,AttendanceRecord.status,Subject.name,AcademicModule.title).join(ClassSession,AttendanceRecord.class_session_id==ClassSession.id).outerjoin(TimetableEntry,ClassSession.timetable_entry_id==TimetableEntry.id).outerjoin(Subject,TimetableEntry.subject_id==Subject.id).outerjoin(RoutineEntry,ClassSession.routine_entry_id==RoutineEntry.id).outerjoin(AcademicModule,RoutineEntry.module_id==AcademicModule.id).join(Student,AttendanceRecord.student_id==Student.id).join(Section,Student.section_id==Section.id).where(ClassSession.session_date==date,ClassSession.status==SessionStatus.COMPLETED,Section.batch_id==batch_id)).all();groups={}
+    rows=db.execute(select(AttendanceRecord.student_id,AttendanceRecord.status,Subject.name,AcademicModule.title).join(ClassSession,AttendanceRecord.class_session_id==ClassSession.id).outerjoin(TimetableEntry,ClassSession.timetable_entry_id==TimetableEntry.id).outerjoin(Subject,TimetableEntry.subject_id==Subject.id).outerjoin(RoutineEntry,ClassSession.routine_entry_id==RoutineEntry.id).outerjoin(AcademicModule,RoutineEntry.module_id==AcademicModule.id).where(ClassSession.session_date==date,ClassSession.status==SessionStatus.COMPLETED)).all();groups={};section_cache={}
     for student_id,status,subject_name,module_title in rows:
+        if student_id not in section_cache:
+            section_id=student_section_at(db,student_id,date)
+            section_cache[student_id]=db.get(Section,section_id) if section_id else None
+        if section_cache[student_id] is None or section_cache[student_id].batch_id != batch_id:
+            continue
         g=groups.setdefault(student_id,{"attended":[],"missed":[]});g["attended" if status in PASSING else "missed"].append(module_title or subject_name)
     return [SelectiveCandidate(student_id=sid,date=date,attended_subjects=g["attended"],missed_subjects=g["missed"]) for sid,g in groups.items() if g["attended"] and g["missed"]]
 @router.post("/risk-evaluations/run",response_model=RiskRunResult)

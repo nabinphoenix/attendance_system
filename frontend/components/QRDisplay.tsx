@@ -16,7 +16,7 @@ const qrProps = {
   shapeRendering: "crispEdges" as const,
 };
 
-export default function QRDisplay({ value, size = 520 }: { value: string; size?: number }) {
+export default function QRDisplay({ value, classroomCode, size = 520 }: { value: string; classroomCode: string; size?: number }) {
   const [open, setOpen] = useState(false);
 
   useEffect(() => {
@@ -33,7 +33,7 @@ export default function QRDisplay({ value, size = 520 }: { value: string; size?:
     </button>
     {open && <div role="dialog" aria-modal="true" aria-label="Full-screen attendance QR code" className="fixed inset-0 z-[80] grid place-items-center bg-slate-950/95 p-4 backdrop-blur-sm">
       <button type="button" aria-label="Close full-screen QR code" onClick={() => setOpen(false)} className="absolute right-4 top-4 inline-flex min-h-10 items-center gap-2 rounded-lg border border-slate-600 bg-slate-900 px-3 text-sm font-semibold text-slate-100 transition hover:border-slate-400 hover:bg-slate-800"><svg aria-hidden="true" viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2"><path d="m6 6 12 12M18 6 6 18" /></svg>Close</button>
-      <div className="w-full max-w-[min(96rem,calc(100vh-5.5rem),calc(100vw-2rem))] rounded-2xl bg-white p-3 shadow-2xl sm:p-4"><QRCodeSVG value={value} size={1800} title="Attendance QR code" {...qrProps} className="h-auto w-full" /><p className="mt-3 text-center text-sm font-semibold text-slate-700">High-contrast projector scan view · keep the full white border visible</p></div>
+      <div className="w-full max-w-[min(96rem,calc(100vh-10rem),calc(100vw-2rem))] rounded-2xl bg-white p-3 shadow-2xl sm:p-4"><QRCodeSVG value={value} size={1800} title="Attendance QR code" {...qrProps} className="h-auto w-full" /><div className="mt-3 border-t border-slate-200 pt-3 text-center"><p className="text-xs font-bold uppercase tracking-[0.2em] text-slate-500">Classroom code</p><p className="mt-1 font-mono text-4xl font-bold tracking-[0.3em] text-slate-900">{classroomCode}</p></div><p className="mt-3 text-center text-sm font-semibold text-slate-700">High-contrast projector scan view · keep the full white border visible</p></div>
     </div>}
   </>;
 }

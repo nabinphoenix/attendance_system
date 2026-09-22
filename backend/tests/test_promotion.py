@@ -207,6 +207,60 @@ def test_promotion_rejects_non_adjacent_or_mismatched_dates():
         app.dependency_overrides.clear()
 
 
+def test_promotion_keeps_batch_when_target_intake_changes():
+    session_factory, source_id, _, source_a, source_b, _, _, first_id, _ = setup_promotion_db()
+    try:
+        with session_factory() as db:
+            source = db.get(CohortSemester, source_id)
+            target_intake = db.scalars(select(Intake).where(Intake.code == 'JAN-PROMO')).one()
+            target = CohortSemester(
+                intake_id=target_intake.id,
+                batch_id=source.batch_id,
+                semester_number=3,
+                start_date=date(2026, 4, 1),
+                end_date=date(2026, 6, 30),
+            )
+            db.add(target)
+            db.flush()
+            target_section = Section(
+                name='A',
+                batch_id=source.batch_id,
+                intake_id=target_intake.id,
+                semester_number=3,
+                cohort_semester_id=target.id,
+            )
+            target_section_b = Section(
+                name='B',
+                batch_id=source.batch_id,
+                intake_id=target_intake.id,
+                semester_number=3,
+                cohort_semester_id=target.id,
+            )
+            db.add_all([target_section, target_section_b])
+            db.commit()
+
+            run, _ = apply_promotion(
+                db,
+                intake_id=source.intake_id,
+                batch_id=source.batch_id,
+                from_cohort_semester_id=source.id,
+                to_cohort_semester_id=target.id,
+                effective_date=target.start_date,
+                section_mapping={source_a: target_section.id, source_b: target_section_b.id},
+                hold_student_ids=set(),
+            )
+            db.commit()
+
+            assert run.intake_id == source.intake_id
+            assert db.get(Student, first_id).section_id == target_section.id
+            history = db.scalars(
+                select(StudentEnrollment).where(StudentEnrollment.student_id == first_id)
+            ).all()
+            assert [item.cohort_semester_id for item in history] == [source.id, target.id]
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_due_promotion_processor_uses_configured_same_named_sections():
     session_factory, source_id, target_id, _, _, target_a, target_b, first_id, second_id = setup_promotion_db()
     try:

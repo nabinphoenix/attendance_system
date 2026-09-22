@@ -5,8 +5,8 @@ import api from '@/lib/api';
 import { Button } from '@/components/ui/Button';
 
 type Option = { id: number; name?: string; code?: string };
-type Section = { id: number; name: string; batch_id: number; intake_id: number | null; semester_number: number | null };
-type Cohort = { id: number; intake_id: number; batch_id: number; semester_number: number; attempt_number: number; start_date: string; end_date: string; status: string };
+type Section = { id: number; name: string; batch_id: number; intake_id: number | null; semester_number: number | null; cohort_semester_id: number | null };
+type Cohort = { id: number; intake_id: number; batch_id: number; semester_number: number; attempt_number: number; start_date: string; end_date: string; status: string; label?: string };
 type Row = { id: number; roll_number: string; name: string | null; source_section_id: number; target_section_id: number | null; action: string };
 type Preview = { source: Cohort; target: Cohort; total_students: number; promote_count: number; hold_count: number; students: Row[]; errors: string[] };
 type Run = { id: number; intake_id: number; batch_id: number; from_cohort_semester_id: number; to_cohort_semester_id: number; effective_date: string; promoted_students: number; held_students: number };
@@ -54,13 +54,17 @@ export default function Page() {
   const target = cohorts.find((item) => item.id === Number(targetId));
   const sourceSections = useMemo(() => source
     ? sections.filter((section) => section.batch_id === source.batch_id
-      && (section.intake_id === null || section.intake_id === source.intake_id)
-      && (section.semester_number === null || section.semester_number === source.semester_number))
+      && (section.cohort_semester_id === source.id
+        || (section.cohort_semester_id === null
+          && (section.intake_id === null || section.intake_id === source.intake_id)
+          && (section.semester_number === null || section.semester_number === source.semester_number))))
     : [], [sections, source]);
   const targetSections = useMemo(() => target
     ? sections.filter((section) => section.batch_id === target.batch_id
-      && section.intake_id === target.intake_id
-      && section.semester_number === target.semester_number)
+      && (section.cohort_semester_id === target.id
+        || (section.cohort_semester_id === null
+          && section.intake_id === target.intake_id
+          && section.semester_number === target.semester_number)))
     : [], [sections, target]);
 
   useEffect(() => {
@@ -162,7 +166,7 @@ export default function Page() {
       <h2 className='text-xl font-semibold'>Preview and apply promotion</h2>
       <form onSubmit={previewPromotion} className='mt-4 grid gap-3 md:grid-cols-3'>
         <select className={fieldClass} required value={sourceId} onChange={(event) => setSourceId(event.target.value)}><option value=''>Source semester</option>{cohorts.map((item) => <option key={item.id} value={item.id}>{intakeLabel(item.intake_id)} · {batchLabel(item.batch_id)} · Sem {item.semester_number} · {item.start_date} to {item.end_date}</option>)}</select>
-        <select className={fieldClass} required value={targetId} onChange={(event) => setTargetId(event.target.value)}><option value=''>Target semester</option>{cohorts.filter((item) => source && item.intake_id === source.intake_id && item.batch_id === source.batch_id && item.semester_number === source.semester_number + 1).map((item) => <option key={item.id} value={item.id}>Sem {item.semester_number} · {item.start_date} to {item.end_date}</option>)}</select>
+        <select className={fieldClass} required value={targetId} onChange={(event) => setTargetId(event.target.value)}><option value=''>Target semester</option>{cohorts.filter((item) => source && item.batch_id === source.batch_id && item.semester_number === source.semester_number + 1).map((item) => <option key={item.id} value={item.id}>{item.label ?? `Sem ${item.semester_number}`} · {item.start_date} to {item.end_date}</option>)}</select>
         <Button type='submit'>Preview roster</Button>
       </form>
       {source && target && <div className='mt-5 rounded-lg border border-slate-800 p-4'><h3 className='font-semibold'>Section mapping</h3><p className='mt-1 text-sm text-slate-400'>Same-named sections are prefilled; change rows where needed.</p><div className='mt-3 grid gap-3 md:grid-cols-2'>{sourceSections.map((sourceSection) => <label key={sourceSection.id} className='flex items-center gap-3 text-sm'><span className='min-w-24'>{sourceSection.name}</span><span className='text-slate-500'>→</span><select className={fieldClass + ' flex-1'} value={mapping[sourceSection.id] ?? ''} onChange={(event) => { setMapping({ ...mapping, [sourceSection.id]: event.target.value }); setPreviewDirty(true); }}><option value=''>No target section</option>{targetSections.map((targetSection) => <option key={targetSection.id} value={targetSection.id}>{targetSection.name}</option>)}</select></label>)}</div></div>}
