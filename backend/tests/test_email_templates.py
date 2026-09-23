@@ -29,7 +29,7 @@ def test_attendance_alert_email_includes_module_details_and_report_link():
         total_classes=8,
     )
 
-    assert subject == "Attendance alert: action needed"
+    assert subject == "Attendance Alert: Advanced Database Systems"
     assert "Advanced Database Systems" in plain and "CT004-3-3" in plain
     assert "62.50%" in html and "75%" in html
     assert "student/reports" in html

@@ -49,3 +49,34 @@ def run() -> None:
 
 if __name__ == "__main__":
     run()
+
+
+def process_pending_notifications(limit: int | None = None) -> int:
+    """Process queued mail and bounded retries after the configured delay."""
+    from datetime import UTC, datetime
+    from sqlalchemy import and_, or_
+
+    batch_size = limit or settings.notification_worker_batch_size
+    now = datetime.now(UTC)
+    with SessionLocal() as db:
+        ids = list(
+            db.scalars(
+                select(Notification.id)
+                .where(
+                    or_(
+                        Notification.status == NotificationStatus.PENDING,
+                        and_(
+                            Notification.status == NotificationStatus.FAILED,
+                            Notification.delivery_attempts < settings.notification_max_delivery_attempts,
+                            or_(
+                                Notification.next_attempt_at.is_(None),
+                                Notification.next_attempt_at <= now,
+                            ),
+                        ),
+                    )
+                )
+                .order_by(Notification.created_at, Notification.id)
+                .limit(batch_size)
+            )
+        )
+    return sum(handle_notification({"notification_id": notification_id}) for notification_id in ids)

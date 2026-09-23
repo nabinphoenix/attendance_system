@@ -98,3 +98,107 @@ def handle(payload: dict) -> bool:
         deliver_notification(db, notification)
         db.commit()
         return True
+
+
+def _record_threshold_delivery(db: Session, notification: Notification, *, sent: bool, now: datetime) -> None:
+    """Reflect durable email delivery on the threshold state and audit trail."""
+    if notification.related_entity != "attendance_threshold_alert":
+        return
+    from app.modules.crm.models import AttendanceThresholdAlert
+    from app.modules.operations.service import log_audit
+
+    alert = db.get(AttendanceThresholdAlert, notification.related_entity_id)
+    if alert is None or alert.notification_id != notification.id:
+        return
+    if sent:
+        alert.email_sent_at = now
+        action = "attendance_threshold.email_sent"
+        details = {"notification_id": notification.id, "delivery_attempts": notification.delivery_attempts}
+    else:
+        alert.email_failed_at = now
+        action = "attendance_threshold.email_failed"
+        details = {
+            "notification_id": notification.id,
+            "delivery_attempts": notification.delivery_attempts,
+            "will_retry": notification.delivery_attempts < settings.notification_max_delivery_attempts,
+        }
+    if notification.actor_id is not None:
+        log_audit(
+            db,
+            notification.actor_id,
+            action,
+            "attendance_threshold_alert",
+            alert.id,
+            None,
+            details,
+            college_id=alert.college_id,
+        )
+
+
+def deliver_notification(db: Session, notification: Notification) -> None:
+    """Deliver one durable notification without affecting attendance data."""
+    from datetime import timedelta
+
+    now = datetime.now(UTC)
+    notification.delivery_attempts += 1
+    notification.last_attempt_at = now
+    try:
+        if notification.channel != "email":
+            raise ValueError("Unsupported notification channel")
+        if not settings.smtp_host:
+            raise ValueError("SMTP is not configured")
+        destination = recipient_address(db, notification)
+        if not destination:
+            raise ValueError("Recipient has no deliverable email address")
+        send_email(destination, notification.subject, notification.body, notification.html_body)
+        if notification.related_entity == "student_invitation":
+            notification.body = "Secure student account setup email delivered."
+            notification.html_body = "Secure student account setup email delivered."
+        notification.status = NotificationStatus.SENT
+        notification.sent_at = now
+        notification.next_attempt_at = None
+        notification.failure_reason = None
+        _record_threshold_delivery(db, notification, sent=True, now=now)
+    except Exception as exc:
+        notification.status = NotificationStatus.FAILED
+        notification.failure_reason = (
+            "Recipient has no deliverable email address"
+            if isinstance(exc, ValueError) and "deliverable email" in str(exc)
+            else "Email delivery failed"
+        )
+        if notification.delivery_attempts < settings.notification_max_delivery_attempts:
+            notification.next_attempt_at = now + timedelta(
+                seconds=settings.notification_retry_delay_seconds
+            )
+        else:
+            notification.next_attempt_at = None
+        _record_threshold_delivery(db, notification, sent=False, now=now)
+        print(f"Notification {notification.id} delivery failed")
+
+
+def handle(payload: dict) -> bool:
+    """Claim and deliver one pending or retryable failed notification."""
+    from datetime import datetime
+
+    notification_id = int(payload["notification_id"])
+    with SessionLocal() as db:
+        notification = db.scalar(
+            select(Notification)
+            .where(
+                Notification.id == notification_id,
+                Notification.status.in_([NotificationStatus.PENDING, NotificationStatus.FAILED]),
+            )
+            .with_for_update(skip_locked=True)
+        )
+        if not notification or notification.delivery_attempts >= settings.notification_max_delivery_attempts:
+            return False
+        now = datetime.now(UTC)
+        if (
+            notification.status == NotificationStatus.FAILED
+            and notification.next_attempt_at is not None
+            and notification.next_attempt_at > now
+        ):
+            return False
+        deliver_notification(db, notification)
+        db.commit()
+        return True

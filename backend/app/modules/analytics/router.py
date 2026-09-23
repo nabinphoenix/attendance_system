@@ -221,7 +221,7 @@ def selective(date:date,batch_id:int,user:Annotated[User,Depends(require_roles("
         g=groups.setdefault(student_id,{"attended":[],"missed":[]});g["attended" if status in PASSING else "missed"].append(module_title or subject_name)
     return [SelectiveCandidate(student_id=sid,date=date,attended_subjects=g["attended"],missed_subjects=g["missed"]) for sid,g in groups.items() if g["attended"] and g["missed"]]
 @router.post("/risk-evaluations/run",response_model=RiskRunResult)
-def run(user:Annotated[User,Depends(require_role("admin"))],db:DbSession):return run_risk_evaluations(db)
+def run(user:Annotated[User,Depends(require_role("admin"))],db:DbSession):return run_risk_evaluations(db,actor_id=user.id)
 @router.get("/college-summary",response_model=CollegeSummary)
 def college_summary(user:Annotated[User,Depends(require_role("admin"))],db:DbSession):
     records=db.scalars(select(AttendanceRecord).join(ClassSession).where(ClassSession.status==SessionStatus.COMPLETED)).all();passing=sum(r.status in PASSING for r in records);counts={"low":0,"medium":0,"high":0}

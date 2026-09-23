@@ -9,6 +9,7 @@ from app.main import app
 from app.modules.academic.models import Batch,Guardian,Program,Section,Student,Subject,Teacher
 from app.modules.attendance.models import AttendanceMethod,AttendanceRecord,AttendanceStatus
 from app.modules.identity.models import User,UserRole
+from app.modules.crm.models import AttendanceThresholdAlert
 from app.modules.operations.models import Notification
 from app.modules.scheduling.models import ClassSession,SessionStatus,TimetableEntry
 
@@ -41,10 +42,12 @@ def test_student_attendance_report_supports_date_range_and_day_subject_status():
     assert payload["days"][0]["records"][0]["class_type_name"]=="lecture"
     assert client.get(f"/api/v1/analytics/my-attendance?date_from={end}&date_to={start}",headers=headers).status_code==422
     app.dependency_overrides.clear()
-def test_risk_case_queues_guardian_notification():
+def test_risk_recalculation_records_state_without_backfill_email():
     Session,own,_=setup_phase5();client=TestClient(app);headers=auth(client,"admin5@example.com");response=client.post("/api/v1/analytics/risk-evaluations/run",headers=headers);assert response.status_code==200 and response.json()["created"]==1
     with Session() as db:
-        notifications=list(db.scalars(select(Notification)).all());student_notification=next(item for item in notifications if item.recipient_type=="student");guardian_notification=next(item for item in notifications if item.recipient_type=="guardian");assert "dropped below" in student_notification.body and "Architecture" in student_notification.body and "ARC" in student_notification.body and "lecture" in student_notification.body;assert "dropped below" in guardian_notification.body and "Architecture" in guardian_notification.body
+        alert = db.scalar(select(AttendanceThresholdAlert))
+        assert alert is not None and alert.status.value == "active"
+        assert list(db.scalars(select(Notification)).all()) == []
     app.dependency_overrides.clear()
 
 def test_finalizing_a_class_automatically_queues_student_attendance_alert():

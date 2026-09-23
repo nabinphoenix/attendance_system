@@ -142,3 +142,61 @@ def plain_text_email_html(subject: str, body: str) -> str:
         intro=" ".join(body.splitlines()),
         closing="Please contact your college administrator if you need support.",
     )
+
+
+def attendance_alert_email(
+    *,
+    student_name: str,
+    module_name: str,
+    module_code: str | None,
+    class_types: list[str],
+    percentage: float,
+    threshold: float,
+    attended_sessions: int | None = None,
+    eligible_sessions: int | None = None,
+    semester_label: str | None = None,
+    total_classes: int | None = None,
+) -> tuple[str, str, str]:
+    """Render the subject-specific low-attendance warning.
+
+    total_classes remains accepted for older callers while new alerts provide
+    the exact attended and eligible-session counts.
+    """
+    eligible = eligible_sessions if eligible_sessions is not None else total_classes or 0
+    attended = attended_sessions if attended_sessions is not None else round(percentage * eligible / 100)
+    module = f"{module_code} ? {module_name}" if module_code else module_name
+    class_type_text = ", ".join(class_types) or "Scheduled class"
+    subject = f"Attendance Alert: {module_name}"
+    semester_line = f"\nCurrent semester: {semester_label}" if semester_label else ""
+    plain = (
+        f"Hello {student_name},\n\n"
+        f"Your attendance in {module} has dropped below the required {threshold:g}% threshold.\n\n"
+        f"Current attendance: {percentage:.2f}%\n"
+        f"Attended classes: {attended}\n"
+        f"Conducted/eligible classes: {eligible}"
+        f"{semester_line}\n\n"
+        "Please monitor your attendance and contact your lecturer or academic administration "
+        "if you believe there is an issue with your attendance record.\n\n"
+        "This is an automated attendance notification."
+    )
+    details = [
+        ("Module", module_name),
+        ("Module code", module_code or "Not assigned"),
+        ("Current attendance", f"{percentage:.2f}%"),
+        ("Required threshold", f"{threshold:g}%"),
+        ("Attended classes", str(attended)),
+        ("Conducted/eligible classes", str(eligible)),
+        ("Class type", class_type_text),
+    ]
+    if semester_label:
+        details.insert(2, ("Current semester", semester_label))
+    html = branded_email(
+        title="Your attendance needs attention",
+        greeting_name=student_name,
+        intro=f"Your attendance in {module} has dropped below the required {threshold:g}% threshold.",
+        details=details,
+        action_label="View my attendance",
+        action_url=public_url("/student/reports"),
+        closing="Please monitor your attendance and contact your lecturer or academic administration if you believe there is an issue with your attendance record.",
+    )
+    return subject, plain, html

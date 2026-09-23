@@ -72,6 +72,8 @@ class Settings(BaseSettings):
     notification_worker_poll_seconds: float = 5
     notification_worker_batch_size: int = 100
     profile_media_bucket: str | None = None
+    notification_max_delivery_attempts: int = Field(default=3, ge=1, le=10)
+    notification_retry_delay_seconds: int = Field(default=60, ge=1, le=86400)
     profile_media_prefix: str = "profile-media"
     profile_media_region: str | None = None
     profile_media_local_directory: str | None = None
