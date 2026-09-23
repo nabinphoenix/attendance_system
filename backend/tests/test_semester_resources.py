@@ -13,7 +13,7 @@ from app.core.database import Base, get_db
 from app.core.security import create_access_token
 from app.main import app
 from app.modules.academic.models import (
-    AcademicCalendar, AcademicModule, Batch, Block, ClassType, CohortSemester,
+    AcademicCalendar, AcademicModule, Batch, BatchLevel, Block, ClassType, CohortSemester,
     Intake, Program, Room, RoutineEntry, RoutineEntrySection, Section, Student,
     StudentEnrollment, Teacher, TeacherFeedback, TimeSlot,
 )
@@ -66,7 +66,12 @@ def context(monkeypatch):
                           start_date=date(2026, 1, 1), program_id=program_id, college_id=college_id))
         db.flush()
         for identifier, college_id in [(1, 1), (2, 1), (3, 2)]:
+            db.add(BatchLevel(id=identifier, batch_id=identifier, level_number=1,
+                              intake_id=identifier, college_id=college_id))
+        db.flush()
+        for identifier, college_id in [(1, 1), (2, 1), (3, 2)]:
             db.add(CohortSemester(id=identifier, intake_id=identifier, batch_id=identifier,
+                                 batch_level_id=identifier,
                                  semester_number=1, start_date=date(2026, 1, 1),
                                  end_date=date(2026, 6, 30), college_id=college_id))
         for identifier in (1, 2, 3):
@@ -269,7 +274,7 @@ def test_feedback_rejects_bad_dates_and_unassigned_teachers(context):
     assert client.put(f"{BASE}/1/feedback/999", headers=h["admin"], json=form()).status_code == 422
 
 
-def test_legacy_students_and_routines_match_complete_semester_context(context):
+def test_legacy_students_and_routines_match_permanent_batch_context(context):
     client, h, factory = context
     with factory() as db:
         db.delete(db.scalar(select(StudentEnrollment)))
@@ -278,9 +283,11 @@ def test_legacy_students_and_routines_match_complete_semester_context(context):
     assert client.put(f"{BASE}/1/feedback/1", headers=h["admin"], json=form()).status_code == 200
     assert [row["teacher_id"] for row in client.get(f"{BASE}/1/feedback", headers=h["student"]).json()] == [1]
     with factory() as db:
-        db.get(Section, 1).intake_id = 2
+        # Intake/semester columns are ignored now; the permanent Batch is the
+        # only Section context used by the compatibility fallback.
+        db.get(Section, 1).batch_id = 2
         db.commit()
-    assert client.get(BASE, headers=h["student"]).json() == []
+    assert [row["id"] for row in client.get(BASE, headers=h["student"]).json()] == [2]
 
 
 def test_ended_and_withdrawn_enrollment_cannot_receive_current_feedback(context):

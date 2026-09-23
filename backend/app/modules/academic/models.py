@@ -1,9 +1,17 @@
 import enum
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 from sqlalchemy import Boolean, CheckConstraint, Date, DateTime, Enum, Float, ForeignKey, Index, Integer, LargeBinary, String, Time, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.core.database import Base
 from app.core.tenancy import CollegeOwned
+
+
+def default_batch_end() -> date:
+    start = date.today()
+    try:
+        return start.replace(year=start.year + 3) - timedelta(days=1)
+    except ValueError:
+        return start.replace(year=start.year + 3, day=28) - timedelta(days=1)
 
 class Program(CollegeOwned, Base):
     __tablename__ = "programs"
@@ -13,20 +21,20 @@ class Program(CollegeOwned, Base):
 class Intake(CollegeOwned, Base):
     __tablename__ = "intakes"
     id: Mapped[int] = mapped_column(primary_key=True)
-    name: Mapped[str] = mapped_column(String(100))
+    # The intake code is the academic identity. A display name is optional.
+    name: Mapped[str | None] = mapped_column(String(100), nullable=True)
     code: Mapped[str] = mapped_column(String(50))
-    start_date: Mapped[date] = mapped_column(Date)
+    start_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     program_id: Mapped[int] = mapped_column(ForeignKey("programs.id"))
 
 class CohortSemester(CollegeOwned, Base):
     __tablename__ = 'cohort_semesters'
     __table_args__ = (
         UniqueConstraint(
-            'intake_id',
             'batch_id',
             'semester_number',
             'attempt_number',
-            name='uq_cohort_semester_context',
+            name='uq_cohort_semester_batch_sequence',
         ),
         CheckConstraint('start_date <= end_date', name='ck_cohort_semester_dates'),
         Index('ix_cohort_semesters_context', 'intake_id', 'batch_id', 'semester_number'),
@@ -35,15 +43,15 @@ class CohortSemester(CollegeOwned, Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     intake_id: Mapped[int] = mapped_column(ForeignKey('intakes.id'))
     batch_id: Mapped[int] = mapped_column(ForeignKey('batches.id'))
-    # Optional legacy metadata only. The authoritative semester for delivery
-    # is ModuleOffering.cohort_semester_id.
-    semester_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    batch_level_id: Mapped[int] = mapped_column(ForeignKey('batch_levels.id'), index=True)
+    semester_number: Mapped[int] = mapped_column(Integer)
     attempt_number: Mapped[int] = mapped_column(Integer, default=1, server_default='1')
     start_date: Mapped[date] = mapped_column(Date)
     end_date: Mapped[date] = mapped_column(Date)
     status: Mapped[str] = mapped_column(String(20), default='planned', server_default='planned')
     intake: Mapped['Intake'] = relationship()
     batch: Mapped['Batch'] = relationship()
+    batch_level: Mapped['BatchLevel'] = relationship(back_populates='semesters')
 
 class Block(CollegeOwned, Base):
     __tablename__ = "blocks"
@@ -69,7 +77,7 @@ class AcademicModule(CollegeOwned, Base):
     code: Mapped[str] = mapped_column(String(30))
     title: Mapped[str] = mapped_column(String(200))
     credits: Mapped[int] = mapped_column(Integer)
-    semester_number: Mapped[int] = mapped_column(Integer)
+    semester_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
 class ModuleOffering(CollegeOwned, Base):
@@ -129,15 +137,65 @@ class TimeSlot(CollegeOwned, Base):
     duration_label: Mapped[str] = mapped_column(String(30))
 
 class Batch(CollegeOwned, Base):
+    __table_args__ = (
+        CheckConstraint('start_date <= end_date', name='ck_batch_dates'),
+    )
     __tablename__ = "batches"
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(100))
     program_id: Mapped[int] = mapped_column(ForeignKey("programs.id"))
 
+    # ORM defaults keep legacy fixtures/import helpers working; the HTTP API
+    # still requires explicit dates and PostgreSQL has no server default.
+    start_date: Mapped[date] = mapped_column(Date, default=date.today)
+    end_date: Mapped[date] = mapped_column(
+        Date,
+        default=default_batch_end,
+    )
+    levels: Mapped[list['BatchLevel']] = relationship(
+        back_populates='batch', cascade='all, delete-orphan', order_by='BatchLevel.level_number'
+    )
+
+
+class BatchLevel(CollegeOwned, Base):
+    '''One of the three academic levels in a three-year batch.'''
+
+    __tablename__ = 'batch_levels'
+    __table_args__ = (
+        UniqueConstraint('batch_id', 'level_number', name='uq_batch_level_number'),
+        UniqueConstraint('batch_id', 'intake_id', name='uq_batch_level_intake'),
+        CheckConstraint('level_number BETWEEN 1 AND 3', name='ck_batch_level_number'),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    batch_id: Mapped[int] = mapped_column(ForeignKey('batches.id', ondelete='CASCADE'), index=True)
+    level_number: Mapped[int] = mapped_column(Integer)
+    intake_id: Mapped[int] = mapped_column(ForeignKey('intakes.id'))
+    batch: Mapped[Batch] = relationship(back_populates='levels')
+    intake: Mapped[Intake] = relationship()
+    semesters: Mapped[list[CohortSemester]] = relationship(
+        back_populates='batch_level', order_by='CohortSemester.semester_number'
+    )
+
+    @property
+    def intake_code(self) -> str:
+        return self.intake.code
+
+    @property
+    def intake_name(self) -> str | None:
+        return self.intake.name
+
+
 class Section(CollegeOwned, Base):
+    __table_args__ = (
+        UniqueConstraint('batch_id', 'name', name='uq_section_batch_name'),
+    )
     __tablename__ = "sections"
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(50))
+    # Section ownership is permanent at the batch level. The nullable intake
+    # and semester fields below remain only for rolling-upgrade compatibility;
+    # dated placement belongs to StudentEnrollment.
     batch_id: Mapped[int] = mapped_column(ForeignKey("batches.id"))
     intake_id: Mapped[int | None] = mapped_column(ForeignKey("intakes.id"), nullable=True)
     semester_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -264,8 +322,11 @@ class Teacher(CollegeOwned, Base):
     employee_code: Mapped[str] = mapped_column(String(50))
     user = relationship("User")
 
-class Subject(Base):
+class Subject(CollegeOwned, Base):
     __tablename__ = "subjects"
+    __table_args__ = (
+        UniqueConstraint("college_id", "code", name="uq_subjects_college_code"),
+    )
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(150))
     code: Mapped[str] = mapped_column(String(30))

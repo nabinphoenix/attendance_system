@@ -85,5 +85,5 @@ def test_module_offering_foundation_and_legacy_models_remain_separate():
         assert routine.module_offering is offering
         assert offering.routines == [routine]
 
-        assert set(Subject.__table__.c.keys()) == {"id", "name", "code", "section_id"}
+        assert set(Subject.__table__.c.keys()) == {"id", "name", "code", "section_id", "college_id"}
         assert "module_offering_id" not in TimetableEntry.__table__.c

@@ -46,11 +46,47 @@ def test_section_import_readiness_projection_and_negative_validation():
 
         admin_headers = auth("admin@example.com")
         program = client.post("/api/v1/academic/programs", headers=admin_headers, json={"name": "BSc.IT"}).json()
-        batch = client.post("/api/v1/academic/batches", headers=admin_headers, json={"name": "First batch", "program_id": program["id"]}).json()
-        intake = client.post("/api/v1/academic/intakes", headers=admin_headers, json={"name": "September 2026", "code": "SEP26", "start_date": date(2026, 9, 1).isoformat(), "program_id": program["id"]}).json()
+        batch_response = client.post("/api/v1/academic/batches", headers=admin_headers, json={
+            "name": "First batch",
+            "program_id": program["id"],
+            "start_date": "2024-09-01",
+            "end_date": "2027-08-31",
+            "levels": [
+                {"level_number": 1, "intake_code": "SEP24"},
+                {"level_number": 2, "intake_code": "SEP25"},
+                {"level_number": 3, "intake_code": "SEP26", "intake_name": "September 2026"},
+            ],
+        })
+        assert batch_response.status_code == 200, batch_response.text
+        batch = batch_response.json()
+        level_three = next(item for item in batch["levels"] if item["level_number"] == 3)
+        cleared_name = client.patch(
+            f"/api/v1/academic/levels/{level_three['id']}",
+            headers=admin_headers,
+            json={"intake_name": None},
+        )
+        assert cleared_name.status_code == 200 and cleared_name.json()["intake_name"] is None
+        intake = next(item for item in client.get("/api/v1/academic/intakes", headers=admin_headers).json() if item["code"] == "SEP26")
+        level_ids = {item["level_number"]: item["id"] for item in batch["levels"]}
+        semester_dates = [
+            ("2024-09-01", "2025-01-31"),
+            ("2025-02-01", "2025-06-30"),
+            ("2025-07-01", "2025-11-30"),
+            ("2025-12-01", "2026-03-31"),
+            ("2026-04-01", "2026-08-31"),
+            ("2026-09-01", "2027-01-31"),
+        ]
+        for semester_number, (start_date, end_date) in enumerate(semester_dates, 1):
+            response = client.post("/api/v1/academic/cohort-semesters", headers=admin_headers, json={
+                "batch_level_id": level_ids[(semester_number + 1) // 2],
+                "semester_number": semester_number,
+                "start_date": start_date,
+                "end_date": end_date,
+            })
+            assert response.status_code == 201, response.text
         sections = {}
         for name in ("A1", "A2"):
-            sections[name] = client.post("/api/v1/academic/sections", headers=admin_headers, json={"name": name, "batch_id": batch["id"], "intake_id": intake["id"], "semester_number": 6}).json()
+            sections[name] = client.post("/api/v1/academic/sections", headers=admin_headers, json={"name": name, "batch_id": batch["id"]}).json()
         module = client.post("/api/v1/academic/modules", headers=admin_headers, json={"code": "CT004-3-3", "title": "Advanced Database Systems", "credits": 3, "semester_number": 6}).json()
         block = client.post("/api/v1/academic/blocks", headers=admin_headers, json={"name": "Block B"}).json()
         room = client.post("/api/v1/academic/rooms", headers=admin_headers, json={"block_id": block["id"], "name": "Machapuchare-L04", "room_type": "lecture", "capacity": 60}).json()
@@ -115,8 +151,8 @@ def test_section_import_readiness_projection_and_negative_validation():
         assert "No teacher account/profile matches lecturer email 'missing@example.com'" in invalid(row(day=day, lecturer_email="missing@example.com")).json()["errors"][0]["error_message"]
         assert "Room 'Missing Room' does not exist in Block 'Block B'" in invalid(row(day=day, room="Missing Room")).json()["errors"][0]["error_message"]
         assert "Selected section 'A1' is not included in this row" in invalid(row(day=day, sections="A2")).json()["errors"][0]["error_message"]
-        wrong_semester = invalid(row(day=day), selected_semester=5)
-        assert wrong_semester.status_code == 422 and "Selected section does not belong" in wrong_semester.json()["detail"]
+        wrong_semester = invalid(row(day=day), selected_semester=7)
+        assert wrong_semester.status_code == 422 and "does not belong to the requested academic context" in wrong_semester.json()["detail"]
 
         client.patch(f"/api/v1/academic/module-offerings/{offering['id']}/activation?is_active=false", headers=admin_headers)
         assert "No active module offering exists" in invalid(row(day=day, start="10:00", end="11:00")).json()["errors"][0]["error_message"]

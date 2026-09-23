@@ -11,7 +11,8 @@ from .models import ClassSession,OverrideStatus,ScheduleOverride,SessionStatus,T
 from .schemas import ClassSessionRead,CurrentSession,OverrideCreate,OverrideDecision,OverrideRead,SessionGeofenceCapture,SessionHistory,TimetableCreate,TimetableRead
 from .service import approved_routine_override,create_schedule_override,resolve_effective_class,resolve_session_schedule
 from app.modules.operations.service import log_audit
-from app.modules.attendance.network import active_campus_cidrs, classify_ip, get_client_ip
+from app.modules.attendance.network import college_ip_status, get_client_ip
+from app.modules.attendance.service import issue_qr_challenge
 router=APIRouter(tags=["scheduling"])
 def approved_override(db,entry_id,on_date):return db.scalar(select(ScheduleOverride).where(ScheduleOverride.timetable_entry_id==entry_id,ScheduleOverride.override_date==on_date,ScheduleOverride.status==OverrideStatus.APPROVED))
 def teacher_profile(db,user):
@@ -34,11 +35,13 @@ def start_routine_session(routine_id:int,p:SessionGeofenceCapture,request:Reques
     if not session:
         radius=p.geofence_radius_meters or settings.geofence_radius_meters
         if radius > settings.attendance_max_geofence_radius_meters: raise HTTPException(422, f"Campus boundary cannot exceed {int(settings.attendance_max_geofence_radius_meters)} meters")
-        captured_at=datetime.now(UTC);teacher_ip=get_client_ip(request);teacher_ip_status=classify_ip(teacher_ip,active_campus_cidrs(db,entry.college_id),None,None);
+        captured_at=datetime.now(UTC);teacher_ip=get_client_ip(request);teacher_ip_status=college_ip_status(db,entry.college_id,teacher_ip);
         # GPS is retained as coarse campus/audit evidence. It must not block an
         # authorized teacher from starting a session because indoor readings
         # commonly report wide accuracy circles (for example, +/-69m).
-        session=ClassSession(routine_entry_id=routine_id,session_date=today,effective_teacher_id=effective.teacher_id,teacher_ip=teacher_ip,teacher_ip_status=teacher_ip_status,effective_room=effective.room,schedule_override_id=effective.override_id,status=SessionStatus.ACTIVE,geofence_latitude=p.latitude,geofence_longitude=p.longitude,geofence_radius_meters=radius,teacher_location_accuracy_meters=p.accuracy_meters,geofence_captured_at=captured_at,self_checkin_window_minutes=p.self_checkin_window_minutes or settings.attendance_self_checkin_window_minutes,challenge_rotation_seconds=p.challenge_rotation_seconds or settings.attendance_challenge_rotation_seconds);db.add(session);db.flush();log_audit(db,user.id,"class_session.started","class_session",session.id,None,{"routine_entry_id":routine_id,"geofence_created":True,"geofence_radius_meters":radius,"teacher_location_accuracy_meters":p.accuracy_meters,"geofence_captured_at":captured_at,"self_checkin_window_minutes":session.self_checkin_window_minutes,"challenge_rotation_seconds":session.challenge_rotation_seconds,"teacher_ip":teacher_ip,"teacher_ip_status":teacher_ip_status});db.commit();db.refresh(session)
+        session=ClassSession(routine_entry_id=routine_id,session_date=today,effective_teacher_id=effective.teacher_id,teacher_ip=teacher_ip,teacher_ip_status=teacher_ip_status,effective_room=effective.room,schedule_override_id=effective.override_id,status=SessionStatus.ACTIVE,geofence_latitude=p.latitude,geofence_longitude=p.longitude,geofence_radius_meters=radius,teacher_location_accuracy_meters=p.accuracy_meters,geofence_captured_at=captured_at,self_checkin_window_minutes=p.self_checkin_window_minutes or settings.attendance_self_checkin_window_minutes,challenge_rotation_seconds=p.challenge_rotation_seconds or settings.attendance_challenge_rotation_seconds);db.add(session);db.flush()
+        issue_qr_challenge(db, session, user.id)
+        log_audit(db,user.id,"class_session.started","class_session",session.id,None,{"routine_entry_id":routine_id,"geofence_created":True,"geofence_radius_meters":radius,"teacher_location_accuracy_meters":p.accuracy_meters,"geofence_captured_at":captured_at,"self_checkin_window_minutes":session.self_checkin_window_minutes,"challenge_rotation_seconds":session.challenge_rotation_seconds,"teacher_ip":teacher_ip,"teacher_ip_status":teacher_ip_status});db.commit();db.refresh(session)
     return session
 @router.post("/scheduling/timetable-entries",response_model=TimetableRead,dependencies=[Depends(require_role("admin"))])
 def create_entry(p:TimetableCreate,user:Annotated[User,Depends(require_role("admin"))],db:DbSession):
@@ -96,7 +99,11 @@ def start_session(entry_id:int,request:Request,user:Annotated[User,Depends(requi
     if override and override.is_cancelled:raise HTTPException(409,"Class is cancelled")
     if effective!=teacher.id:raise HTTPException(403,"This session is assigned to another teacher")
     session=db.scalar(select(ClassSession).where(ClassSession.timetable_entry_id==entry_id,ClassSession.session_date==today,ClassSession.status==SessionStatus.ACTIVE).order_by(ClassSession.started_at.desc(),ClassSession.id.desc()).with_for_update())
-    if not session:teacher_ip=get_client_ip(request);teacher_ip_status=classify_ip(teacher_ip,active_campus_cidrs(db,entry.college_id),None,None);session=ClassSession(timetable_entry_id=entry_id,session_date=today,effective_teacher_id=effective,teacher_ip=teacher_ip,teacher_ip_status=teacher_ip_status,effective_room=override.new_room if override and override.new_room else entry.room_name,schedule_override_id=override.id if override else None,status=SessionStatus.ACTIVE,self_checkin_window_minutes=settings.attendance_self_checkin_window_minutes,challenge_rotation_seconds=settings.attendance_challenge_rotation_seconds);db.add(session);db.flush();log_audit(db,user.id,"class_session.started","class_session",session.id,None,{"timetable_entry_id":entry_id,"teacher_ip":teacher_ip,"teacher_ip_status":teacher_ip_status});db.commit();db.refresh(session)
+    if not session:
+        teacher_ip=get_client_ip(request);teacher_ip_status=college_ip_status(db,entry.college_id,teacher_ip)
+        session=ClassSession(timetable_entry_id=entry_id,session_date=today,effective_teacher_id=effective,teacher_ip=teacher_ip,teacher_ip_status=teacher_ip_status,effective_room=override.new_room if override and override.new_room else entry.room_name,schedule_override_id=override.id if override else None,status=SessionStatus.ACTIVE,self_checkin_window_minutes=settings.attendance_self_checkin_window_minutes,challenge_rotation_seconds=settings.attendance_challenge_rotation_seconds);db.add(session);db.flush()
+        issue_qr_challenge(db, session, user.id)
+        log_audit(db,user.id,"class_session.started","class_session",session.id,None,{"timetable_entry_id":entry_id,"teacher_ip":teacher_ip,"teacher_ip_status":teacher_ip_status});db.commit();db.refresh(session)
     return session
 @router.get("/sessions",response_model=list[SessionHistory])
 def history(user:Annotated[User,Depends(require_roles("teacher","admin"))],db:DbSession,teacher_id:int|None=None,date_from:date|None=None,date_to:date|None=None):

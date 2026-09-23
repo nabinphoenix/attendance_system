@@ -12,7 +12,7 @@ from sqlalchemy import String,cast,func,or_,select
 from app.core.config import settings
 from app.core.dependencies import DbSession,get_current_user,require_role
 from app.core.security import hash_password
-from app.modules.academic.models import AcademicModule,Batch,Block,ClassType,Guardian,Intake,ModuleOffering,Room,RoutineEntry,RoutineEntrySection,RoutinePendingSection,Section,Student,Subject,Teacher,TimeSlot
+from app.modules.academic.models import AcademicModule,Batch,BatchLevel,Block,ClassType,CohortSemester,Guardian,Intake,ModuleOffering,Room,RoutineEntry,RoutineEntrySection,RoutinePendingSection,Section,Student,Subject,Teacher,TimeSlot
 from app.modules.academic.invitation_service import issue_student_invitation
 from app.modules.academic.module_offering_service import offering_section_ids
 from app.modules.academic.routine_router import RoutineCreate,check_routine_conflicts,create_or_merge_routine_entry,create_routine_entry,matching_physical_routine,merge_routine_entry_sections,persist_pending_section_references,valid_routine
@@ -61,6 +61,30 @@ class RoutinePayloadResolution:
     pending_reasons: dict[str, str]
 
 
+def section_supports_semester_context(
+    db, section: Section, intake_id: int, semester_number: int
+) -> bool:
+    if db.scalar(select(CohortSemester.id).where(
+        CohortSemester.batch_id == section.batch_id,
+        CohortSemester.intake_id == intake_id,
+        CohortSemester.semester_number == semester_number,
+    )):
+        return True
+    # Compatibility for pre-Level fixtures and data while the new migration is
+    # rolling out. Once a Batch has CohortSemesters, those rows are authoritative.
+    has_periods = db.scalar(select(CohortSemester.id).where(
+        CohortSemester.batch_id == section.batch_id
+    ).limit(1))
+    return bool(
+        not has_periods
+        and db.scalar(select(Section.id).where(
+            Section.batch_id == section.batch_id,
+            Section.intake_id == intake_id,
+            Section.semester_number == semester_number,
+        ).limit(1))
+    )
+
+
 def resolve_routine_payload_with_pending(db,row,teacher_id:int|None=None,context:tuple[int,int,int]|None=None):
  value=lambda key:str(row.get(key,"")).strip()
  day=DAY_CODES.get(value("day").lower() or value("day_of_week").lower())
@@ -81,16 +105,28 @@ def resolve_routine_payload_with_pending(db,row,teacher_id:int|None=None,context
  if not sections:raise ValueError("sections: provide at least one section name")
  selected_section=db.get(Section,context[2]) if context else None
  if context and not selected_section:raise ValueError("The selected import section no longer exists")
+ if selected_section and not section_supports_semester_context(db,selected_section,intake.id,semester):
+  raise ValueError("Selected section does not belong to the requested academic context")
+ if selected_section:
+  batch_id=selected_section.batch_id
+ else:
+  periods=db.scalars(select(CohortSemester).where(CohortSemester.intake_id==intake.id,CohortSemester.semester_number==semester)).all()
+  batch_ids={period.batch_id for period in periods}
+  if not batch_ids:
+   batch_ids=set(db.scalars(select(Section.batch_id).where(Section.intake_id==intake.id,Section.semester_number==semester)).all())
+  if len(batch_ids)!=1:raise ValueError("The Intake Code and Semester do not identify exactly one Batch")
+  batch_id=next(iter(batch_ids))
+ intake_label=intake.name or intake.code
  section_rows={};pending_names=[];pending_reasons={}
  for name in sections:
   if context and name.casefold()==selected_section.name.casefold():
    section_rows[name.casefold()]=selected_section;continue
-  candidates=db.scalars(select(Section).where(func.lower(Section.name)==name.lower(),or_(Section.intake_id==intake.id,Section.intake_id.is_(None)),or_(Section.semester_number==semester,Section.semester_number.is_(None)))).all()
+  candidates=db.scalars(select(Section).where(func.lower(Section.name)==name.lower(),Section.batch_id==batch_id)).all()
   if not candidates:
    if context:
-    pending_names.append(name);pending_reasons[name.casefold()]=f"Section {name} has not been configured for {intake.name} ({intake.code}), Semester {semester}."
+    pending_names.append(name);pending_reasons[name.casefold()]=f"Section {name} has not been configured for {intake_label} ({intake.code}), Semester {semester}."
     continue
-   raise ValueError(f"No section named '{name}' is configured for {intake.name} ({intake.code}), Semester {semester}.")
+   raise ValueError(f"No section named '{name}' is configured for {intake_label} ({intake.code}), Semester {semester}.")
   if len(candidates)>1:raise ValueError(f"sections: section {name} is ambiguous for the selected academic context")
   section_rows[name.casefold()]=candidates[0]
  if context and selected_section.name.casefold() not in section_rows:
@@ -109,7 +145,7 @@ def resolve_routine_payload_with_pending(db,row,teacher_id:int|None=None,context
  except ValueError as exc:raise ValueError(f"start_time/end_time: {exc}") from exc
  slot=db.scalar(select(TimeSlot).where(TimeSlot.start_time==start_time,TimeSlot.end_time==end_time))
  if not module:raise ValueError(f"No Academic Module matches module code '{module_code}'. Create the module before importing this routine.")
- if module.semester_number!=semester:raise ValueError(f"Module '{module_code}' belongs to Semester {module.semester_number}, not Semester {semester}.")
+ if module.semester_number is not None and module.semester_number!=semester:raise ValueError(f"Module '{module_code}' belongs to Semester {module.semester_number}, not Semester {semester}.")
  if value("module_title") and module.title.lower()!=value("module_title").lower():raise ValueError(f"Module title '{value('module_title')}' does not match module code '{module_code}'.")
  if not class_type:raise ValueError(f"Class type '{class_type_name}' does not exist. Create it before importing this routine.")
  if not teacher:raise ValueError(f"No teacher account/profile matches lecturer email '{lecturer_email}'. Create the teacher before importing this routine.")
@@ -123,8 +159,6 @@ def resolve_routine_payload_with_pending(db,row,teacher_id:int|None=None,context
   for name in sections:
    section=section_rows.get(name.casefold())
    if section is None or section.id==selected_section.id:continue
-   if section.intake_id not in (None,intake.id) or section.semester_number not in (None,semester):
-    pending_names.append(name);pending_reasons[name.casefold()]=f"Section {name} exists but is not configured for {intake.name} ({intake.code}), Semester {semester}.";continue
    if section.batch_id!=offering.batch_id:
     pending_names.append(name);pending_reasons[name.casefold()]=f"Section {name} exists but belongs to a different batch from the selected section.";continue
    if section.id not in offering_sections:
@@ -202,11 +236,14 @@ async def import_students(user:Annotated[User,Depends(require_role("admin"))],db
                 if db.scalar(select(User).where(func.lower(User.email)==email)):raise ValueError("email is already in use")
                 intake_code=str(row.get('intake_code','')).strip()
                 section_query=select(Section).join(Batch).where(func.lower(Batch.name)==batch_name.lower(),func.lower(Section.name)==section_name.lower())
-                if intake_code:section_query=section_query.join(Intake,Section.intake_id==Intake.id).where(func.lower(Intake.code)==intake_code.lower())
                 sections_found=db.scalars(section_query).all()
-                if len(sections_found)>1:raise ValueError('section_name is ambiguous; provide intake_code')
+                if len(sections_found)>1:raise ValueError('section_name is ambiguous for batch_name')
                 section=sections_found[0] if sections_found else None
                 if not section:raise ValueError("batch_name or section_name does not exist")
+                if intake_code:
+                    intake=db.scalar(select(Intake).where(func.lower(Intake.code)==intake_code.lower()))
+                    if not intake:raise ValueError('intake_code does not exist')
+                    if not db.scalar(select(BatchLevel.id).where(BatchLevel.batch_id==section.batch_id,BatchLevel.intake_id==intake.id)):raise ValueError('intake_code does not belong to batch_name')
                 if db.scalar(select(Student).where(func.lower(Student.email)==email)):raise ValueError("student email is already imported")
                 account=User(name=name,email=email,password_hash=hash_password(secrets.token_urlsafe(32)),role=UserRole.STUDENT)
                 db.add(account);db.flush()
@@ -268,13 +305,13 @@ async def preview_teacher_timetable(teacher_id:int,user:Annotated[User,Depends(r
 async def preview_section_routine(section_id:int,intake_id:int,semester_number:int,user:Annotated[User,Depends(require_role("admin"))],db:DbSession,file:UploadFile=File(...)):
     section=db.get(Section,section_id)
     if not section:raise HTTPException(404,"Section not found")
-    if section.intake_id!=intake_id or section.semester_number!=semester_number:raise HTTPException(422,"Selected section does not belong to selected intake and semester")
+    if not section_supports_semester_context(db,section,intake_id,semester_number):raise HTTPException(422,"Selected section does not belong to the requested academic context")
     total,valid,errors=await validate_timetable_file(db,file,context=(intake_id,semester_number,section_id));return preview_result(total,valid,errors)
 @router.get("/academic/sections/{section_id}/routine/pending")
 def pending_section_routine_references(section_id:int,intake_id:int,semester_number:int,user:Annotated[User,Depends(require_role("admin"))],db:DbSession):
     section=db.get(Section,section_id)
     if not section:raise HTTPException(404,"Section not found")
-    if section.intake_id!=intake_id or section.semester_number!=semester_number:raise HTTPException(422,"Selected section does not belong to selected intake and semester")
+    if not section_supports_semester_context(db,section,intake_id,semester_number):raise HTTPException(422,"Selected section does not belong to the requested academic context")
     q=select(RoutinePendingSection).join(RoutineEntry).outerjoin(RoutineEntrySection).where(RoutinePendingSection.resolved_section_id.is_(None),RoutineEntry.intake_id==intake_id,RoutineEntry.semester_number==semester_number,or_(RoutineEntry.section_id==section_id,RoutineEntrySection.section_id==section_id)).order_by(RoutinePendingSection.created_at,RoutinePendingSection.id)
     return [{"id":item.id,"routine_entry_id":item.routine_entry_id,"section_name":item.section_name,"intake_id":item.intake_id,"semester_number":item.semester_number,"module_id":item.routine_entry.module_id,"module_code":item.routine_entry.module.code,"module_title":item.routine_entry.module.title,"day_of_week":item.routine_entry.day_of_week,"time_slot_id":item.routine_entry.time_slot_id,"teacher_id":item.routine_entry.teacher_id,"room_id":item.routine_entry.room_id,"class_type_id":item.routine_entry.class_type_id} for item in db.scalars(q).unique().all()]
 def apply_timetable_import(db,user,file_name,total,valid,errors,upload_type):
@@ -300,7 +337,7 @@ async def import_teacher_timetable(teacher_id:int,user:Annotated[User,Depends(re
 async def import_section_routine(section_id:int,intake_id:int,semester_number:int,user:Annotated[User,Depends(require_role("admin"))],db:DbSession,file:UploadFile=File(...)):
     section=db.get(Section,section_id)
     if not section:raise HTTPException(404,"Section not found")
-    if section.intake_id!=intake_id or section.semester_number!=semester_number:raise HTTPException(422,"Selected section does not belong to selected intake and semester")
+    if not section_supports_semester_context(db,section,intake_id,semester_number):raise HTTPException(422,"Selected section does not belong to the requested academic context")
     total,valid,errors=await validate_timetable_file(db,file,context=(intake_id,semester_number,section_id))
     return apply_timetable_import(db,user,file.filename or "section_routine.csv",total,valid,errors,"section_routine")
 @router.get("/academic/teachers/{teacher_id}/timetable/export")

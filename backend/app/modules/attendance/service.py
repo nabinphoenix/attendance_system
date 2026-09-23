@@ -13,7 +13,7 @@ from sqlalchemy import select
 
 from app.core.config import settings
 from .models import AttendanceChallenge
-from app.modules.scheduling.models import ClassSession
+from app.modules.scheduling.models import ClassSession, SessionStatus
 
 
 class QRValidationError(ValueError):
@@ -106,11 +106,32 @@ def _code_hash(code: str) -> str:
     return hmac.new(settings.jwt_secret_key.encode(), code.encode(), hashlib.sha256).hexdigest()
 
 
+def classroom_code_hash(code: str) -> str:
+    return _code_hash(code)
+
+
 def generate_classroom_code() -> str:
     length = settings.attendance_code_length
     if length < 1 or length > 10:
         raise ValueError("attendance_code_length must be between 1 and 10")
     return str(secrets.randbelow(10 ** length)).zfill(length)
+
+
+def unique_classroom_code(db) -> str:
+    for _ in range(20):
+        code = generate_classroom_code()
+        collision = db.scalar(
+            select(AttendanceChallenge.id)
+            .join(ClassSession, AttendanceChallenge.class_session_id == ClassSession.id)
+            .where(
+                AttendanceChallenge.code_hash == _code_hash(code),
+                AttendanceChallenge.revoked_at.is_(None),
+                ClassSession.status == SessionStatus.ACTIVE,
+            )
+        )
+        if collision is None:
+            return code
+    raise RuntimeError("Could not issue a unique attendance code")
 
 
 def reveal_classroom_code(challenge: AttendanceChallenge) -> str:
@@ -141,6 +162,22 @@ def issue_qr_challenge(db, session: ClassSession, created_by: int, now: datetime
     )
     created = qr_created or challenge is None
     if created:
+        previous_active = db.scalar(
+            select(AttendanceChallenge)
+            .where(
+                AttendanceChallenge.class_session_id == session.id,
+                AttendanceChallenge.revoked_at.is_(None),
+            )
+            .order_by(AttendanceChallenge.id.desc())
+        )
+        if previous_active is not None and not force:
+            code_hash = previous_active.code_hash
+            code_ciphertext = previous_active.code_ciphertext
+            code = reveal_classroom_code(previous_active)
+        else:
+            code = unique_classroom_code(db)
+            code_hash = _code_hash(code)
+            code_ciphertext = _challenge_cipher().encrypt(code.encode()).decode()
         for previous in db.scalars(
             select(AttendanceChallenge).where(
                 AttendanceChallenge.class_session_id == session.id,
@@ -148,13 +185,12 @@ def issue_qr_challenge(db, session: ClassSession, created_by: int, now: datetime
             )
         ).all():
             previous.revoked_at = now
-        code = generate_classroom_code()
         challenge = AttendanceChallenge(
             class_session_id=session.id,
             qr_version=session.qr_version,
             qr_nonce=session.qr_nonce,
-            code_hash=_code_hash(code),
-            code_ciphertext=_challenge_cipher().encrypt(code.encode()).decode(),
+            code_hash=code_hash,
+            code_ciphertext=code_ciphertext,
             created_by=created_by,
             created_at=now,
             expires_at=expires,

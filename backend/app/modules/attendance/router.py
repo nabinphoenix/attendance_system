@@ -4,7 +4,7 @@ from datetime import UTC, date, datetime, timedelta
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 
 from app.core.config import settings
@@ -32,14 +32,17 @@ from .models import (
     LeaveRequest,
     PendingAttendanceVerification,
 )
-from .network import active_campus_cidrs, classify_ip, get_client_ip
+from .network import college_ip_status, get_client_ip
 from .schemas import (
     CampusNetworkCreate,
     CampusNetworkRead,
+    CampusNetworkUpdate,
+    AttendanceCodeCheckInRequest,
     CheckInExceptionRead,
     ChallengeConfirmationRequest,
     CheckInRequest,
     CheckInResponse,
+    LocationCheckInRequest,
     ExceptionDecision,
     CurrentNetworkConfirm,
     NetworkPolicyRead,
@@ -49,7 +52,7 @@ from .schemas import (
     StatusChange,
     TeacherAttendanceClass,
 )
-from .service import QRClaims, QRValidationError, challenge_is_current, classroom_code_matches, distance_meters, issue_qr_challenge, utc, validate_qr_token, verification_token_digest
+from .service import QRClaims, QRValidationError, challenge_is_current, classroom_code_hash, distance_meters, issue_qr_challenge, utc, validate_qr_token, verification_token_digest
 
 router = APIRouter(tags=["attendance"])
 
@@ -107,7 +110,9 @@ def save_campus_network(db, user: User, label: str, cidr: str, force: bool) -> C
 @router.get("/campus-networks", response_model=list[CampusNetworkRead])
 def list_campus_networks(user: Annotated[User, Depends(require_role("admin"))], db: DbSession):
     return db.scalars(
-        select(CampusNetwork).order_by(CampusNetwork.is_active.desc(), CampusNetwork.created_at.desc(), CampusNetwork.id.desc())
+        select(CampusNetwork)
+        .where(CampusNetwork.college_id == scoped_college_id(user))
+        .order_by(CampusNetwork.is_active.desc(), CampusNetwork.created_at.desc(), CampusNetwork.id.desc())
     ).all()
 
 
@@ -163,6 +168,29 @@ def update_network_policy(payload: NetworkPolicyUpdate, user: Annotated[User, De
     log_audit(db, user.id, "college.ip_policy_changed", "college", college.id, {"ip_policy": before}, {"ip_policy": college.ip_policy})
     db.commit()
     return {"ip_policy": college.ip_policy}
+
+
+@router.patch("/campus-networks/{network_id}", response_model=CampusNetworkRead)
+def update_campus_network(network_id: int, payload: CampusNetworkUpdate, user: Annotated[User, Depends(require_role("admin"))], db: DbSession):
+    network = db.scalar(select(CampusNetwork).where(CampusNetwork.id == network_id, CampusNetwork.college_id == scoped_college_id(user)))
+    if not network:
+        raise HTTPException(404, "Campus network not found")
+    before = {"label": network.label, "cidr": str(network.cidr), "is_active": network.is_active}
+    if payload.label is not None:
+        network.label = payload.label.strip()
+        if not network.label:
+            raise HTTPException(422, "A network label is required")
+    if payload.cidr is not None:
+        network.cidr = normalize_cidr(payload.cidr, payload.force)
+    if payload.is_active is not None:
+        network.is_active = payload.is_active
+    after = {"label": network.label, "cidr": str(network.cidr), "is_active": network.is_active}
+    if before != after:
+        action = "campus_network.deactivated" if before["is_active"] and not network.is_active else "campus_network.updated"
+        log_audit(db, user.id, action, "campus_network", network.id, before, after)
+        db.commit()
+        db.refresh(network)
+    return network
 
 
 def teacher_session(db, user: User, session_id: int) -> ClassSession:
@@ -249,18 +277,13 @@ def current_challenge(db, session: ClassSession, claims: QRClaims) -> Attendance
 
 
 def session_ip_status(db, session: ClassSession, client_ip: str | None) -> str:
-    return classify_ip(
-        client_ip,
-        active_campus_cidrs(db, session.college_id),
-        session.teacher_ip,
-        session.teacher_ip_status,
-    )
+    return college_ip_status(db, session.college_id, client_ip, session.teacher_ip, session.teacher_ip_status)
 
 def pending_attempt(
     db,
     session: ClassSession,
     student: Student,
-    claims: QRClaims,
+    challenge: AttendanceChallenge,
     reason: str,
     *,
     latitude: float | None = None,
@@ -283,13 +306,15 @@ def pending_attempt(
     )
     now = datetime.now(UTC)
     if latest and (now - utc(latest.created_at)).total_seconds() < settings.check_in_attempt_rate_limit_seconds:
+        latest.client_ip = client_ip
+        latest.ip_status = ip_status
         return latest
     attempt = CheckInAttempt(
         class_session_id=session.id,
         student_id=student.id,
         status=CheckInAttemptStatus.PENDING,
         failure_reason=reason,
-        qr_version=claims.version,
+        qr_version=challenge.qr_version,
         latitude=latitude,
         longitude=longitude,
         accuracy_meters=accuracy,
@@ -332,7 +357,9 @@ def teacher_qr_response(id: int, user: User, db, *, force: bool = False) -> QRRe
                 PendingAttendanceVerification.invalidated_at.is_(None),
             )
         ).all():
-            pending.invalidated_at = now
+            original = db.get(AttendanceChallenge, pending.attendance_challenge_id)
+            if pending.attendance_method != AttendanceMethod.CODE or not original or original.code_hash != challenge.code_hash:
+                pending.invalidated_at = now
         action = "attendance_challenge.manually_regenerated" if force else "attendance_challenge.rotated"
         log_audit(
             db,
@@ -376,7 +403,7 @@ def regenerate_challenge(id: int, user: Annotated[User, Depends(require_role("te
 
 @router.post("/check-ins", response_model=CheckInResponse)
 def check_in(request: Request, p: CheckInRequest, user: Annotated[User, Depends(require_role("student"))], db: DbSession):
-    """Validate a QR scan and create a single-use pending classroom-code verification."""
+    """Resolve the signed, current QR before shared attendance validation."""
 
     student = student_for_user(db, user)
     try:
@@ -389,6 +416,21 @@ def check_in(request: Request, p: CheckInRequest, user: Annotated[User, Depends(
     ensure_accepting_check_ins(session, db)
     validate_current_rotation(session, claims)
     challenge = current_challenge(db, session, claims)
+    return begin_check_in(request, p, user, db, student, session, challenge, AttendanceMethod.QR)
+
+
+def begin_check_in(
+    request: Request,
+    p: LocationCheckInRequest,
+    user: User,
+    db,
+    student: Student,
+    session: ClassSession,
+    challenge: AttendanceChallenge,
+    method: AttendanceMethod,
+) -> CheckInResponse:
+    if session.college_id != student.college_id or challenge.college_id != session.college_id:
+        raise HTTPException(403, "STUDENT_NOT_ELIGIBLE")
     ensure_student_eligible(session, student, db)
     existing = db.scalar(
         select(AttendanceRecord).where(
@@ -403,16 +445,16 @@ def check_in(request: Request, p: CheckInRequest, user: Annotated[User, Depends(
     ip_status = session_ip_status(db, session, client_ip)
 
     if p.location_failure_reason:
-        pending_attempt(db, session, student, claims, p.location_failure_reason, client_ip=client_ip, ip_status=ip_status)
-        log_audit(db, user.id, "attendance.check_in_pending", "class_session", session.id, None, {"reason": p.location_failure_reason})
+        pending_attempt(db, session, student, challenge, p.location_failure_reason, client_ip=client_ip, ip_status=ip_status)
+        log_audit(db, user.id, "attendance.check_in_pending", "class_session", session.id, None, {"reason": p.location_failure_reason, "method": method.value, "ip_status": ip_status})
         db.commit()
         return pending_response(session, db, p.location_failure_reason)
     if p.latitude is None or p.longitude is None or p.accuracy is None:
         raise HTTPException(422, "Location coordinates and accuracy are required")
     if p.accuracy > settings.geolocation_max_accuracy_meters:
         reason = "LOW_LOCATION_ACCURACY"
-        pending_attempt(db, session, student, claims, reason, latitude=p.latitude, longitude=p.longitude, accuracy=p.accuracy, client_ip=client_ip, ip_status=ip_status)
-        log_audit(db, user.id, "attendance.check_in_pending", "class_session", session.id, None, {"reason": reason})
+        pending_attempt(db, session, student, challenge, reason, latitude=p.latitude, longitude=p.longitude, accuracy=p.accuracy, client_ip=client_ip, ip_status=ip_status)
+        log_audit(db, user.id, "attendance.check_in_pending", "class_session", session.id, None, {"reason": reason, "method": method.value, "ip_status": ip_status})
         db.commit()
         return pending_response(session, db, reason)
 
@@ -425,15 +467,15 @@ def check_in(request: Request, p: CheckInRequest, user: Annotated[User, Depends(
         radius = settings.geofence_radius_meters
     else:
         reason = "SESSION_GEOFENCE_NOT_CONFIGURED"
-        pending_attempt(db, session, student, claims, reason, latitude=p.latitude, longitude=p.longitude, accuracy=p.accuracy, client_ip=client_ip, ip_status=ip_status)
-        log_audit(db, user.id, "attendance.check_in_pending", "class_session", session.id, None, {"reason": reason})
+        pending_attempt(db, session, student, challenge, reason, latitude=p.latitude, longitude=p.longitude, accuracy=p.accuracy, client_ip=client_ip, ip_status=ip_status)
+        log_audit(db, user.id, "attendance.check_in_pending", "class_session", session.id, None, {"reason": reason, "method": method.value, "ip_status": ip_status})
         db.commit()
         return pending_response(session, db, reason)
     distance = distance_meters(p.latitude, p.longitude, center_latitude, center_longitude)
     if distance > radius:
         reason = "OUTSIDE_GEOFENCE"
-        pending_attempt(db, session, student, claims, reason, latitude=p.latitude, longitude=p.longitude, accuracy=p.accuracy, distance=distance, radius=radius, client_ip=client_ip, ip_status=ip_status)
-        log_audit(db, user.id, "attendance.check_in_pending", "class_session", session.id, None, {"reason": reason, "distance_meters": distance})
+        pending_attempt(db, session, student, challenge, reason, latitude=p.latitude, longitude=p.longitude, accuracy=p.accuracy, distance=distance, radius=radius, client_ip=client_ip, ip_status=ip_status)
+        log_audit(db, user.id, "attendance.check_in_pending", "class_session", session.id, None, {"reason": reason, "distance_meters": distance, "method": method.value, "ip_status": ip_status})
         db.commit()
         return pending_response(session, db, reason)
 
@@ -449,7 +491,7 @@ def check_in(request: Request, p: CheckInRequest, user: Annotated[User, Depends(
         previous.invalidated_at = now
     verification_token = secrets.token_urlsafe(32)
     verification_expires_at = min(
-        utc(challenge.expires_at),
+        utc(challenge.expires_at) if method == AttendanceMethod.QR else self_checkin_closes_at(session),
         now + timedelta(seconds=settings.attendance_verification_timeout_seconds),
     )
     verification = PendingAttendanceVerification(
@@ -457,7 +499,8 @@ def check_in(request: Request, p: CheckInRequest, user: Annotated[User, Depends(
         student_id=student.id,
         class_session_id=session.id,
         attendance_challenge_id=challenge.id,
-        qr_version=claims.version,
+        attendance_method=method,
+        qr_version=challenge.qr_version,
         latitude=p.latitude,
         longitude=p.longitude,
         accuracy_meters=p.accuracy,
@@ -473,7 +516,7 @@ def check_in(request: Request, p: CheckInRequest, user: Annotated[User, Depends(
             student_id=student.id,
             status=CheckInAttemptStatus.PENDING,
             failure_reason=None,
-            qr_version=claims.version,
+            qr_version=challenge.qr_version,
             latitude=p.latitude,
             longitude=p.longitude,
             accuracy_meters=p.accuracy,
@@ -485,19 +528,65 @@ def check_in(request: Request, p: CheckInRequest, user: Annotated[User, Depends(
         )
     )
     db.flush()
-    log_audit(db, user.id, "attendance.qr_scanned", "pending_attendance_verification", verification.id, None, {"class_session_id": session.id, "challenge_id": challenge.id, "client_ip": client_ip, "ip_status": ip_status})
+    action = "attendance.qr_scanned" if method == AttendanceMethod.QR else "attendance.code_entered"
+    log_audit(db, user.id, action, "pending_attendance_verification", verification.id, None, {"class_session_id": session.id, "challenge_id": challenge.id, "method": method.value, "client_ip": client_ip, "ip_status": ip_status})
     db.commit()
     title, _, room, start, _ = session_metadata(session, db)
     return CheckInResponse(
         status="challenge_required",
         verification_token=verification_token,
         verification_expires_at=verification_expires_at,
-        code_length=settings.attendance_code_length,
         module_title=title,
         room=room,
         start_time=start,
-        message=f"QR verified. Enter the {settings.attendance_code_length}-digit code announced by your teacher.",
+        message="Attendance evidence verified. Completing check-in.",
     )
+
+
+@router.post("/check-ins/code", response_model=CheckInResponse)
+def check_in_with_code(request: Request, p: AttendanceCodeCheckInRequest, user: Annotated[User, Depends(require_role("student"))], db: DbSession):
+    student = student_for_user(db, user)
+    # Serialize guesses for one student across workers before checking the
+    # audit-backed attempt limit. Never log the entered code itself.
+    db.scalar(select(Student).where(Student.id == student.id).with_for_update())
+    recent_failures = db.scalar(
+        select(func.count(AuditLog.id)).where(
+            AuditLog.actor_id == user.id,
+            AuditLog.action == "attendance.code_invalid",
+            AuditLog.created_at >= datetime.now(UTC) - timedelta(minutes=5),
+        )
+    )
+    if recent_failures >= settings.attendance_max_code_attempts:
+        raise HTTPException(429, "ATTENDANCE_CODE_RATE_LIMITED")
+
+    challenges = db.scalars(
+        select(AttendanceChallenge)
+        .join(ClassSession, AttendanceChallenge.class_session_id == ClassSession.id)
+        .where(
+            AttendanceChallenge.code_hash == classroom_code_hash(p.attendance_code),
+            AttendanceChallenge.revoked_at.is_(None),
+            AttendanceChallenge.college_id == student.college_id,
+            ClassSession.college_id == student.college_id,
+            ClassSession.status == SessionStatus.ACTIVE,
+        )
+    ).all()
+    if len(challenges) == 1:
+        challenge = challenges[0]
+        session = db.scalar(select(ClassSession).where(ClassSession.id == challenge.class_session_id).with_for_update())
+        db.refresh(challenge)
+        if (
+            session
+            and challenge.revoked_at is None
+            and challenge.qr_version == session.qr_version
+            and challenge.qr_nonce == session.qr_nonce
+        ):
+            ensure_accepting_check_ins(session, db)
+            return begin_check_in(request, p, user, db, student, session, challenge, AttendanceMethod.CODE)
+
+    client_ip = get_client_ip(request)
+    log_audit(db, user.id, "attendance.code_invalid", "student", student.id, None, {"client_ip": client_ip, "ip_status": "unknown"})
+    db.commit()
+    raise HTTPException(400, "INVALID_ATTENDANCE_CODE")
 
 
 @router.post("/check-ins/confirm", response_model=CheckInResponse)
@@ -515,18 +604,32 @@ def confirm_check_in(request: Request, p: ChallengeConfirmationRequest, user: An
     now = datetime.now(UTC)
     session = db.get(ClassSession, pending.class_session_id)
     challenge = db.get(AttendanceChallenge, pending.attendance_challenge_id)
+    if session and challenge and pending.attendance_method == AttendanceMethod.CODE:
+        active_code = db.scalar(
+            select(AttendanceChallenge).where(
+                AttendanceChallenge.class_session_id == session.id,
+                AttendanceChallenge.qr_version == session.qr_version,
+                AttendanceChallenge.qr_nonce == session.qr_nonce,
+                AttendanceChallenge.revoked_at.is_(None),
+            )
+        )
+        challenge_valid = bool(active_code and active_code.code_hash == challenge.code_hash)
+    else:
+        challenge_valid = bool(session and challenge and challenge_is_current(session, challenge, now))
     if (
         pending.invalidated_at is not None
         or utc(pending.expires_at) <= now
         or not session
         or not challenge
-        or not challenge_is_current(session, challenge, now)
+        or not challenge_valid
     ):
         pending.invalidated_at = pending.invalidated_at or now
         db.commit()
         raise HTTPException(400, "ATTENDANCE_CHALLENGE_EXPIRED")
     ensure_accepting_check_ins(session, db)
     ensure_student_eligible(session, student, db)
+    confirm_client_ip = get_client_ip(request)
+    confirm_ip_status = session_ip_status(db, session, confirm_client_ip)
     existing = db.scalar(
         select(AttendanceRecord).where(
             AttendanceRecord.class_session_id == session.id,
@@ -537,8 +640,6 @@ def confirm_check_in(request: Request, p: ChallengeConfirmationRequest, user: An
         pending.consumed_at = now
         db.commit()
         raise HTTPException(409, "ALREADY_CHECKED_IN")
-    confirm_client_ip = get_client_ip(request)
-    confirm_ip_status = session_ip_status(db, session, confirm_client_ip)
     attempt = db.scalar(
         select(CheckInAttempt)
         .where(
@@ -547,29 +648,19 @@ def confirm_check_in(request: Request, p: ChallengeConfirmationRequest, user: An
             CheckInAttempt.status == CheckInAttemptStatus.PENDING,
             CheckInAttempt.failure_reason.is_(None),
         )
-        .order_by(CheckInAttempt.created_at.desc())
+        .order_by(CheckInAttempt.id.desc())
         .with_for_update()
     )
     if attempt:
         attempt.confirm_client_ip = confirm_client_ip
         attempt.confirm_ip_status = confirm_ip_status
-    if len(p.code) != settings.attendance_code_length or not classroom_code_matches(challenge, p.code):
-        pending.failed_attempts += 1
-        remaining = settings.attendance_max_code_attempts - pending.failed_attempts
-        exhausted = remaining <= 0
-        if exhausted:
-            pending.invalidated_at = now
-        log_audit(db, user.id, "attendance.challenge_failed", "pending_attendance_verification", pending.id, None, {"failed_attempts": pending.failed_attempts, "confirm_client_ip": confirm_client_ip, "confirm_ip_status": confirm_ip_status})
-        db.commit()
-        if exhausted:
-            raise HTTPException(400, "VERIFICATION_FAILED")
-        raise HTTPException(400, f"INCORRECT_CLASSROOM_CODE:{remaining}")
 
+    method = AttendanceMethod.CODE if pending.attendance_method == AttendanceMethod.CODE else AttendanceMethod.QR
     record = AttendanceRecord(
         class_session_id=session.id,
         student_id=student.id,
         status=AttendanceStatus.PRESENT,
-        method=AttendanceMethod.QR_GEOFENCE,
+        method=method,
         ip_status=confirm_ip_status,
         network_method="public_ip",
         check_in_time=now,
@@ -590,6 +681,8 @@ def confirm_check_in(request: Request, p: ChallengeConfirmationRequest, user: An
                 distance_meters=pending.distance_meters,
                 allowed_radius_meters=pending.allowed_radius_meters,
                 geofence_pass=True,
+                client_ip=confirm_client_ip,
+                ip_status=confirm_ip_status,
                 confirm_client_ip=confirm_client_ip,
                 confirm_ip_status=confirm_ip_status,
             )
@@ -598,7 +691,7 @@ def confirm_check_in(request: Request, p: ChallengeConfirmationRequest, user: An
             attempt.status = CheckInAttemptStatus.ACCEPTED
             attempt.confirm_client_ip = confirm_client_ip
             attempt.confirm_ip_status = confirm_ip_status
-        log_audit(db, user.id, "attendance.challenge_confirmed", "attendance_record", record.id, None, {"class_session_id": session.id, "challenge_id": challenge.id, "status": "present", "confirm_client_ip": confirm_client_ip, "confirm_ip_status": confirm_ip_status})
+        log_audit(db, user.id, "attendance.challenge_confirmed", "attendance_record", record.id, None, {"class_session_id": session.id, "challenge_id": challenge.id, "status": "present", "method": method.value, "confirm_client_ip": confirm_client_ip, "confirm_ip_status": confirm_ip_status})
         db.commit()
     except IntegrityError as exc:
         db.rollback()

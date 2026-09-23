@@ -7,7 +7,7 @@ from sqlalchemy import select
 from app.core.dependencies import DbSession, require_role
 from app.modules.identity.models import User
 from app.modules.operations.service import log_audit
-from .models import InvitationPurpose, InvitationStatus, Section, Student, StudentInvitation
+from .models import CohortSemester, InvitationPurpose, InvitationStatus, Section, Student, StudentEnrollment, StudentInvitation
 from .invitation_service import issue_student_invitation
 
 router = APIRouter(prefix="/academic", tags=["student onboarding"])
@@ -27,18 +27,21 @@ def invitation_state(student: Student, invite: StudentInvitation | None) -> str:
         return "Not Invited"
     return "Expired"
 
-def read_student(student:Student,invite:StudentInvitation|None):
-    return {"id":student.id,"name":student.name or (student.user.name if student.user else None),"email":student.email or (student.user.email if student.user else None),"roll_number":student.roll_number,"section_id":student.section_id,"section_name":student.section.name,"intake_id":student.section.intake_id,"semester_number":student.section.semester_number,"has_account":student.user_id is not None,"account_status":invitation_state(student,invite)}
+def read_student(db,student:Student,invite:StudentInvitation|None):
+    placement=db.scalar(select(StudentEnrollment).where(StudentEnrollment.student_id==student.id).order_by(StudentEnrollment.starts_on.desc(),StudentEnrollment.id.desc()).limit(1))
+    semester=db.get(CohortSemester,placement.cohort_semester_id) if placement and placement.cohort_semester_id else None
+    section=placement.section if placement else student.section
+    return {"id":student.id,"name":student.name or (student.user.name if student.user else None),"email":student.email or (student.user.email if student.user else None),"roll_number":student.roll_number,"section_id":section.id,"section_name":section.name,"intake_id":semester.intake_id if semester else None,"semester_number":semester.semester_number if semester else None,"has_account":student.user_id is not None,"account_status":invitation_state(student,invite)}
 @router.get("/students",dependencies=[Depends(require_role("admin"))])
 def students(db:DbSession,intake_id:int|None=None,section_id:int|None=None,only_without_accounts:bool=False):
     q=select(Student).join(Section)
-    if intake_id:q=q.where(Section.intake_id==intake_id)
+    if intake_id:q=q.where(Student.enrollments.any(StudentEnrollment.cohort_semester.has(CohortSemester.intake_id==intake_id)))
     if section_id:q=q.where(Student.section_id==section_id)
     if only_without_accounts:q=q.where(Student.user_id.is_(None))
     records=[]
     for student in db.scalars(q.order_by(Student.id)).all():
         invite=db.scalar(select(StudentInvitation).where(StudentInvitation.student_id==student.id).order_by(StudentInvitation.id.desc()))
-        records.append(read_student(student,invite))
+        records.append(read_student(db,student,invite))
     return records
 class InvitationRequest(BaseModel):
     student_ids:list[int]=[]
@@ -49,7 +52,7 @@ class InvitationRequest(BaseModel):
 def send_invitations(payload:InvitationRequest,actor:Annotated[User,Depends(require_role("admin"))],db:DbSession):
     q=select(Student).join(Section)
     if payload.student_ids:q=q.where(Student.id.in_(payload.student_ids))
-    if payload.intake_id:q=q.where(Section.intake_id==payload.intake_id)
+    if payload.intake_id:q=q.where(Student.enrollments.any(StudentEnrollment.cohort_semester.has(CohortSemester.intake_id==payload.intake_id)))
     if payload.section_id:q=q.where(Student.section_id==payload.section_id)
     if payload.only_without_accounts:q=q.where(Student.user_id.is_(None))
     requested=0;sent=0;activation_sent=0;password_setup_sent=0;failed=0;errors=[]

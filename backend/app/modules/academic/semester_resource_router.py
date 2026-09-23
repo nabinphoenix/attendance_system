@@ -41,7 +41,7 @@ def list_semesters(actor: Reader, db: DbSession):
     semesters = db.scalars(select(CohortSemester).order_by(CohortSemester.start_date.desc(), CohortSemester.id.desc())).all()
     return [
         SemesterResourcesRead(
-            id=row.id, intake_name=row.intake.name, batch_name=row.batch.name,
+            id=row.id, intake_name=row.intake.name or row.intake.code, batch_name=row.batch.name,
             semester_number=row.semester_number, attempt_number=row.attempt_number,
             start_date=row.start_date, end_date=row.end_date,
             calendar=CalendarRead.model_validate(calendars[row.id]) if row.id in calendars else None,

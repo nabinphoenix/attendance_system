@@ -8,8 +8,8 @@ AntimBench is a college attendance, academic-routine, student-support, and repor
 - Administrators publish mid-semester Google Forms feedback for teachers and upload semester academic calendar PDFs. See [Semester resources](SEMESTER_RESOURCES.md).
 - Administrators import students and routine data from CSV/XLSX files, review import errors, and download templates.
 - A successful student import creates a student account and queues a secure account-setup email. The student chooses their own password through a single-use link before signing in.
-- Teachers start a class session, capture a campus location, show a rotating QR code and classroom code, review exceptions, and finalize attendance.
-- Students scan the QR code, provide a fresh device location, enter the teacher's classroom code, and view their own attendance and reports.
+- Teachers start a class session, automatically capture a campus location, show a rotating QR code and separate attendance code, review exceptions, and finalize attendance.
+- Students scan the QR **or** enter the attendance code; either option automatically captures a fresh device location and public-network evidence.
 - The system creates student-support cases and emails students automatically when subject/module attendance falls below the configured threshold.
 - Administrators and staff can inspect analytics, intervention cases, audit logs, course completion, and CSV/PDF exports.
 
@@ -133,7 +133,7 @@ Foreign keys, unique constraints, indexes, and application validation protect id
 - Profile-image files are validated with Pillow and can use private S3 storage through Boto3.
 - CORS origins, cookie security, database URL, JWT secret, and SMTP secrets are environment variables, not source code.
 
-## Dynamic QR, classroom code, timer, and location check
+## QR or attendance code, timer, location, and network evidence
 
 This project uses **geolocation/geofencing**, not a visual map SDK. There is no Mapbox, Leaflet, Google Maps, or rendered map package in the application. The browser gets coordinates from the device and the backend calculates the distance to the teacher-captured classroom location using the Haversine formula.
 
@@ -141,30 +141,34 @@ This project uses **geolocation/geofencing**, not a visual map SDK. There is no 
 
 1. The teacher starts a scheduled session and the browser sends latitude, longitude, accuracy, radius, check-in window, and QR rotation preference.
 2. The session stores the teacher's captured location and the effective teacher/room after any approved override.
-3. The backend creates a compact HMAC-signed QR token, a random nonce, and a classroom code. The QR and code are tied to the current session/version.
+3. The backend creates a compact HMAC-signed QR token, a random nonce, and a six-digit random attendance code. The code is hashed and encrypted at rest and stays stable through automatic QR rotations until the session window closes; deliberate challenge regeneration replaces it.
 4. The teacher interface renders the black-on-white QR with `qrcode.react`; it can be opened in a high-contrast full-screen long-distance view.
-5. On every rotation, the earlier challenge is revoked and still-pending verifications from the previous rotation are invalidated.
+5. On every QR rotation, the earlier QR is revoked. Pending QR verifications are invalidated; pending attendance-code verifications remain valid briefly if the code did not change.
 
 ### Student flow
 
-1. The student scanner loads `html5-qrcode` only when needed and reads the teacher's QR token.
-2. Browser `navigator.geolocation.watchPosition()` asks for a fresh high-accuracy coordinate. The client waits up to 10 seconds and accepts a reading early when accuracy is at most 100 metres.
-3. The backend verifies the signed QR, expiry, current QR version/nonce, student eligibility, location accuracy, and the Haversine distance against the session geofence.
-4. A successful QR/location check creates a short-lived pending verification. The student enters the spoken classroom code to finish attendance.
-5. The backend records a `present` QR/geofence attendance record only after the code matches. Failed, expired, duplicate, or out-of-bound attempts are audited.
+1. Choose **Scan QR** (live camera) or **Enter Attendance Code**. No image/gallery upload is supported, and neither option requires the other.
+2. Browser `navigator.geolocation.watchPosition()` asks for a fresh high-accuracy coordinate for either option. The client waits up to 10 seconds and accepts a reading early when accuracy is at most 100 metres.
+3. The backend validates the signed, current QR **or** the active-session code, then applies the same authenticated student, roster, session-window, accuracy, duplicate, and Haversine geofence checks.
+4. A passing location check creates a short-lived, single-use verification token that the frontend confirms automatically. QR never asks for a code; code never asks for a QR. Failed location checks retain the existing pending/teacher-exception behavior.
+5. The backend independently resolves the public client IP on check-in and confirmation, stores network status, and audits it. Network status is informational: it never accepts, rejects, or overrides the GPS decision.
 
 ### Default timer and safety settings
 
 | Setting | Default | Meaning |
 | --- | ---: | --- |
-| `ATTENDANCE_CHALLENGE_ROTATION_SECONDS` | 20 seconds | QR token and classroom-code rotation period. |
+| `ATTENDANCE_CHALLENGE_ROTATION_SECONDS` | 20 seconds | QR token rotation period; the attendance code stays stable during automatic rotations. |
 | `ATTENDANCE_SELF_CHECKIN_WINDOW_MINUTES` | 15 minutes | Period after session start when self check-in is open. |
-| `ATTENDANCE_VERIFICATION_TIMEOUT_SECONDS` | 12 seconds | Maximum time between QR validation and classroom-code confirmation. |
-| `ATTENDANCE_MAX_CODE_ATTEMPTS` | 3 | Maximum code attempts before verification is rejected. |
+| `ATTENDANCE_VERIFICATION_TIMEOUT_SECONDS` | 12 seconds | Maximum time between either location validation and automatic confirmation. |
+| `ATTENDANCE_MAX_CODE_ATTEMPTS` | 3 | Invalid manual-code guesses permitted per student in five minutes. |
 | `GEOFENCE_RADIUS_METERS` | 150 m | Default campus/classroom boundary when no session-specific radius is supplied. |
 | `GEOLOCATION_MAX_ACCURACY_METERS` | 100 m | Maximum accepted device accuracy. |
 
-Teachers can still review pending location/code exceptions and record manual attendance where appropriate.
+College admins manage public campus ranges at **Campus networks**: `GET/POST /api/v1/campus-networks`, `PATCH /api/v1/campus-networks/{id}`, and `POST /api/v1/campus-networks/{id}/deactivate`. The policy endpoints are `GET/PATCH /api/v1/campus-networks/policy` (`off` or informational `flag`). **Add My Current Network** uses `GET /api/v1/campus-networks/current` to preview the server-resolved public IP, then requires explicit confirmation at `POST /api/v1/campus-networks/current/confirm`; no IP is sent from the browser. Wider than IPv4 /16 or IPv6 /48 requires `force=true`. Configure the current Techspire public address as `124.41.240.125/32` in the admin UI, not in source code.
+
+Production trusts loopback, the configured AWS VPC `10.0.0.0/16`, and static Cloudflare IPv4/IPv6 proxy ranges. Nginx appends `X-Forwarded-For`; Uvicorn runs with `--no-proxy-headers`; `attendance.network.get_client_ip` walks the chain from the right and rejects malformed evidence. `GET /api/v1/debug/ip` is a **TEMPORARY super-admin-only diagnostic** for checking the live proxy chain. Remove this endpoint before final demo/production signoff.
+
+Teachers can still review pending location exceptions and record manual corrections where appropriate.
 
 ## Bulk import
 

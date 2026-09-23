@@ -41,3 +41,27 @@ def test_direct_request_returns_untrusted_socket_peer() -> None:
     request = request_with_headers(socket_host="198.51.100.20")
 
     assert get_client_ip(request) == "198.51.100.20"
+
+
+def test_body_and_query_ip_are_not_used() -> None:
+    async def receive():
+        return {"type": "http.request", "body": b'{"ip":"203.0.113.201"}', "more_body": False}
+
+    scope = {
+        "type": "http",
+        "headers": [],
+        "client": ("198.51.100.20", 8000),
+        "query_string": b"ip=203.0.113.200",
+    }
+    request = Request(scope, receive)
+    assert get_client_ip(request) == "198.51.100.20"
+
+
+def test_duplicate_forwarded_headers_and_missing_socket_peer_are_unsafe() -> None:
+    request = Request({
+        "type": "http",
+        "headers": [(b"x-forwarded-for", b"198.51.100.20"), (b"x-forwarded-for", b"203.0.113.20")],
+        "client": ("127.0.0.1", 8000),
+    })
+    assert get_client_ip(request) is None
+    assert get_client_ip(Request({"type": "http", "headers": [], "client": None})) is None

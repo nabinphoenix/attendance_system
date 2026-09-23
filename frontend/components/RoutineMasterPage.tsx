@@ -12,6 +12,7 @@ export type Field = {
   key: string;
   label: string;
   type?: "text" | "number" | "date" | "time";
+  required?: boolean;
   optionsEndpoint?: string;
   options?: { value: string; label: string }[];
 };
@@ -63,10 +64,14 @@ export default function RoutineMasterPage({
   }, [endpoint]);
 
   const payload = () => Object.fromEntries(
-    fields.map((field) => [
-      field.key,
-      field.type === "number" || field.optionsEndpoint ? Number(form[field.key]) : form[field.key],
-    ]),
+    fields.flatMap((field) => {
+      const value = form[field.key].trim();
+      if (!value && field.required === false) return [];
+      return [[
+        field.key,
+        field.type === "number" || field.optionsEndpoint ? Number(value) : value,
+      ]];
+    }),
   );
 
   function closeEdit() {
@@ -127,7 +132,7 @@ export default function RoutineMasterPage({
         <select
           autoFocus={autoFocusFirst && index === 0}
           className="w-full"
-          required
+          required={field.required !== false}
           value={form[field.key]}
           onChange={(event) => setForm({ ...form, [field.key]: event.target.value })}
         >
@@ -140,7 +145,7 @@ export default function RoutineMasterPage({
         <select
           autoFocus={autoFocusFirst && index === 0}
           className="w-full"
-          required
+          required={field.required !== false}
           value={form[field.key]}
           onChange={(event) => setForm({ ...form, [field.key]: event.target.value })}
         >
@@ -153,7 +158,7 @@ export default function RoutineMasterPage({
         <input
           autoFocus={autoFocusFirst && index === 0}
           className="w-full"
-          required
+          required={field.required !== false}
           type={field.type ?? "text"}
           value={form[field.key]}
           onChange={(event) => setForm({ ...form, [field.key]: event.target.value })}

@@ -27,12 +27,13 @@ from app.modules.academic.models import (
     Teacher,
     TimeSlot,
 )
-from app.modules.attendance.models import AttendanceChallenge, AttendanceRecord, CheckInAttempt, CheckInAttemptStatus, PendingAttendanceVerification
+from app.modules.attendance.models import AttendanceChallenge, AttendanceMethod, AttendanceRecord, CheckInAttempt, CheckInAttemptStatus, PendingAttendanceVerification
 from app.modules.attendance.router import validate_current_rotation
 from app.modules.attendance.service import QRValidationError, validate_qr_token
 from app.modules.identity.models import User, UserRole
 from app.modules.operations.models import AuditLog
 from app.modules.scheduling.models import ClassSession, OverrideStatus, ScheduleOverride, SessionStatus
+from attendance_database import make_attendance_engine, dispose_attendance_engine
 
 
 PASSWORD = "Password123!"
@@ -42,9 +43,8 @@ ROOM_LONGITUDE = 85.3240
 
 @pytest.fixture()
 def attendance_env():
-    engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    engine, schema = make_attendance_engine()
     TestSession = sessionmaker(bind=engine)
-    Base.metadata.create_all(engine)
 
     def override_db():
         with TestSession() as db:
@@ -172,6 +172,7 @@ def attendance_env():
 
     yield client, TestSession, auth, ids, new_session
     app.dependency_overrides.clear()
+    dispose_attendance_engine(engine, schema)
 
 
 def get_qr(client, auth, session_id, teacher="teacher"):
@@ -189,11 +190,22 @@ def check_in(client, auth, token, student="a3", **location):
     response = scan_check_in(client, auth, token, student, **location)
     if response.status_code != 200 or response.json().get("status") != "challenge_required":
         return response
-    code = get_qr(client, auth, validate_qr_token(token).session_id)["classroom_code"]
     return client.post(
         "/api/v1/check-ins/confirm",
         headers=auth[student],
-        json={"verification_token": response.json()["verification_token"], "code": code},
+        json={"verification_token": response.json()["verification_token"]},
+    )
+
+
+def code_check_in(client, auth, code, student="a3", **location):
+    payload = {"attendance_code": code, "latitude": ROOM_LATITUDE, "longitude": ROOM_LONGITUDE, "accuracy": 8, **location}
+    response = client.post("/api/v1/check-ins/code", headers=auth[student], json=payload)
+    if response.status_code != 200 or response.json().get("status") != "challenge_required":
+        return response
+    return client.post(
+        "/api/v1/check-ins/confirm",
+        headers=auth[student],
+        json={"verification_token": response.json()["verification_token"]},
     )
 
 
@@ -230,6 +242,30 @@ def test_teacher_start_accepts_coarse_campus_location_and_keeps_it_fixed(attenda
     # Room NULL coordinates do not prevent student attendance against the session center.
     token = get_qr(client, auth, session_id)["token"]
     assert check_in(client, auth, token).json()["status"] == "present"
+
+
+def test_canonical_start_keeps_first_teacher_location_and_ip(attendance_env):
+    _, TestSession, auth, ids, _ = attendance_env
+    client = TestClient(app, client=("127.0.0.1", 50000))
+    endpoint = f"/api/v1/routine-sessions/{ids['routine']}/start"
+    first = client.post(
+        endpoint,
+        headers=auth["teacher"] | {"X-Forwarded-For": "198.51.100.10"},
+        json={"latitude": ROOM_LATITUDE, "longitude": ROOM_LONGITUDE, "accuracy_meters": 12},
+    )
+    assert first.status_code == 200, first.text
+    second = client.post(
+        endpoint,
+        headers=auth["teacher"] | {"X-Forwarded-For": "203.0.113.10"},
+        json={"latitude": 0, "longitude": 0, "accuracy_meters": 1},
+    )
+    assert second.status_code == 200 and second.json()["id"] == first.json()["id"]
+    with TestSession() as db:
+        session = db.get(ClassSession, first.json()["id"])
+        assert (session.geofence_latitude, session.geofence_longitude) == (ROOM_LATITUDE, ROOM_LONGITUDE)
+        assert session.teacher_location_accuracy_meters == 12
+        assert session.teacher_ip == "198.51.100.10"
+        assert session.teacher_ip_status == "outside"
 
 
 def test_teacher_can_start_another_session_after_finalizing(attendance_env):
@@ -309,6 +345,7 @@ def test_qr_generation_authorization_claims_and_rotation(attendance_env):
         db.commit()
     second = get_qr(client, auth, session_id)
     assert second["token"] != first["token"] and validate_qr_token(second["token"]).version == 2
+    assert second["classroom_code"] == first["classroom_code"]
     # 6: old rotations fail even while their signed exp claim is still fresh (zero grace).
     old = check_in(client, auth, first["token"])
     assert old.status_code == 400 and old.json()["detail"] == "ATTENDANCE_CHALLENGE_EXPIRED"
@@ -489,8 +526,10 @@ def test_combined_section_eligibility_duplicate_and_identity_spoofing(attendance
     assert check_in(client, auth, a3_token, student="a4").json()["status"] == "present"
     # 23: A2 is rejected server-side before geofence acceptance.
     invalid_id = new_session()
-    invalid_token = get_qr(client, auth, invalid_id)["token"]
+    invalid_challenge = get_qr(client, auth, invalid_id)
+    invalid_token = invalid_challenge["token"]
     assert check_in(client, auth, invalid_token, student="a2").json()["detail"] == "STUDENT_NOT_ELIGIBLE"
+    assert code_check_in(client, auth, invalid_challenge["classroom_code"], student="a2").json()["detail"] == "STUDENT_NOT_ELIGIBLE"
     # 24: duplicate successful check-in is blocked by application and DB uniqueness.
     assert check_in(client, auth, a3_token, student="a3").json()["detail"] == "ALREADY_CHECKED_IN"
     with TestSession() as db:
@@ -500,18 +539,18 @@ def test_combined_section_eligibility_duplicate_and_identity_spoofing(attendance
     assert spoof.status_code == 422
 
 
-def test_scan_requires_the_teacher_code_before_creating_attendance(attendance_env):
+def test_qr_scan_requires_no_classroom_code(attendance_env):
     client, TestSession, auth, ids, new_session = attendance_env
     session_id = new_session()
     qr = get_qr(client, auth, session_id)
 
-    # Students can scan the signed QR but never retrieve the spoken code.
+    # Students can scan the signed QR but never retrieve the manual alternative.
     assert client.get(f"/api/v1/sessions/{session_id}/qr", headers=auth["a3"]).status_code == 403
     scan = scan_check_in(client, auth, qr["token"])
     assert scan.status_code == 200, scan.text
     payload = scan.json()
     assert payload["status"] == "challenge_required"
-    assert payload["code_length"] == 5
+    assert "code_length" not in payload
     assert qr["token"].startswith("AQ1:") and len(qr["token"].split(":")) == 5
     assert "classroom_code" not in payload
     with TestSession() as db:
@@ -521,48 +560,114 @@ def test_scan_requires_the_teacher_code_before_creating_attendance(attendance_en
     confirmed = client.post(
         "/api/v1/check-ins/confirm",
         headers=auth["a3"],
-        json={"verification_token": payload["verification_token"], "code": qr["classroom_code"]},
+        json={"verification_token": payload["verification_token"]},
     )
     assert confirmed.status_code == 200 and confirmed.json()["status"] == "present"
     with TestSession() as db:
-        assert db.scalar(select(AttendanceRecord).where(AttendanceRecord.class_session_id == session_id, AttendanceRecord.student_id == ids["student_a3"])) is not None
+        record = db.scalar(select(AttendanceRecord).where(AttendanceRecord.class_session_id == session_id, AttendanceRecord.student_id == ids["student_a3"]))
+        assert record is not None and record.method == AttendanceMethod.QR
         assert db.scalar(select(AuditLog).where(AuditLog.action == "attendance.qr_scanned")) is not None
         assert db.scalar(select(AuditLog).where(AuditLog.action == "attendance.challenge_confirmed")) is not None
 
     replay = client.post(
         "/api/v1/check-ins/confirm",
         headers=auth["a3"],
-        json={"verification_token": payload["verification_token"], "code": qr["classroom_code"]},
+        json={"verification_token": payload["verification_token"]},
     )
     assert replay.status_code == 409 and replay.json()["detail"] == "ALREADY_CHECKED_IN"
 
 
-def test_wrong_code_is_limited_and_teacher_regeneration_invalidates_pending(attendance_env):
+def test_code_is_independent_of_qr_and_survives_automatic_qr_rotation(attendance_env):
+    client, TestSession, auth, ids, new_session = attendance_env
+    session_id = new_session()
+    first = get_qr(client, auth, session_id)
+    with TestSession() as db:
+        session = db.get(ClassSession, session_id)
+        session.qr_expires_at = datetime.now(UTC) - timedelta(seconds=1)
+        db.commit()
+    rotated = get_qr(client, auth, session_id)
+    assert rotated["token"] != first["token"]
+    assert rotated["classroom_code"] == first["classroom_code"]
+    marked = code_check_in(client, auth, first["classroom_code"])
+    assert marked.status_code == 200 and marked.json()["status"] == "present"
+    with TestSession() as db:
+        record = db.scalar(select(AttendanceRecord).where(AttendanceRecord.class_session_id == session_id, AttendanceRecord.student_id == ids["student_a3"]))
+        assert record.method == AttendanceMethod.CODE
+    assert check_in(client, auth, rotated["token"]).status_code == 409
+
+
+def test_duplicate_attendance_is_blocked_in_both_method_orders(attendance_env):
+    client, TestSession, auth, ids, new_session = attendance_env
+    qr_first_id = new_session()
+    qr_first = get_qr(client, auth, qr_first_id)
+    assert check_in(client, auth, qr_first["token"]).json()["status"] == "present"
+    code_after = code_check_in(client, auth, qr_first["classroom_code"])
+    assert code_after.status_code == 409 and code_after.json()["detail"] == "ALREADY_CHECKED_IN"
+
+    code_first_id = new_session()
+    code_first = get_qr(client, auth, code_first_id)
+    assert code_check_in(client, auth, code_first["classroom_code"], student="a4").json()["status"] == "present"
+    qr_after = check_in(client, auth, code_first["token"], student="a4")
+    assert qr_after.status_code == 409 and qr_after.json()["detail"] == "ALREADY_CHECKED_IN"
+    with TestSession() as db:
+        for session_id, student_id in ((qr_first_id, ids["student_a3"]), (code_first_id, ids["student_a4"])):
+            assert db.scalar(select(func.count()).select_from(AttendanceRecord).where(AttendanceRecord.class_session_id == session_id, AttendanceRecord.student_id == student_id)) == 1
+
+
+def test_manual_code_cannot_bypass_location_accuracy_or_geofence(attendance_env):
+    client, TestSession, auth, ids, new_session = attendance_env
+    session_id = new_session()
+    code = get_qr(client, auth, session_id)["classroom_code"]
+    denied = code_check_in(client, auth, code, location_failure_reason="LOCATION_DENIED", latitude=None, longitude=None, accuracy=None)
+    assert denied.status_code == 200 and denied.json()["status"] == "pending_verification"
+    coarse = code_check_in(client, auth, code, accuracy=settings.geolocation_max_accuracy_meters + 1)
+    assert coarse.json()["reason"] == "LOW_LOCATION_ACCURACY"
+    distant = code_check_in(client, auth, code, latitude=27.7200, longitude=85.3300)
+    assert distant.json()["reason"] == "OUTSIDE_GEOFENCE"
+    with TestSession() as db:
+        assert db.scalar(select(AttendanceRecord).where(AttendanceRecord.class_session_id == session_id, AttendanceRecord.student_id == ids["student_a3"])) is None
+        assert db.scalar(select(CheckInAttempt).where(CheckInAttempt.class_session_id == session_id, CheckInAttempt.failure_reason == "OUTSIDE_GEOFENCE")) is not None
+
+
+def test_code_expires_when_session_or_window_closes(attendance_env):
+    client, TestSession, auth, _, new_session = attendance_env
+    closed_id = new_session()
+    closed_code = get_qr(client, auth, closed_id)["classroom_code"]
+    with TestSession() as db:
+        db.get(ClassSession, closed_id).status = SessionStatus.COMPLETED
+        db.commit()
+    assert code_check_in(client, auth, closed_code).status_code == 400
+
+    expired_id = new_session()
+    expired_code = get_qr(client, auth, expired_id)["classroom_code"]
+    with TestSession() as db:
+        db.get(ClassSession, expired_id).started_at = datetime.now(UTC) - timedelta(days=1)
+        db.commit()
+    expired = code_check_in(client, auth, expired_code)
+    assert expired.status_code == 409 and expired.json()["detail"] == "SELF_CHECKIN_WINDOW_CLOSED"
+
+
+def test_wrong_manual_code_is_limited_and_teacher_regeneration_invalidates_pending(attendance_env):
     client, TestSession, auth, _, new_session = attendance_env
     session_id = new_session()
     first = get_qr(client, auth, session_id)
-    scan = scan_check_in(client, auth, first["token"])
-    verification_token = scan.json()["verification_token"]
-    wrong_code = "99999" if first["classroom_code"] != "99999" else "00000"
+    wrong_code = "999999" if first["classroom_code"] != "999999" else "000000"
 
-    for remaining in range(settings.attendance_max_code_attempts - 1, 0, -1):
+    for _ in range(settings.attendance_max_code_attempts):
         wrong = client.post(
-            "/api/v1/check-ins/confirm",
+            "/api/v1/check-ins/code",
             headers=auth["a3"],
-            json={"verification_token": verification_token, "code": wrong_code},
+            json={"attendance_code": wrong_code, "latitude": ROOM_LATITUDE, "longitude": ROOM_LONGITUDE, "accuracy": 8},
         )
-        assert wrong.status_code == 400 and wrong.json()["detail"] == f"INCORRECT_CLASSROOM_CODE:{remaining}"
+        assert wrong.status_code == 400 and wrong.json()["detail"] == "INVALID_ATTENDANCE_CODE"
     exhausted = client.post(
-        "/api/v1/check-ins/confirm",
+        "/api/v1/check-ins/code",
         headers=auth["a3"],
-        json={"verification_token": verification_token, "code": wrong_code},
+        json={"attendance_code": wrong_code, "latitude": ROOM_LATITUDE, "longitude": ROOM_LONGITUDE, "accuracy": 8},
     )
-    assert exhausted.status_code == 400 and exhausted.json()["detail"] == "VERIFICATION_FAILED"
+    assert exhausted.status_code == 429 and exhausted.json()["detail"] == "ATTENDANCE_CODE_RATE_LIMITED"
     with TestSession() as db:
-        pending = db.scalar(select(PendingAttendanceVerification).where(PendingAttendanceVerification.token_hash.is_not(None)))
-        assert pending.failed_attempts == settings.attendance_max_code_attempts
-        assert pending.invalidated_at is not None
-        assert db.scalar(select(AuditLog).where(AuditLog.action == "attendance.challenge_failed")) is not None
+        assert db.scalar(select(AuditLog).where(AuditLog.action == "attendance.code_invalid")) is not None
 
     second_scan = scan_check_in(client, auth, first["token"], student="a4")
     assert second_scan.status_code == 200
@@ -572,7 +677,7 @@ def test_wrong_code_is_limited_and_teacher_regeneration_invalidates_pending(atte
     stale_confirm = client.post(
         "/api/v1/check-ins/confirm",
         headers=auth["a4"],
-        json={"verification_token": second_scan.json()["verification_token"], "code": first["classroom_code"]},
+        json={"verification_token": second_scan.json()["verification_token"]},
     )
     assert stale_confirm.status_code == 400 and stale_confirm.json()["detail"] == "ATTENDANCE_CHALLENGE_EXPIRED"
     with TestSession() as db:

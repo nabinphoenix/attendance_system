@@ -18,9 +18,9 @@ from .promotion_service import period_for_context, routine_is_active_on_date, st
 router=APIRouter(prefix="/academic",tags=["routine"],dependencies=[Depends(require_role("admin"))])
 student_router=APIRouter(prefix="/academic",tags=["routine"])
 class ORM(BaseModel):model_config=ConfigDict(from_attributes=True)
-class IntakeCreate(BaseModel):name:str;code:str;start_date:date;program_id:int
+class IntakeCreate(BaseModel):name:str|None=None;code:str;start_date:date|None=None;program_id:int
 class IntakeUpdate(BaseModel):name:str|None=None;code:str|None=None;start_date:date|None=None;program_id:int|None=None
-class IntakeRead(ORM):id:int;name:str;code:str;start_date:date;program_id:int
+class IntakeRead(ORM):id:int;name:str|None;code:str;start_date:date|None;program_id:int
 class BlockCreate(BaseModel):name:str
 class BlockUpdate(BaseModel):name:str|None=None
 class BlockRead(ORM):id:int;name:str
@@ -82,7 +82,7 @@ def routine_catalog(user:Annotated[User,Depends(get_current_user)],db:DbSession)
   "rooms":[{"id":item.id,"block_id":item.block_id,"name":item.name} for item in db.scalars(select(Room).order_by(Room.name)).all()],
   "blocks":[{"id":item.id,"name":item.name} for item in db.scalars(select(Block).order_by(Block.name)).all()],
   "time-slots":[{"id":item.id,"start_time":item.start_time.isoformat(),"end_time":item.end_time.isoformat()} for item in db.scalars(select(TimeSlot).order_by(TimeSlot.start_time,TimeSlot.end_time)).all()],
-  "intakes":[{"id":item.id,"name":item.name,"code":item.code} for item in db.scalars(select(Intake).order_by(Intake.start_date.desc())).all()],
+  "intakes":[{"id":item.id,"name":item.name,"code":item.code} for item in db.scalars(select(Intake).order_by(Intake.code)).all()],
   "teachers":[{"id":item.id,"name":item.user.name,"employee_code":item.employee_code} for item in db.scalars(select(Teacher).order_by(Teacher.employee_code)).all()],
  }
 
@@ -147,19 +147,16 @@ def valid_routine(db,p:RoutineCreate):
  sections=[]
  for section_id in payload_section_ids(p):
   section=get(db,Section,section_id,"Section");sections.append(section)
-  if (section.intake_id is not None and section.intake_id!=intake.id) or (section.semester_number is not None and section.semester_number!=p.semester_number):raise HTTPException(422,"Section does not belong to the selected intake and semester")
+  if section.batch_id != sections[0].batch_id:raise HTTPException(422,"All routine sections must belong to the same batch")
  cohort_semester_id=p.cohort_semester_id
- section_period_ids={item.cohort_semester_id for item in sections if item.cohort_semester_id is not None}
- if cohort_semester_id is None and len(section_period_ids)==1:cohort_semester_id=next(iter(section_period_ids))
  if cohort_semester_id is not None:
   period=get(db,CohortSemester,cohort_semester_id,"Cohort semester")
-  if period.intake_id!=intake.id or period.semester_number!=p.semester_number:raise HTTPException(422,"Cohort semester does not match the selected intake and semester")
-  if any(item.cohort_semester_id not in (None,period.id) for item in sections):raise HTTPException(422,"All routine sections must belong to the selected cohort semester")
+  if period.intake_id!=intake.id or period.semester_number!=p.semester_number or period.batch_id!=sections[0].batch_id:raise HTTPException(422,"Cohort semester does not match the selected intake, batch, and semester")
  return resolve_active_module_offering(db,module=module,intake=intake,semester_number=p.semester_number,sections=sections,cohort_semester_id=cohort_semester_id)
 @router.post("/intakes",response_model=IntakeRead)
 def create_intake(p:IntakeCreate,user:Annotated[User,Depends(require_role("admin"))],db:DbSession):return save(db,Intake(**p.model_dump()),user,"intake.created","intake")
 @router.get("/intakes",response_model=list[IntakeRead])
-def intakes(db:DbSession):return db.scalars(select(Intake).order_by(Intake.start_date.desc())).all()
+def intakes(db:DbSession):return db.scalars(select(Intake).order_by(Intake.code)).all()
 @router.patch("/intakes/{id}",response_model=IntakeRead)
 def update_intake(id:int,p:IntakeUpdate,user:Annotated[User,Depends(require_role("admin"))],db:DbSession):
  values=p.model_dump(exclude_none=True)
@@ -456,7 +453,7 @@ def my_routine(user:Annotated[User,Depends(get_current_user)],db:DbSession):
  student=current_student_profile(db,user)
  section_id=student_section_at(db,student.id,date.today())
  section=db.get(Section,section_id) if section_id else None
- if not section or not section.intake_id or not section.semester_number:return []
+ if not section:return []
  q=routine_query().outerjoin(RoutineEntrySection).where((RoutineEntry.section_id==section_id)|(RoutineEntrySection.section_id==section_id)).order_by(RoutineEntry.day_of_week)
  return [routine_read(entry) for entry in db.scalars(q).unique().all() if routine_is_active_on_date(db,entry,date.today())]
 

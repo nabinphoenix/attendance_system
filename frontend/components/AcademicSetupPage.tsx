@@ -10,7 +10,7 @@ import { HorizontalPagination } from "@/components/ui/HorizontalPagination";
 import { SystemFeedback } from "@/components/ui/SystemFeedback";
 
 type Row = Record<string, string | number>;
-type Field = { name: string; label: string; type?: "text" | "email" | "password" | "number"; optionsEndpoint?: string };
+type Field = { name: string; label: string; type?: "text" | "email" | "password" | "number"; optionsEndpoint?: string; required?: boolean };
 type Column = { label: string; field: string; optionsEndpoint?: string };
 
 export type AcademicSetupConfig = {
@@ -83,7 +83,7 @@ export default function AcademicSetupPage({ config }: { config: AcademicSetupCon
   async function submit(event: FormEvent) {
     event.preventDefault();
     const payload = body(values);
-    if (Object.keys(payload).length !== config.fields.length) {
+    if (config.fields.some((field) => field.required !== false && !(field.name in payload))) {
       setError("Complete all required fields.");
       return;
     }
@@ -126,7 +126,7 @@ export default function AcademicSetupPage({ config }: { config: AcademicSetupCon
       {field.optionsEndpoint ? (
         <select
           autoFocus={autoFocusFirst && index === 0}
-          required
+          required={field.required !== false}
           className="w-full"
           value={values[field.name] ?? ""}
           onChange={(event) => setValues({ ...values, [field.name]: event.target.value })}
@@ -139,7 +139,7 @@ export default function AcademicSetupPage({ config }: { config: AcademicSetupCon
       ) : (
         <input
           autoFocus={autoFocusFirst && index === 0}
-          required
+          required={field.required !== false}
           type={field.type ?? "text"}
           className="w-full"
           value={values[field.name] ?? ""}

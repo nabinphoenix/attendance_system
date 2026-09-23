@@ -12,7 +12,7 @@ INET_TYPE = INET().with_variant(String(45), "sqlite")
 
 
 class AttendanceStatus(str, enum.Enum): PRESENT="present"; LATE="late"; ABSENT="absent"; LEAVE="leave"; BUNK="bunk"
-class AttendanceMethod(str, enum.Enum): QR_GEOFENCE="qr_geofence"; FINALIZATION="finalization"; MANUAL="manual"
+class AttendanceMethod(str, enum.Enum): QR_GEOFENCE="qr_geofence"; FINALIZATION="finalization"; MANUAL="manual"; QR="qr"; CODE="code"
 class CheckInAttemptStatus(str, enum.Enum): ACCEPTED="accepted"; PENDING="pending"; CONFIRMED="confirmed"; REJECTED="rejected"
 class CampusNetwork(CollegeOwned, Base):
     __tablename__ = "campus_networks"
@@ -95,6 +95,7 @@ class PendingAttendanceVerification(CollegeOwned, Base):
     student_id:Mapped[int]=mapped_column(ForeignKey("students.id"))
     class_session_id:Mapped[int]=mapped_column(ForeignKey("class_sessions.id",ondelete="CASCADE"))
     attendance_challenge_id:Mapped[int]=mapped_column(ForeignKey("attendance_challenges.id",ondelete="CASCADE"))
+    attendance_method:Mapped[AttendanceMethod]=mapped_column(Enum(AttendanceMethod),default=AttendanceMethod.QR_GEOFENCE,server_default="QR_GEOFENCE")
     qr_version:Mapped[int]=mapped_column(Integer)
     latitude:Mapped[float|None]=mapped_column(Float,nullable=True)
     longitude:Mapped[float|None]=mapped_column(Float,nullable=True)

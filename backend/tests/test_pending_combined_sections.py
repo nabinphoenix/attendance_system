@@ -206,7 +206,7 @@ def test_later_resolution_conflict_is_blocked_after_section_inherits_offering():
         app.dependency_overrides.clear()
 
 
-def test_wrong_context_section_cannot_be_selected_for_resolution():
+def test_permanent_section_ignores_legacy_intake_fields_for_resolution():
     Session, ids = setup_context()
     client = TestClient(app)
     admin = auth(client, "admin@example.com")
@@ -214,6 +214,6 @@ def test_wrong_context_section_cannot_be_selected_for_resolution():
         other_intake = client.post("/api/v1/academic/intakes", headers=admin, json={"name": "January", "code": "JAN", "start_date": "2027-01-01", "program_id": 1}).json()
         wrong = client.post("/api/v1/academic/sections", headers=admin, json={"name": "A2", "batch_id": ids["batch"], "intake_id": other_intake["id"], "semester_number": 6}).json()
         response = client.post(f"/api/v1/academic/sections/{wrong['id']}/routine/preview?intake_id={ids['intake']}&semester_number=6", headers=admin, files={"file": ("a2.csv", io.BytesIO(routine_csv(sections="A2")), "text/csv")})
-        assert response.status_code == 422 and "Selected section does not belong" in response.json()["detail"]
+        assert response.status_code == 200, response.text
     finally:
         app.dependency_overrides.clear()

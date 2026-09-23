@@ -11,21 +11,27 @@ from app.core.security import hash_password
 from app.main import app
 from app.modules.academic.models import Batch, Program, Section, Student, StudentSubjectEnrollment, Subject, Teacher
 from app.modules.attendance.models import AttendanceRecord, CampusNetwork, CheckInAttempt
-from app.modules.attendance.network import classify_ip
+from app.modules.attendance.network import classify_ip, college_ip_status
 from app.modules.identity.models import User, UserRole
 from app.modules.scheduling.models import ClassSession, TimetableEntry
+from attendance_database import make_attendance_engine, dispose_attendance_engine
 
 
 @pytest.fixture
 def attendance_context():
-    engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    engine, schema = make_attendance_engine()
     session_factory = sessionmaker(bind=engine, expire_on_commit=False)
-    Base.metadata.create_all(engine)
     with session_factory() as db:
         program = Program(name="BCA", college_id=1)
-        batch = Batch(name="2026", program_id=1, college_id=1)
-        section = Section(name="A", batch_id=1, college_id=1)
-        subject = Subject(name="Architecture", code="ARC", section_id=1)
+        db.add(program)
+        db.flush()
+        batch = Batch(name="2026", program_id=program.id, college_id=1)
+        db.add(batch)
+        db.flush()
+        section = Section(name="A", batch_id=batch.id, college_id=1)
+        db.add(section)
+        db.flush()
+        subject = Subject(name="Architecture", code="ARC", section_id=section.id)
         teacher_user = User(
             name="Teacher",
             email="network-teacher@example.com",
@@ -40,7 +46,7 @@ def attendance_context():
             role=UserRole.STUDENT,
             college_id=1,
         )
-        db.add_all([program, batch, section, subject, teacher_user, student_user])
+        db.add_all([subject, teacher_user, student_user])
         db.flush()
         teacher = Teacher(user_id=teacher_user.id, employee_code="NT1", college_id=1)
         student = Student(
@@ -95,18 +101,18 @@ def attendance_context():
 
         yield client, session_factory, entry_id, auth("network-teacher@example.com"), auth("network-student@example.com")
     app.dependency_overrides.clear()
-    engine.dispose()
+    dispose_attendance_engine(engine, schema)
 
 
 @pytest.fixture
 def college_network_context():
-    engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    engine, schema = make_attendance_engine()
     session_factory = sessionmaker(bind=engine, expire_on_commit=False)
-    Base.metadata.create_all(engine)
     with session_factory() as db:
         from app.modules.platform.models import College
 
         db.add(College(id=2, name="Second College", slug="second-network", is_active=True))
+        db.flush()
         db.add_all(
             [
                 User(
@@ -143,7 +149,7 @@ def college_network_context():
 
         yield client, session_factory, auth("network-admin-one@example.com"), auth("network-admin-two@example.com")
     app.dependency_overrides.clear()
-    engine.dispose()
+    dispose_attendance_engine(engine, schema)
 
 
 def test_classify_ip_matches_multiple_ipv4_and_ipv6_ranges():
@@ -156,6 +162,8 @@ def test_classify_ip_matches_multiple_ipv4_and_ipv6_ranges():
 
 
 def test_loopback_is_unknown_and_teacher_status_controls_same_as_teacher():
+    assert classify_ip(None, [], None, None) == "unknown"
+    assert classify_ip("not-an-ip", [], None, None) == "unknown"
     assert classify_ip("127.0.0.1", ["127.0.0.0/8"], None, None) == "unknown"
     assert classify_ip("::1", ["::1/128"], None, None) == "unknown"
     assert classify_ip("203.0.113.44", [], "203.0.113.44", "outside") == "outside"
@@ -203,7 +211,7 @@ def test_student_ip_can_differ_between_check_in_steps(attendance_context):
     confirmed = client.post(
         "/api/v1/check-ins/confirm",
         headers=student_headers | {"X-Forwarded-For": "203.0.113.20"},
-        json={"verification_token": scanned.json()["verification_token"], "code": challenge.json()["classroom_code"]},
+        json={"verification_token": scanned.json()["verification_token"]},
     )
     assert confirmed.status_code == 200, confirmed.text
 
@@ -216,6 +224,47 @@ def test_student_ip_can_differ_between_check_in_steps(attendance_context):
         assert attempt.confirm_ip_status == "outside"
         assert record.ip_status == "outside"
         assert record.network_method == "public_ip"
+
+
+def test_network_never_rescues_failed_gps_or_blocks_passing_gps(attendance_context):
+    client, session_factory, entry_id, teacher_headers, student_headers = attendance_context
+    started = client.post(
+        f"/api/v1/sessions/{entry_id}/start",
+        headers=teacher_headers | {"X-Forwarded-For": "198.51.100.10"},
+    )
+    assert started.status_code == 200
+    session_id = started.json()["id"]
+    challenge = client.get(f"/api/v1/sessions/{session_id}/qr", headers=teacher_headers).json()
+
+    campus_bad_gps = client.post(
+        "/api/v1/check-ins/code",
+        headers=student_headers | {"X-Forwarded-For": "198.51.100.20"},
+        json={"attendance_code": challenge["classroom_code"], "latitude": 27.9, "longitude": 85.9, "accuracy": 5},
+    )
+    assert campus_bad_gps.status_code == 200
+    assert campus_bad_gps.json()["status"] == "pending_verification"
+    assert campus_bad_gps.json()["reason"] == "OUTSIDE_GEOFENCE"
+    with session_factory() as db:
+        attempt = db.scalar(select(CheckInAttempt).where(CheckInAttempt.class_session_id == session_id))
+        assert attempt.ip_status == "campus"
+        assert db.scalar(select(AttendanceRecord).where(AttendanceRecord.class_session_id == session_id)) is None
+
+    outside_good_gps = client.post(
+        "/api/v1/check-ins",
+        headers=student_headers | {"X-Forwarded-For": "203.0.113.20"},
+        json={"qr_token": challenge["token"], "latitude": 27.7172, "longitude": 85.3240, "accuracy": 5},
+    )
+    assert outside_good_gps.status_code == 200
+    assert outside_good_gps.json()["status"] == "challenge_required"
+    confirmed = client.post(
+        "/api/v1/check-ins/confirm",
+        headers=student_headers | {"X-Forwarded-For": "203.0.113.20"},
+        json={"verification_token": outside_good_gps.json()["verification_token"]},
+    )
+    assert confirmed.status_code == 200 and confirmed.json()["status"] == "present"
+    with session_factory() as db:
+        record = db.scalar(select(AttendanceRecord).where(AttendanceRecord.class_session_id == session_id))
+        assert record.ip_status == "outside"
 
 
 def test_admin_networks_are_college_scoped_and_wide_ranges_need_force(college_network_context):
@@ -242,6 +291,12 @@ def test_admin_networks_are_college_scoped_and_wide_ranges_need_force(college_ne
         headers=admin_two,
     ).status_code == 404
 
+    detected = client.get(
+        "/api/v1/campus-networks/current",
+        headers=admin_two | {"X-Forwarded-For": "203.0.113.40"},
+    )
+    assert detected.status_code == 200 and detected.json()["detected_ip"] == "203.0.113.40"
+    assert client.get("/api/v1/campus-networks", headers=admin_two).json() == []
     confirmed = client.post(
         "/api/v1/campus-networks/current/confirm",
         headers=admin_two | {"X-Forwarded-For": "203.0.113.40"},
@@ -252,5 +307,26 @@ def test_admin_networks_are_college_scoped_and_wide_ranges_need_force(college_ne
     assert len(client.get("/api/v1/campus-networks", headers=admin_one).json()) == 1
     assert len(client.get("/api/v1/campus-networks", headers=admin_two).json()) == 1
 
+    updated = client.patch(
+        f"/api/v1/campus-networks/{network_id}",
+        headers=admin_one,
+        json={"label": "College One Updated", "cidr": "198.51.100.0/24"},
+    )
+    assert updated.status_code == 200 and updated.json()["label"] == "College One Updated"
+    assert client.patch(
+        f"/api/v1/campus-networks/{network_id}",
+        headers=admin_two,
+        json={"label": "Wrong college"},
+    ).status_code == 404
+    assert client.get(
+        "/api/v1/campus-networks/current",
+        headers=admin_one | {"X-Forwarded-For": "203.0.113.41"},
+    ).json()["detected_ip"] == "203.0.113.41"
+    assert client.patch("/api/v1/campus-networks/policy", headers=admin_one, json={"ip_policy": "off"}).json()["ip_policy"] == "off"
+    assert client.get("/api/v1/campus-networks/policy", headers=admin_two).json()["ip_policy"] == "flag"
+
     with session_factory() as db:
         assert db.scalar(select(CampusNetwork).where(CampusNetwork.id == network_id)).is_active is True
+        assert college_ip_status(db, 1, "198.51.100.10") == "unknown"
+        assert college_ip_status(db, 2, "203.0.113.40") == "campus"
+        assert college_ip_status(db, 1, "203.0.113.40") == "unknown"

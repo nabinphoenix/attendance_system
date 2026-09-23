@@ -48,9 +48,7 @@ def routine_in_semester(semester: CohortSemester):
 
 
 def section_in_semester(section: Section | None, semester: CohortSemester) -> bool:
-    return bool(section and section.batch_id == semester.batch_id
-                and section.intake_id == semester.intake_id
-                and section.semester_number == semester.semester_number)
+    return bool(section and section.batch_id == semester.batch_id)
 
 
 def student_is_current(db: Session, user: User, semester: CohortSemester) -> bool:

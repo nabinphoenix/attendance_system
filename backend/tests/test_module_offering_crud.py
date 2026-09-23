@@ -64,7 +64,9 @@ def test_module_offering_admin_crud_validation_filters_and_routine_safety():
     assert created.status_code == 200, created.text
     offering_id = created.json()["id"]
     assert created.json()["module_code"] == "CT004"
-    assert created.json()["section_names"] == ["A1", "A2"]
+    # Sections are permanently owned by the Batch; legacy intake/semester
+    # columns no longer exclude A3/A4 from this Batch offering.
+    assert created.json()["section_names"] == ["A1", "A2", "A3", "A4"]
     assert client.post("/api/v1/academic/module-offerings", headers=admin_headers, json=payload).status_code == 409
     for invalid in ({**payload, "batch_id": ids["other_batch"]},):
         assert client.post("/api/v1/academic/module-offerings", headers=admin_headers, json=invalid).status_code == 422
@@ -76,7 +78,7 @@ def test_module_offering_admin_crud_validation_filters_and_routine_safety():
 
     added = client.patch(f"/api/v1/academic/module-offerings/{offering_id}", headers=admin_headers, json={"section_ids": [ids["section"]]})
     assert added.status_code == 200 and set(added.json()["section_ids"]) == {ids["section"]}
-    inherited = client.post("/api/v1/academic/sections", headers=admin_headers, json={"name": "A5", "batch_id": ids["batch"], "intake_id": ids["intake"], "semester_number": 6})
+    inherited = client.post("/api/v1/academic/sections", headers=admin_headers, json={"name": "A5", "batch_id": ids["batch"]})
     assert inherited.status_code == 200, inherited.text
     a5_id = inherited.json()["id"]
     reloaded = client.get(f"/api/v1/academic/module-offerings/{offering_id}", headers=admin_headers)

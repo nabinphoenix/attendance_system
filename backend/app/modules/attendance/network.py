@@ -5,17 +5,22 @@ from fastapi import Request
 from sqlalchemy import select
 
 from app.core.config import settings
+from app.modules.platform.models import College
 
 from .models import CampusNetwork
 
 
 def get_client_ip(request: Request) -> str | None:
+    if request.client is None or not request.client.host:
+        return None
     hops: list[str] = []
-    forwarded_for = request.headers.get("x-forwarded-for")
+    forwarded_values = request.headers.getlist("x-forwarded-for")
+    if len(forwarded_values) > 1:
+        return None
+    forwarded_for = forwarded_values[0] if forwarded_values else None
     if forwarded_for is not None:
         hops.extend(value.strip() for value in forwarded_for.split(","))
-    if request.client is not None:
-        hops.append(request.client.host)
+    hops.append(request.client.host)
 
     try:
         addresses = [ip_address(value) for value in hops]
@@ -71,3 +76,16 @@ def classify_ip(
         except ValueError:
             pass
     return "outside"
+
+
+def college_ip_status(
+    db,
+    college_id: int | None,
+    client_ip: str | None,
+    teacher_ip: str | None = None,
+    teacher_status: str | None = None,
+) -> str:
+    college = db.get(College, college_id) if college_id is not None else None
+    if not college or college.ip_policy == "off":
+        return "unknown"
+    return classify_ip(client_ip, active_campus_cidrs(db, college_id), teacher_ip, teacher_status)

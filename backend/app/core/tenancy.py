@@ -42,16 +42,6 @@ def restrict_college_queries(state):
         state.statement = state.statement.options(
             with_loader_criteria(CollegeOwned, lambda model: model.college_id == scope, include_aliases=True)
         )
-        # Subjects are legacy catalog rows keyed by a section. Their college is
-        # derived from that section, preserving the old table shape while still
-        # keeping catalog reads isolated by college.
-        try:
-            from app.modules.academic.models import Section, Subject
-            state.statement = state.statement.options(
-                with_loader_criteria(Subject, lambda model: model.section.has(Section.college_id == scope), include_aliases=True)
-            )
-        except ImportError:
-            pass
 
 
 @event.listens_for(Session, "before_flush")

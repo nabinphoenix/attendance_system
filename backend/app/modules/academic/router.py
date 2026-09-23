@@ -1,13 +1,14 @@
+from datetime import date, timedelta
 from typing import Annotated, TypeVar
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 from app.core.dependencies import DbSession, require_role
 from app.core.security import hash_password
 from app.modules.identity.models import User, UserRole
 from app.modules.operations.service import log_audit
 from . import schemas
-from .models import Batch, CohortSemester, Guardian, Intake, Program, Section, Student, StudentSubjectEnrollment, Subject, Teacher
+from .models import Batch, BatchLevel, CohortSemester, Guardian, Intake, Program, Section, Student, StudentSubjectEnrollment, Subject, Teacher
 from .module_offering_service import synchronize_section_module_offerings
 from .models import StudentEnrollment
 from app.modules.scheduling.models import ClassSession, ScheduleOverride, TimetableEntry
@@ -47,8 +48,53 @@ def page(db: Session, query, response_type, page_number: int, page_size: int):
 def delete_with_audit(db: Session, obj: T, actor_id: int, action: str, entity_type: str) -> None:
     entity_id=obj.id; db.delete(obj); log_audit(db,actor_id,action,entity_type,entity_id,{"id":entity_id},None); db.commit()
 
+def three_year_end(start: date) -> date:
+    try:
+        return start.replace(year=start.year + 3) - timedelta(days=1)
+    except ValueError:
+        return start.replace(year=start.year + 3, day=28) - timedelta(days=1)
+
+
+def validate_batch_dates(start: date, end: date) -> None:
+    expected = three_year_end(start)
+    if end != expected:
+        raise HTTPException(
+            422,
+            f'A three-year batch ending after {start.isoformat()} must end on {expected.isoformat()}',
+        )
+
+
+def validate_level_seeds(levels: list[schemas.BatchLevelSeed]) -> None:
+    if sorted(level.level_number for level in levels) != [1, 2, 3]:
+        raise HTTPException(422, 'A batch requires exactly Level 1, Level 2, and Level 3')
+    codes = [level.intake_code.strip().casefold() for level in levels]
+    if len(set(codes)) != 3:
+        raise HTTPException(422, 'Each level requires a different Intake Code')
+
+
+def resolve_intake(
+    db: Session,
+    *,
+    program_id: int,
+    code: str,
+    name: str | None,
+) -> Intake:
+    normalized = code.strip()
+    intake = db.scalar(select(Intake).where(func.lower(Intake.code) == normalized.casefold()))
+    if intake is not None:
+        if intake.program_id != program_id:
+            raise HTTPException(422, f'Intake Code {normalized} belongs to another program')
+        if name is not None:
+            intake.name = name.strip() or None
+        return intake
+    intake = Intake(code=normalized, name=(name or '').strip() or None, start_date=None, program_id=program_id)
+    db.add(intake)
+    db.flush()
+    return intake
+
+
 def section_context_values(db: Session, values: dict) -> dict:
-    """Use an explicit CohortSemester as the section's academic identity."""
+    """Legacy helper retained for old callers during the rolling migration."""
     cohort_semester_id = values.get('cohort_semester_id')
     if cohort_semester_id is None:
         return values
@@ -81,26 +127,152 @@ def delete_program(id:int,user:Annotated[User,Depends(require_role("admin"))],db
 @router.post("/batches", response_model=schemas.BatchRead)
 def create_batch(p: schemas.BatchCreate, user: Annotated[User, Depends(require_role("admin"))], db: DbSession):
     get_or_404(db, Program, p.program_id, "Program")
-    return save_with_audit(db, Batch(**p.model_dump()), user.id, "batch.created", "batch", p.model_dump())
+    validate_batch_dates(p.start_date, p.end_date)
+    validate_level_seeds(p.levels)
+    batch = Batch(**p.model_dump(exclude={'levels'}))
+    db.add(batch)
+    db.flush()
+    for seed in sorted(p.levels, key=lambda item: item.level_number):
+        intake = resolve_intake(
+            db,
+            program_id=p.program_id,
+            code=seed.intake_code,
+            name=seed.intake_name,
+        )
+        db.add(BatchLevel(batch_id=batch.id, level_number=seed.level_number, intake_id=intake.id))
+    db.flush()
+    log_audit(
+        db,
+        user.id,
+        'batch.created',
+        'batch',
+        batch.id,
+        None,
+        p.model_dump(mode='json'),
+    )
+    db.commit()
+    return db.scalar(
+        select(Batch)
+        .options(selectinload(Batch.levels).selectinload(BatchLevel.intake))
+        .where(Batch.id == batch.id)
+    )
 @router.get("/batches", response_model=list[schemas.BatchRead])
-def batches(db: DbSession): return db.scalars(select(Batch).order_by(Batch.name)).all()
+def batches(db: DbSession):
+    return db.scalars(
+        select(Batch)
+        .options(selectinload(Batch.levels).selectinload(BatchLevel.intake))
+        .order_by(Batch.name)
+    ).all()
 @router.get("/batches/page", response_model=schemas.BatchPage)
-def batch_page(db:DbSession,page_number:int=1,page_size:int=20):return page(db,select(Batch).order_by(Batch.name),schemas.BatchPage,page_number,page_size)
+def batch_page(db:DbSession,page_number:int=1,page_size:int=20):
+    return page(
+        db,
+        select(Batch).options(selectinload(Batch.levels).selectinload(BatchLevel.intake)).order_by(Batch.name),
+        schemas.BatchPage,
+        page_number,
+        page_size,
+    )
 @router.patch("/batches/{id}", response_model=schemas.BatchRead)
 def update_batch(id: int, p: schemas.BatchUpdate, db: DbSession):
     if p.program_id is not None: get_or_404(db, Program, p.program_id, "Program")
-    return update(db, get_or_404(db, Batch, id, "Batch"), p.model_dump(exclude_none=True))
+    batch = get_or_404(db, Batch, id, "Batch")
+    values = p.model_dump(exclude_none=True)
+    if values.get('program_id') not in (None, batch.program_id) and batch.levels:
+        raise HTTPException(409, 'Cannot change the Program after Batch Levels exist')
+    if values.get('program_id') not in (None, batch.program_id) and batch.levels:
+        raise HTTPException(409, 'Cannot change the Program after Batch Levels exist')
+    start = values.get('start_date', batch.start_date)
+    end = values.get('end_date', batch.end_date)
+    validate_batch_dates(start, end)
+    update(db, batch, values)
+    return db.scalar(
+        select(Batch)
+        .options(selectinload(Batch.levels).selectinload(BatchLevel.intake))
+        .where(Batch.id == id)
+    )
 @router.delete("/batches/{id}", status_code=204)
 def delete_batch(id:int,user:Annotated[User,Depends(require_role("admin"))],db:DbSession):
     obj=get_or_404(db,Batch,id,"Batch")
-    if db.scalar(select(Section.id).where(Section.batch_id==id)):raise HTTPException(409,"Cannot delete a batch with sections")
+    if db.scalar(select(Section.id).where(Section.batch_id==id)) or db.scalar(select(CohortSemester.id).where(CohortSemester.batch_id==id)):raise HTTPException(409,"Cannot delete a batch with sections or semesters")
     delete_with_audit(db,obj,user.id,"batch.deleted","batch")
+
+@router.get('/levels', response_model=list[schemas.BatchLevelRead])
+def levels(db: DbSession, batch_id: int | None = None):
+    query = select(BatchLevel).options(selectinload(BatchLevel.intake)).order_by(
+        BatchLevel.batch_id, BatchLevel.level_number
+    )
+    if batch_id is not None:
+        query = query.where(BatchLevel.batch_id == batch_id)
+    return db.scalars(query).all()
+
+@router.post('/levels', response_model=schemas.BatchLevelRead, status_code=201)
+def create_level(
+    p: schemas.BatchLevelCreate,
+    user: Annotated[User, Depends(require_role('admin'))],
+    db: DbSession,
+):
+    batch = get_or_404(db, Batch, p.batch_id, 'Batch')
+    if db.scalar(select(BatchLevel.id).where(
+        BatchLevel.batch_id == batch.id,
+        BatchLevel.level_number == p.level_number,
+    )):
+        raise HTTPException(409, f'Level {p.level_number} already exists for this batch')
+    intake = resolve_intake(
+        db,
+        program_id=batch.program_id,
+        code=p.intake_code,
+        name=p.intake_name,
+    )
+    level = BatchLevel(batch_id=batch.id, level_number=p.level_number, intake_id=intake.id)
+    return save_with_audit(
+        db,
+        level,
+        user.id,
+        'batch_level.created',
+        'batch_level',
+        p.model_dump(),
+    )
+
+@router.patch('/levels/{id}', response_model=schemas.BatchLevelRead)
+def update_level(
+    id: int,
+    p: schemas.BatchLevelUpdate,
+    user: Annotated[User, Depends(require_role('admin'))],
+    db: DbSession,
+):
+    level = get_or_404(db, BatchLevel, id, 'Level')
+    batch = get_or_404(db, Batch, level.batch_id, 'Batch')
+    values = p.model_dump(exclude_unset=True)
+    code = values.get('intake_code', level.intake.code)
+    name = values.get('intake_name', level.intake.name)
+    intake = resolve_intake(db, program_id=batch.program_id, code=code, name=name)
+    if 'intake_name' in values:
+        intake.name = (values['intake_name'] or '').strip() or None
+    if intake.id != level.intake_id and db.scalar(
+        select(CohortSemester.id).where(CohortSemester.batch_level_id == level.id)
+    ):
+        raise HTTPException(409, 'Cannot change the Intake Code after semesters exist for this level')
+    before = {'intake_id': level.intake_id, 'intake_code': level.intake.code}
+    level.intake_id = intake.id
+    db.flush()
+    log_audit(db, user.id, 'batch_level.updated', 'batch_level', level.id, before, values)
+    db.commit()
+    return db.scalar(
+        select(BatchLevel)
+        .options(selectinload(BatchLevel.intake))
+        .where(BatchLevel.id == level.id)
+    )
 
 @router.post("/sections", response_model=schemas.SectionRead)
 def create_section(p: schemas.SectionCreate, user: Annotated[User, Depends(require_role("admin"))], db: DbSession):
-    values = section_context_values(db, p.model_dump())
+    values = p.model_dump()
     get_or_404(db, Batch, values['batch_id'], "Batch")
-    if values.get('intake_id') is not None: get_or_404(db, Intake, values['intake_id'], "Intake")
+    if db.scalar(select(Section.id).where(
+        Section.batch_id == values['batch_id'],
+        func.lower(Section.name) == values['name'].strip().lower(),
+    )):
+        raise HTTPException(409, 'A section with that name already exists in this batch')
+    values['name'] = values['name'].strip()
     section = Section(**values)
     db.add(section)
     db.flush()
@@ -117,17 +289,26 @@ def section_page(db:DbSession,page_number:int=1,page_size:int=20):return page(db
 @router.patch("/sections/{id}", response_model=schemas.SectionRead)
 def update_section(id: int, p: schemas.SectionUpdate, db: DbSession):
     section = get_or_404(db, Section, id, "Section")
-    values = section_context_values(db, p.model_dump(exclude_none=True))
+    values = p.model_dump(exclude_none=True)
     if values.get('batch_id') is not None: get_or_404(db, Batch, values['batch_id'], "Batch")
-    if values.get('intake_id') is not None: get_or_404(db, Intake, values['intake_id'], "Intake")
-    if {'batch_id', 'intake_id', 'semester_number', 'cohort_semester_id'} & values.keys():
+    if 'batch_id' in values:
         if db.scalar(select(Student.id).where(Student.section_id == id)) or db.scalar(
             select(StudentEnrollment.id).where(StudentEnrollment.section_id == id)
         ):
             raise HTTPException(
                 409,
-                'This section has student history. Create a new dated section instead of changing its academic identity.',
+                'This section has student history and cannot be moved to another batch.',
             )
+    target_batch_id = values.get('batch_id', section.batch_id)
+    target_name = values.get('name', section.name).strip()
+    if db.scalar(select(Section.id).where(
+        Section.batch_id == target_batch_id,
+        func.lower(Section.name) == target_name.lower(),
+        Section.id != id,
+    )):
+        raise HTTPException(409, 'A section with that name already exists in this batch')
+    if 'name' in values:
+        values['name'] = target_name
     for key, value in values.items():
         setattr(section, key, value)
     db.flush()
@@ -137,7 +318,7 @@ def update_section(id: int, p: schemas.SectionUpdate, db: DbSession):
 def delete_section(id:int,user:Annotated[User,Depends(require_role("admin"))],db:DbSession):
     obj=get_or_404(db,Section,id,"Section")
     from .models import RoutineEntrySection
-    if db.scalar(select(Student.id).where(Student.section_id==id)) or db.scalar(select(Subject.id).where(Subject.section_id==id)) or db.scalar(select(RoutineEntrySection.id).where(RoutineEntrySection.section_id==id)):raise HTTPException(409,"Cannot delete a section with students, subjects, or routine entries")
+    if db.scalar(select(Student.id).where(Student.section_id==id)) or db.scalar(select(StudentEnrollment.id).where(StudentEnrollment.section_id==id)) or db.scalar(select(Subject.id).where(Subject.section_id==id)) or db.scalar(select(RoutineEntrySection.id).where(RoutineEntrySection.section_id==id)):raise HTTPException(409,"Cannot delete a section with student history, subjects, or routine entries")
     delete_with_audit(db,obj,user.id,"section.deleted","section")
 
 @router.post("/subjects", response_model=schemas.SubjectRead)

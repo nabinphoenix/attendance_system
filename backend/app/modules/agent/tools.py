@@ -13,10 +13,10 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.modules.academic.models import Batch, Block, CohortSemester, Intake, Program, Room, Section, Student
+from app.modules.academic.models import Batch, BatchLevel, Block, CohortSemester, Intake, Program, Room, Section, Student
 from app.modules.academic.routine_router import effective_room_classes
 from app.modules.academic.module_offering_service import synchronize_section_module_offerings
-from app.modules.academic.promotion_service import PromotionValidationError, apply_promotion, preview_promotion, students_for_sections_as_of
+from app.modules.academic.promotion_service import PromotionValidationError, apply_promotion, placement_signature, preview_promotion, students_for_sections_as_of
 from app.modules.analytics.service import subject_stats
 from app.modules.identity.models import User
 from app.modules.operations.service import log_audit
@@ -46,10 +46,10 @@ TOOL_DEFINITIONS = [
     _tool("get_attendance_summary", "Read attendance for exactly one student_id or section_id.", {"student_id": {"type": "integer"}, "section_id": {"type": "integer"}}),
     _tool("get_at_risk_students", "Read students below the configured attendance threshold.", {"limit": {"type": "integer", "minimum": 1, "maximum": 100}}),
     _tool("create_program", "Propose a new program. It requires a confirmation and never writes immediately.", {"name": {"type": "string"}}, ["name"]),
-    _tool("create_batch", "Propose a batch in an existing program. Search for program_id first.", {"name": {"type": "string"}, "program_id": {"type": "integer"}}, ["name", "program_id"]),
-    _tool("create_intake", "Propose an intake. Dates use YYYY-MM-DD. Search for program_id first.", {"name": {"type": "string"}, "code": {"type": "string"}, "start_date": {"type": "string"}, "program_id": {"type": "integer"}}, ["name", "code", "start_date", "program_id"]),
-    _tool("create_section", "Propose a section. For a dated cohort section include intake_id and semester_number.", {"name": {"type": "string"}, "batch_id": {"type": "integer"}, "intake_id": {"type": "integer"}, "semester_number": {"type": "integer", "minimum": 1}, "combined_with": {"type": "string"}}, ["name", "batch_id"]),
-    _tool("create_cohort_semester", "Propose a dated semester window. This does not promote students.", {"intake_id": {"type": "integer"}, "batch_id": {"type": "integer"}, "semester_number": {"type": "integer", "minimum": 1}, "attempt_number": {"type": "integer", "minimum": 1}, "start_date": {"type": "string"}, "end_date": {"type": "string"}, "status": {"type": "string", "enum": ["planned", "active", "completed"]}}, ["intake_id", "batch_id", "semester_number", "start_date", "end_date"]),
+    _tool("create_batch", "Propose a three-year batch with Level 1, 2, and 3 Intake Codes. Dates use YYYY-MM-DD.", {"name": {"type": "string"}, "program_id": {"type": "integer"}, "start_date": {"type": "string"}, "end_date": {"type": "string"}, "level_1_intake_code": {"type": "string"}, "level_2_intake_code": {"type": "string"}, "level_3_intake_code": {"type": "string"}}, ["name", "program_id", "start_date", "end_date", "level_1_intake_code", "level_2_intake_code", "level_3_intake_code"]),
+    _tool("create_intake", "Propose an Intake Code. The display name and start date are optional.", {"name": {"type": "string"}, "code": {"type": "string"}, "start_date": {"type": "string"}, "program_id": {"type": "integer"}}, ["code", "program_id"]),
+    _tool("create_section", "Propose a permanent Section owned by a Batch.", {"name": {"type": "string"}, "batch_id": {"type": "integer"}, "combined_with": {"type": "string"}}, ["name", "batch_id"]),
+    _tool("create_cohort_semester", "Propose a dated Semester for a configured Batch Level. This does not promote students.", {"batch_level_id": {"type": "integer"}, "semester_number": {"type": "integer", "minimum": 1, "maximum": 6}, "attempt_number": {"type": "integer", "minimum": 1}, "start_date": {"type": "string"}, "end_date": {"type": "string"}, "status": {"type": "string", "enum": ["planned", "active", "completed"]}}, ["batch_level_id", "semester_number", "start_date", "end_date"]),
     _tool("preview_promotion", "Preview a single intake and batch moving to its next dated semester. Search for all IDs first. A valid preview becomes an approval-only proposal.", {"intake_id": {"type": "integer"}, "batch_id": {"type": "integer"}, "from_cohort_semester_id": {"type": "integer"}, "to_cohort_semester_id": {"type": "integer"}, "effective_date": {"type": "string"}, "section_mapping": {"type": "object", "additionalProperties": {"type": "integer"}}, "hold_student_ids": {"type": "array", "items": {"type": "integer"}}, "notes": {"type": "string"}}, ["intake_id", "batch_id", "from_cohort_semester_id", "to_cohort_semester_id", "effective_date"]),
 ]
 
@@ -124,8 +124,8 @@ def _search_academic(db: Session, actor: User, args: dict[str, Any]) -> ToolOutc
     return ToolOutcome({
         "programs": [{"id": x.id, "name": x.name} for x in db.scalars(select(Program).where(Program.name.ilike(pattern)).order_by(Program.name).limit(limit)).all()],
         "batches": [{"id": x.id, "name": x.name, "program_id": x.program_id} for x in db.scalars(select(Batch).where(Batch.name.ilike(pattern)).order_by(Batch.name).limit(limit)).all()],
-        "intakes": [{"id": x.id, "name": x.name, "code": x.code, "start_date": x.start_date.isoformat(), "program_id": x.program_id} for x in db.scalars(select(Intake).where(or_(Intake.name.ilike(pattern), Intake.code.ilike(pattern))).order_by(Intake.start_date.desc()).limit(limit)).all()],
-        "sections": [{"id": x.id, "name": x.name, "batch_id": x.batch_id, "intake_id": x.intake_id, "semester_number": x.semester_number} for x in db.scalars(select(Section).where(Section.name.ilike(pattern)).order_by(Section.name).limit(limit)).all()],
+        "intakes": [{"id": x.id, "name": x.name, "code": x.code, "start_date": x.start_date.isoformat() if x.start_date else None, "program_id": x.program_id} for x in db.scalars(select(Intake).where(or_(Intake.name.ilike(pattern), Intake.code.ilike(pattern))).order_by(Intake.code).limit(limit)).all()],
+        "sections": [{"id": x.id, "name": x.name, "batch_id": x.batch_id} for x in db.scalars(select(Section).where(Section.name.ilike(pattern)).order_by(Section.name).limit(limit)).all()],
         "cohort_semesters": [{**_cohort_data(cohort), "intake": {"id": intake.id, "code": intake.code}, "batch": {"id": batch.id, "name": batch.name}} for cohort, intake, batch in cohorts],
         "students": [{"id": x.id, "name": _student_name(x), "roll_number": x.roll_number, "section_id": x.section_id} for x in db.scalars(select(Student).where(or_(Student.name.ilike(pattern), Student.roll_number.ilike(pattern))).order_by(Student.roll_number).limit(limit)).all()],
     })
@@ -173,38 +173,40 @@ def _propose_batch(db: Session, actor: User, args: dict[str, Any]) -> ToolOutcom
     name, program = _string(args, "name", 100), _get(db, Program, _integer(args, "program_id", None, 1), "Program")
     if db.scalar(select(Batch.id).where(Batch.name.ilike(name), Batch.program_id == program.id)):
         raise AgentActionError("That program already has a batch with this name.")
-    return _pending(db, actor, "create_batch", {"name": name, "program_id": program.id}, {"summary": f"Create batch '{name}' in program '{program.name}'."})
+    start_date, end_date = _date(args, 'start_date'), _date(args, 'end_date')
+    if end_date != _three_year_end(start_date):
+        raise AgentActionError('Batch end_date must be exactly three academic years after start_date.')
+    codes = [_string(args, f'level_{level}_intake_code', 50).upper() for level in range(1, 4)]
+    if len(set(codes)) != 3:
+        raise AgentActionError('Each Level requires a different Intake Code.')
+    payload = {"name": name, "program_id": program.id, "start_date": start_date.isoformat(), "end_date": end_date.isoformat(), "intake_codes": codes}
+    return _pending(db, actor, "create_batch", payload, {"summary": f"Create three-year batch '{name}' in program '{program.name}'."})
 
 
 def _propose_intake(db: Session, actor: User, args: dict[str, Any]) -> ToolOutcome:
-    name, code, start_date = _string(args, "name", 100), _string(args, "code", 50).upper(), _date(args, "start_date")
+    name, code = _optional_string(args, "name", 100), _string(args, "code", 50).upper()
+    start_date = _date(args, "start_date") if args.get('start_date') else None
     program = _get(db, Program, _integer(args, "program_id", None, 1), "Program")
-    if db.scalar(select(Intake.id).where(or_(Intake.name.ilike(name), Intake.code.ilike(code)))):
-        raise AgentActionError("An intake with that name or code already exists.")
-    payload = {"name": name, "code": code, "start_date": start_date.isoformat(), "program_id": program.id}
-    return _pending(db, actor, "create_intake", payload, {"summary": f"Create intake '{name}' ({code}) for '{program.name}', starting {start_date.isoformat()}."})
+    if db.scalar(select(Intake.id).where(Intake.code.ilike(code))):
+        raise AgentActionError("That Intake Code already exists.")
+    payload = {"name": name, "code": code, "start_date": start_date.isoformat() if start_date else None, "program_id": program.id}
+    return _pending(db, actor, "create_intake", payload, {"summary": f"Create Intake Code {code} for '{program.name}'."})
 
 
 def _propose_section(db: Session, actor: User, args: dict[str, Any]) -> ToolOutcome:
     name, batch = _string(args, "name", 50), _get(db, Batch, _integer(args, "batch_id", None, 1), "Batch")
-    intake_id, semester_number = _optional_integer(args, "intake_id"), _optional_integer(args, "semester_number")
-    intake = _get(db, Intake, intake_id, "Intake") if intake_id else None
-    if semester_number is not None and semester_number < 1:
-        raise AgentActionError("semester_number must be at least 1.")
-    if intake and intake.program_id != batch.program_id:
-        raise AgentActionError("The selected intake and batch belong to different programs.")
-    if db.scalar(select(Section.id).where(Section.name.ilike(name), Section.batch_id == batch.id, Section.intake_id == intake_id, Section.semester_number == semester_number)):
-        raise AgentActionError("That section already exists for this academic context.")
-    payload = {"name": name, "batch_id": batch.id, "intake_id": intake_id, "semester_number": semester_number, "combined_with": _optional_string(args, "combined_with", 100)}
+    if db.scalar(select(Section.id).where(Section.name.ilike(name), Section.batch_id == batch.id)):
+        raise AgentActionError("That Section already exists in this Batch.")
+    payload = {"name": name, "batch_id": batch.id, "combined_with": _optional_string(args, "combined_with", 100)}
     return _pending(db, actor, "create_section", payload, {"summary": f"Create section '{name}' in batch '{batch.name}'.", "section": payload})
 
 
 def _propose_cohort_semester(db: Session, actor: User, args: dict[str, Any]) -> ToolOutcome:
-    intake = _get(db, Intake, _integer(args, "intake_id", None, 1), "Intake")
-    batch = _get(db, Batch, _integer(args, "batch_id", None, 1), "Batch")
+    level = _get(db, BatchLevel, _integer(args, "batch_level_id", None, 1), "Batch Level")
+    batch, intake = level.batch, level.intake
     semester, attempt, start_date, end_date = _integer(args, "semester_number", None, 1), _integer(args, "attempt_number", 1, 1), _date(args, "start_date"), _date(args, "end_date")
-    if intake.program_id != batch.program_id:
-        raise AgentActionError("The selected intake and batch belong to different programs.")
+    if semester not in {level.level_number * 2 - 1, level.level_number * 2}:
+        raise AgentActionError(f'Level {level.level_number} does not contain Semester {semester}.')
     if start_date > end_date:
         raise AgentActionError("The cohort semester end date must be on or after its start date.")
     if db.scalar(select(CohortSemester.id).where(CohortSemester.intake_id == intake.id, CohortSemester.batch_id == batch.id, CohortSemester.semester_number == semester, CohortSemester.attempt_number == attempt)):
@@ -212,7 +214,7 @@ def _propose_cohort_semester(db: Session, actor: User, args: dict[str, Any]) -> 
     status = _optional_string(args, "status", 20) or "planned"
     if status not in {"planned", "active", "completed"}:
         raise AgentActionError("Cohort semester status must be planned, active, or completed.")
-    payload = {"intake_id": intake.id, "batch_id": batch.id, "semester_number": semester, "attempt_number": attempt, "start_date": start_date.isoformat(), "end_date": end_date.isoformat(), "status": status}
+    payload = {"batch_level_id": level.id, "semester_number": semester, "attempt_number": attempt, "start_date": start_date.isoformat(), "end_date": end_date.isoformat(), "status": status}
     return _pending(db, actor, "create_cohort_semester", payload, {"summary": f"Create {intake.code} / {batch.name} semester {semester}: {start_date.isoformat()} to {end_date.isoformat()}.", "cohort_semester": payload})
 
 
@@ -242,6 +244,8 @@ def _propose_promotion(db: Session, actor: User, args: dict[str, Any]) -> ToolOu
     }
     if errors:
         return ToolOutcome(preview)
+    payload["preview_signature"] = placement_signature(source, target, students)
+    preview["preview_signature"] = payload["preview_signature"]
     preview["summary"] = f"Promote {preview['promote_count']} student(s) and hold {preview['hold_count']} student(s) from semester {source.semester_number} to semester {target.semester_number}."
     return _pending(db, actor, "apply_promotion", payload, preview)
 
@@ -302,49 +306,57 @@ def _apply_action(db: Session, actor: User, action_type: str, payload: dict[str,
         name, program = _string(payload, "name", 100), _get(db, Program, _integer(payload, "program_id", None, 1), "Program")
         if db.scalar(select(Batch.id).where(Batch.name.ilike(name), Batch.program_id == program.id)):
             raise AgentActionError("That program now has a batch with this name.")
-        item = Batch(name=name, program_id=program.id)
+        start_date, end_date = _date(payload, 'start_date'), _date(payload, 'end_date')
+        codes = [_string({'code': code}, 'code', 50).upper() for code in payload.get('intake_codes', [])]
+        if end_date != _three_year_end(start_date) or len(codes) != 3 or len(set(codes)) != 3:
+            raise AgentActionError('A Batch requires exact three-year dates and three different Level Intake Codes.')
+        item = Batch(name=name, program_id=program.id, start_date=start_date, end_date=end_date)
         db.add(item); db.flush()
+        for level_number, code in enumerate(codes, 1):
+            intake = db.scalar(select(Intake).where(Intake.code.ilike(code)))
+            if intake is None:
+                intake = Intake(code=code, name=None, start_date=None, program_id=program.id)
+                db.add(intake); db.flush()
+            elif intake.program_id != program.id:
+                raise AgentActionError(f'Intake Code {code} belongs to another Program.')
+            db.add(BatchLevel(batch_id=item.id, level_number=level_number, intake_id=intake.id))
+        db.flush()
         log_audit(db, actor.id, "batch.created", "batch", item.id, None, {"name": item.name, "program_id": item.program_id, "source": "ai_agent"})
         return {"entity": "batch", "id": item.id, "name": item.name, "program_id": item.program_id}
     if action_type == "create_intake":
-        name, code, start_date = _string(payload, "name", 100), _string(payload, "code", 50).upper(), _date(payload, "start_date")
+        name, code = _optional_string(payload, "name", 100), _string(payload, "code", 50).upper()
+        start_date = _date(payload, "start_date") if payload.get('start_date') else None
         program = _get(db, Program, _integer(payload, "program_id", None, 1), "Program")
-        if db.scalar(select(Intake.id).where(or_(Intake.name.ilike(name), Intake.code.ilike(code)))):
-            raise AgentActionError("An intake with that name or code now exists.")
+        if db.scalar(select(Intake.id).where(Intake.code.ilike(code))):
+            raise AgentActionError("That Intake Code now exists.")
         item = Intake(name=name, code=code, start_date=start_date, program_id=program.id)
         db.add(item); db.flush()
         log_audit(db, actor.id, "intake.created", "intake", item.id, None, {"name": item.name, "code": item.code, "source": "ai_agent"})
         return {"entity": "intake", "id": item.id, "name": item.name, "code": item.code}
     if action_type == "create_section":
         name, batch = _string(payload, "name", 50), _get(db, Batch, _integer(payload, "batch_id", None, 1), "Batch")
-        intake_id, semester = _optional_integer(payload, "intake_id"), _optional_integer(payload, "semester_number")
-        intake = _get(db, Intake, intake_id, "Intake") if intake_id else None
-        if intake and intake.program_id != batch.program_id:
-            raise AgentActionError("The selected intake and batch belong to different programs.")
-        if semester is not None and semester < 1:
-            raise AgentActionError("semester_number must be at least 1.")
-        if db.scalar(select(Section.id).where(Section.name.ilike(name), Section.batch_id == batch.id, Section.intake_id == intake_id, Section.semester_number == semester)):
-            raise AgentActionError("That section now exists for this academic context.")
-        item = Section(name=name, batch_id=batch.id, intake_id=intake_id, semester_number=semester, combined_with=_optional_string(payload, "combined_with", 100))
+        if db.scalar(select(Section.id).where(Section.name.ilike(name), Section.batch_id == batch.id)):
+            raise AgentActionError("That Section now exists in this Batch.")
+        item = Section(name=name, batch_id=batch.id, combined_with=_optional_string(payload, "combined_with", 100))
         db.add(item); db.flush()
         inherited = synchronize_section_module_offerings(db, item)
-        log_audit(db, actor.id, "section.created", "section", item.id, None, {"name": item.name, "batch_id": item.batch_id, "intake_id": item.intake_id, "semester_number": item.semester_number, "inherited_module_offering_ids": [x.id for x in inherited], "source": "ai_agent"})
-        return {"entity": "section", "id": item.id, "name": item.name, "batch_id": item.batch_id, "intake_id": item.intake_id, "semester_number": item.semester_number}
+        log_audit(db, actor.id, "section.created", "section", item.id, None, {"name": item.name, "batch_id": item.batch_id, "inherited_module_offering_ids": [x.id for x in inherited], "source": "ai_agent"})
+        return {"entity": "section", "id": item.id, "name": item.name, "batch_id": item.batch_id}
     if action_type == "create_cohort_semester":
-        intake = _get(db, Intake, _integer(payload, "intake_id", None, 1), "Intake")
-        batch = _get(db, Batch, _integer(payload, "batch_id", None, 1), "Batch")
+        level = _get(db, BatchLevel, _integer(payload, "batch_level_id", None, 1), "Batch Level")
+        intake, batch = level.intake, level.batch
         semester, attempt = _integer(payload, "semester_number", None, 1), _integer(payload, "attempt_number", 1, 1)
         start_date, end_date = _date(payload, "start_date"), _date(payload, "end_date")
         status = _optional_string(payload, "status", 20) or "planned"
-        if intake.program_id != batch.program_id:
-            raise AgentActionError("The selected intake and batch belong to different programs.")
+        if semester not in {level.level_number * 2 - 1, level.level_number * 2}:
+            raise AgentActionError(f'Level {level.level_number} does not contain Semester {semester}.')
         if start_date > end_date:
             raise AgentActionError("The cohort semester end date must be on or after its start date.")
         if status not in {"planned", "active", "completed"}:
             raise AgentActionError("Cohort semester status must be planned, active, or completed.")
         if db.scalar(select(CohortSemester.id).where(CohortSemester.intake_id == intake.id, CohortSemester.batch_id == batch.id, CohortSemester.semester_number == semester, CohortSemester.attempt_number == attempt)):
             raise AgentActionError("That dated cohort semester now exists.")
-        item = CohortSemester(intake_id=intake.id, batch_id=batch.id, semester_number=semester, attempt_number=attempt, start_date=start_date, end_date=end_date, status=status)
+        item = CohortSemester(batch_level_id=level.id, intake_id=intake.id, batch_id=batch.id, semester_number=semester, attempt_number=attempt, start_date=start_date, end_date=end_date, status=status)
         db.add(item); db.flush()
         log_audit(db, actor.id, "cohort_semester.created", "cohort_semester", item.id, None, {**_cohort_data(item), "source": "ai_agent"})
         return {"entity": "cohort_semester", **_cohort_data(item)}
@@ -354,7 +366,7 @@ def _apply_action(db: Session, actor: User, action_type: str, payload: dict[str,
                 db, intake_id=_integer(payload, "intake_id", None, 1), batch_id=_integer(payload, "batch_id", None, 1),
                 from_cohort_semester_id=_integer(payload, "from_cohort_semester_id", None, 1), to_cohort_semester_id=_integer(payload, "to_cohort_semester_id", None, 1),
                 effective_date=_date(payload, "effective_date"), section_mapping=_section_mapping(payload.get("section_mapping") or {}),
-                hold_student_ids=set(_integer_list(payload.get("hold_student_ids") or [])), created_by=actor.id, notes=_optional_string(payload, "notes", 500),
+                hold_student_ids=set(_integer_list(payload.get("hold_student_ids") or [])), preview_signature=_string(payload, "preview_signature", 128), created_by=actor.id, notes=_optional_string(payload, "notes", 500),
             )
         except PromotionValidationError as exc:
             raise AgentActionError(str(exc)) from exc
@@ -432,5 +444,12 @@ def _student_name(student: Student) -> str:
     return student.user.name if student.user else student.name or student.roll_number
 
 
+def _three_year_end(start: date) -> date:
+    try:
+        return start.replace(year=start.year + 3) - timedelta(days=1)
+    except ValueError:
+        return start.replace(year=start.year + 3, day=28) - timedelta(days=1)
+
+
 def _cohort_data(item: CohortSemester) -> dict[str, Any]:
-    return {"id": item.id, "intake_id": item.intake_id, "batch_id": item.batch_id, "semester_number": item.semester_number, "attempt_number": item.attempt_number, "start_date": item.start_date.isoformat(), "end_date": item.end_date.isoformat(), "status": item.status}
+    return {"id": item.id, "batch_level_id": item.batch_level_id, "intake_id": item.intake_id, "batch_id": item.batch_id, "semester_number": item.semester_number, "attempt_number": item.attempt_number, "start_date": item.start_date.isoformat(), "end_date": item.end_date.isoformat(), "status": item.status}

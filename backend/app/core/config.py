@@ -47,7 +47,7 @@ class Settings(BaseSettings):
     attendance_window_minutes: int = 240
     attendance_self_checkin_window_minutes: int = Field(default=15, ge=1, le=240)
     attendance_challenge_rotation_seconds: int = Field(default=20, ge=1)
-    attendance_code_length: int = Field(default=5, ge=5, le=5)
+    attendance_code_length: int = Field(default=6, ge=6, le=6)
     attendance_verification_timeout_seconds: int = Field(default=12, ge=1)
     attendance_max_code_attempts: int = Field(default=3, ge=1)
     check_in_attempt_rate_limit_seconds: int = 5

@@ -7,13 +7,20 @@ from pydantic import BaseModel, ConfigDict, Field
 LocationFailure = Literal["LOCATION_DENIED", "LOCATION_TIMEOUT", "LOCATION_UNAVAILABLE"]
 
 
-class CheckInRequest(BaseModel):
+class LocationCheckInRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    qr_token: str = Field(min_length=1)
     latitude: float | None = Field(default=None, ge=-90, le=90)
     longitude: float | None = Field(default=None, ge=-180, le=180)
     accuracy: float | None = Field(default=None, ge=0)
     location_failure_reason: LocationFailure | None = None
+
+
+class CheckInRequest(LocationCheckInRequest):
+    qr_token: str = Field(min_length=1)
+
+
+class AttendanceCodeCheckInRequest(LocationCheckInRequest):
+    attendance_code: str = Field(pattern=r"^\d{6}$")
 
 
 class CheckInResponse(BaseModel):
@@ -22,7 +29,6 @@ class CheckInResponse(BaseModel):
     check_in_time: datetime | None = None
     verification_token: str | None = None
     verification_expires_at: datetime | None = None
-    code_length: int | None = None
     module_title: str
     room: str
     start_time: time
@@ -42,7 +48,7 @@ class QRResponse(BaseModel):
     teacher_location_accuracy_meters: float | None
     self_checkin_window_minutes: int
     self_checkin_closes_at: datetime
-    classroom_code: str = Field(pattern=r"^\d{5}$")
+    classroom_code: str = Field(pattern=r"^\d{6}$")
     challenge_id: int
     teacher_ip_status: str | None = None
 
@@ -50,7 +56,6 @@ class QRResponse(BaseModel):
 class ChallengeConfirmationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     verification_token: str = Field(min_length=20, max_length=512)
-    code: str = Field(min_length=5, max_length=5, pattern=r"^\d{5}$")
 
 
 class RosterItem(BaseModel):
@@ -109,6 +114,14 @@ class CampusNetworkCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
     label: str = Field(min_length=1, max_length=120)
     cidr: str = Field(min_length=3, max_length=64)
+    force: bool = False
+
+
+class CampusNetworkUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    label: str | None = Field(default=None, min_length=1, max_length=120)
+    cidr: str | None = Field(default=None, min_length=3, max_length=64)
+    is_active: bool | None = None
     force: bool = False
 
 
