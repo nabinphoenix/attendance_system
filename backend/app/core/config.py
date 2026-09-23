@@ -14,6 +14,15 @@ class Settings(BaseSettings):
     access_token_expire_minutes: int = 60
     auth_cookie_name: str = "antimbench_session"
     auth_cookie_secure: bool = False
+    max_failed_login_attempts: int = Field(default=5, ge=1, le=100)
+    login_rate_limit: int = Field(default=60, ge=5)
+    login_rate_window_seconds: int = Field(default=300, ge=1)
+    reset_token_expire_minutes: int = Field(default=15, ge=1, le=60)
+    reset_request_ip_limit: int = Field(default=10, ge=1)
+    reset_request_email_limit: int = Field(default=3, ge=1)
+    reset_verify_rate_limit: int = Field(default=20, ge=1)
+    reset_rate_window_seconds: int = Field(default=900, ge=1)
+    reset_email_cooldown_seconds: int = Field(default=60, ge=1)
     trusted_proxy_cidrs: list[str] = [
         "127.0.0.0/8",
         "::1/128",

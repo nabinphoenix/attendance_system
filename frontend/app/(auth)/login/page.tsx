@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { FormEvent, useState } from "react";
 import { useRouter } from "next/navigation";
 import api from "@/lib/api";
@@ -16,6 +17,7 @@ export default function LoginPage() {
   const [password, setPassword] = useState("");
   const [touched, setTouched] = useState(false);
   const [error, setError] = useState("");
+  const [locked, setLocked] = useState(false);
   const [loading, setLoading] = useState(false);
 
   const emailError = touched && (!email.trim()
@@ -30,6 +32,7 @@ export default function LoginPage() {
     event.preventDefault();
     setTouched(true);
     setError("");
+    setLocked(false);
     if (!email || !password || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return;
 
     setLoading(true);
@@ -48,7 +51,12 @@ export default function LoginPage() {
       router.replace(destinations[user.role]);
     } catch (requestError: any) {
       if (requestError.response?.status === 401) {
-        setError("Check your email and password, then try again.");
+        setError("Incorrect email or password.");
+      } else if (requestError.response?.status === 423) {
+        setLocked(true);
+        setError("Your account is locked after multiple unsuccessful login attempts.");
+      } else if (requestError.response?.status === 429) {
+        setError("Too many sign-in requests. Please wait a few minutes and try again.");
       } else if (requestError.response?.status === 403) {
         setError(requestError.response.data?.detail || "This account or college is inactive.");
       } else if (!requestError.response) {
@@ -71,6 +79,7 @@ export default function LoginPage() {
       {error && <div role="alert" className="rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-200">
         <p className="font-medium">We couldn&apos;t sign you in</p>
         <p className="mt-1 leading-5 text-red-200/80">{error}</p>
+        {locked && <><Link href="/forgot-password" className="mt-3 inline-flex min-h-11 items-center font-semibold underline">Reset password</Link><p className="mt-1">Contact your administrator if you need help unlocking your account.</p></>}
       </div>}
       <Field label="Email address" error={emailError}>
         <input value={email} onChange={(event) => setEmail(event.target.value)} onBlur={() => setTouched(true)} className={`${input} ${emailError ? "border-red-500" : ""}`} type="email" inputMode="email" autoComplete="email" autoCapitalize="none" autoCorrect="off" spellCheck={false} placeholder="name@cps.edu.np" aria-invalid={!!emailError} />
@@ -78,6 +87,7 @@ export default function LoginPage() {
       <Field label="Password" error={passwordError}>
         <PasswordInput value={password} onChange={(event) => setPassword(event.target.value)} onBlur={() => setTouched(true)} className={`${input} ${passwordError ? "border-red-500" : ""}`} autoComplete="current-password" placeholder="Enter your password" aria-invalid={!!passwordError} />
       </Field>
+      <Link href="/forgot-password" className="inline-flex min-h-11 items-center text-sm font-semibold text-emerald-600 underline dark:text-emerald-300">Forgot password?</Link>
       <p className="rounded-lg bg-slate-950/70 px-3 py-2 text-xs leading-5 text-slate-400">On a phone, use the college Wi-Fi and the AntimBench address provided by your administrator.</p>
       <div className="flex flex-col gap-1 text-sm sm:flex-row sm:items-center sm:justify-between sm:gap-3"><span className="text-slate-500">Need access help?</span><span className="text-slate-300">Contact your college administrator</span></div>
       <Button type="submit" size="lg" loading={loading} disabled={invalid} className="w-full">{loading ? "Signing in…" : "Sign in"}</Button>

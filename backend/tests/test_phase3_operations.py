@@ -1,5 +1,5 @@
 import hashlib, io
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, time
 from urllib.parse import parse_qs, urlparse
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine,select
@@ -14,13 +14,15 @@ from app.modules.operations.models import Notification
 from app.modules.scheduling.models import ScheduleOverride,TimetableEntry
 
 def setup_db():
+    # Keep the fixture active all day. Clamping hour+1 to 23 made it expire
+    # during setup whenever this authorization test ran after 23:00.
     engine=create_engine("sqlite://",connect_args={"check_same_thread":False},poolclass=StaticPool);Session=sessionmaker(bind=engine);Base.metadata.create_all(engine)
     def override():
         with Session() as db:yield db
     app.dependency_overrides[get_db]=override
     with Session() as db:
         p=Program(name="BCA");db.add(p);db.flush();b=Batch(name="2026",program_id=p.id);db.add(b);db.flush();s=Section(name="A",batch_id=b.id);db.add(s);db.flush();subject=Subject(name="Architecture",code="ARC",section_id=s.id);db.add(subject);db.flush()
-        admin=User(name="Admin",email="admin@example.com",password_hash=hash_password("Password123!"),role=UserRole.ADMIN);original=User(name="Original",email="original@example.com",password_hash=hash_password("Password123!"),role=UserRole.TEACHER);sub=User(name="Sub",email="sub@example.com",password_hash=hash_password("Password123!"),role=UserRole.TEACHER);db.add_all([admin,original,sub]);db.flush();ot=Teacher(user_id=original.id,employee_code="O");st=Teacher(user_id=sub.id,employee_code="S");db.add_all([ot,st]);db.flush();now=datetime.now();entry=TimetableEntry(teacher_id=ot.id,subject_id=subject.id,section_id=s.id,day_of_week=now.weekday(),start_time=now.time().replace(hour=max(now.hour-1,0)),end_time=now.time().replace(hour=min(now.hour+1,23)),room_name="R1",latitude=0,longitude=0);db.add(entry);db.commit();return Session,entry.id,ot.id,st.id
+        admin=User(name="Admin",email="admin@example.com",password_hash=hash_password("Password123!"),role=UserRole.ADMIN);original=User(name="Original",email="original@example.com",password_hash=hash_password("Password123!"),role=UserRole.TEACHER);sub=User(name="Sub",email="sub@example.com",password_hash=hash_password("Password123!"),role=UserRole.TEACHER);db.add_all([admin,original,sub]);db.flush();ot=Teacher(user_id=original.id,employee_code="O");st=Teacher(user_id=sub.id,employee_code="S");db.add_all([ot,st]);db.flush();now=datetime.now();entry=TimetableEntry(teacher_id=ot.id,subject_id=subject.id,section_id=s.id,day_of_week=now.weekday(),start_time=time.min,end_time=time.max,room_name="R1",latitude=0,longitude=0);db.add(entry);db.commit();return Session,entry.id,ot.id,st.id
 
 def auth(client,email):
     token=client.post("/api/v1/auth/login",json={"email":email,"password":"Password123!"}).json()["access_token"];return {"Authorization":f"Bearer {token}"}

@@ -13,6 +13,37 @@ from app.modules.operations.models import Notification, NotificationStatus
 from app.modules.operations.email_templates import plain_text_email_html
 
 
+def send_email(destination: str, subject: str, body: str, html_body: str | None = None) -> None:
+    """Shared SMTP transport for queued notifications and ephemeral recovery mail."""
+    if not settings.smtp_host:
+        raise ValueError("SMTP is not configured")
+    message = EmailMessage()
+    message["From"] = settings.smtp_from_email
+    message["To"] = destination
+    message["Subject"] = subject
+    message.set_content(body)
+    message.add_alternative(html_body or plain_text_email_html(subject, body), subtype="html")
+    with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=20) as smtp:
+        smtp.starttls()
+        if settings.smtp_username:
+            smtp.login(settings.smtp_username, settings.smtp_password or "")
+        smtp.send_message(message)
+
+
+def send_password_reset_email(destination: str, token: str) -> None:
+    # Fragment is never sent in HTTP requests/referrers or access logs.
+    url = f"{settings.frontend_url.rstrip('/')}/reset-password#token={token}"
+    body = (f"Reset your AntimBench password using this link:\n{url}\n\n"
+            f"This single-use link expires in {settings.reset_token_expire_minutes} minutes. "
+            "If you did not request it, you can ignore this email.")
+    try:
+        send_email(destination, "Reset your AntimBench password", body)
+    except Exception:
+        # SMTP exceptions may contain message content. Never log recovery secrets.
+        import logging
+        logging.getLogger(__name__).warning("Password reset email delivery failed; check SMTP configuration")
+
+
 def recipient_address(db: Session, notification: Notification) -> str | None:
     if notification.recipient_type == "guardian":
         guardian = db.get(Guardian, notification.recipient_id)
@@ -38,17 +69,7 @@ def deliver_notification(db: Session, notification: Notification) -> None:
         destination = recipient_address(db, notification)
         if not destination:
             raise ValueError("Recipient has no deliverable email address")
-        message = EmailMessage()
-        message["From"] = settings.smtp_from_email
-        message["To"] = destination
-        message["Subject"] = notification.subject
-        message.set_content(notification.body)
-        message.add_alternative(notification.html_body or plain_text_email_html(notification.subject, notification.body), subtype="html")
-        with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=20) as smtp:
-            smtp.starttls()
-            if settings.smtp_username:
-                smtp.login(settings.smtp_username, settings.smtp_password or "")
-            smtp.send_message(message)
+        send_email(destination, notification.subject, notification.body, notification.html_body)
         if notification.related_entity == "student_invitation":
             notification.body = "Secure student account setup email delivered."
             notification.html_body = "Secure student account setup email delivered."

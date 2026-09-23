@@ -89,7 +89,7 @@ export default function Page() {
     </section>
 
     <section className="mt-8"><div className="mb-3"><h2 className="text-xl font-semibold">Subject-wise attendance</h2><p className="mt-1 text-sm text-slate-400">You are below the threshold when your attendance is under {percentage(threshold)} after {observations} or more completed classes.</p></div>
-      {!subjects.length ? <div className="panel"><EmptyState title="No completed classes yet" description="Your subject attendance will appear here after classes are completed." /></div> : <div className="table-wrap"><table><thead><tr><th>Subject</th><th>Present</th><th>Absent</th><th>Total</th><th>Attendance</th><th>Status</th></tr></thead><tbody>{subjects.map(row)}</tbody></table></div>}
+      {!subjects.length ? <div className="panel"><EmptyState title="No completed classes yet" description="Your subject attendance will appear here after classes are completed." /></div> : <div className="table-wrap" role="region" aria-label="Scrollable records" tabIndex={0}><table><thead><tr><th>Subject</th><th>Present</th><th>Absent</th><th>Total</th><th>Attendance</th><th>Status</th></tr></thead><tbody>{subjects.map(row)}</tbody></table></div>}
     </section>
   </div>;
 }

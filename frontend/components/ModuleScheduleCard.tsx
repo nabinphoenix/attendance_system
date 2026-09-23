@@ -38,8 +38,8 @@ export function ModuleScheduleCard({ code, title, startTime, endTime, classType,
   const accent = accents[Math.abs(accentIndex) % accents.length];
   const label = status || classType;
 
-  return <article className={`relative overflow-hidden rounded-2xl border border-l-4 border-slate-200 bg-white p-5 shadow-sm transition duration-200 hover:-translate-y-0.5 hover:shadow-lg dark:border-slate-800 dark:bg-slate-900 ${accent.border} ${cancelled ? "border-red-500/40 bg-red-50/40 dark:bg-red-950/20" : ""}`}>
-    <div className="flex items-start justify-between gap-3">
+  return <article className={`relative min-w-0 max-w-full rounded-2xl border border-l-4 border-slate-200 bg-white p-5 shadow-sm transition duration-200 hover:-translate-y-0.5 hover:shadow-lg dark:border-slate-800 dark:bg-slate-900 ${accent.border} ${cancelled ? "border-red-500/40 bg-red-50/40 dark:bg-red-950/20" : ""}`}>
+    <div className="flex flex-wrap items-start justify-between gap-3">
       <div className={`inline-flex items-center gap-2 rounded-lg border px-3 py-1.5 text-sm font-semibold ${accent.time}`}>
         <svg aria-hidden="true" viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="8" /><path d="M12 7v5l3 2" /></svg>
         <span>{startTime}</span><span className="font-normal opacity-70">– {endTime}</span>
@@ -48,13 +48,13 @@ export function ModuleScheduleCard({ code, title, startTime, endTime, classType,
     </div>
 
     {code && <p className={`mt-4 flex items-center gap-2 text-xs font-bold tracking-wide ${accent.code}`}><span className={`h-2 w-2 rounded-full ${accent.dot}`} />{code}</p>}
-    <h3 className="mt-2 line-clamp-2 text-base font-bold leading-6 text-slate-900 dark:text-slate-50">{title}</h3>
+    <h3 className="mt-2 break-words text-base font-bold leading-6 text-slate-900 dark:text-slate-50">{title}</h3>
 
     {details.length > 0 && <dl className="mt-4 space-y-2 border-t border-slate-200 pt-3 text-sm dark:border-slate-700">
       {details.map((detail, index) => <div key={`${detail.label}-${index}`} className="flex min-w-0 items-center gap-2 text-slate-600 dark:text-slate-300">
         <span className="shrink-0 text-slate-500 dark:text-slate-400"><DetailIcon icon={detail.icon || (index === 0 ? "person" : "pin")} /></span>
         <dt className="shrink-0 text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">{detail.label}:</dt>
-        <dd className="min-w-0 truncate font-semibold">{detail.value}</dd>
+        <dd className="min-w-0 break-words font-semibold">{detail.value}</dd>
       </div>)}
     </dl>}
     {children}

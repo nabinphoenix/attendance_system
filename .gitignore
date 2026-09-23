@@ -11,3 +11,13 @@ frontend/certificates/
 .DS_Store
 .pytest_cache/
 *.tsbuildinfo
+
+frontend/test-results/
+frontend/playwright-report/
+
+# Local deployment, database backup, and operational audit artifacts.
+/.deploy-*
+/.ssm-*.json
+/.tmp-antimbench-*
+/backend/backups/
+/docs/AWS_ACADEMIC_MIGRATION_*.md

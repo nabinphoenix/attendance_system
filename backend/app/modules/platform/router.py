@@ -12,6 +12,7 @@ from app.modules.identity.models import User, UserRole
 from app.modules.identity.schemas import UserRead
 from app.modules.operations.models import AuditLog
 from app.modules.operations.service import log_audit
+from app.modules.identity.service import unlock_account, invalidate_reset
 from app.modules.academic.models import Section, Student, Teacher
 from .models import College, PlatformConfiguration
 
@@ -212,12 +213,15 @@ def update_account(user_id: int, payload: AccountUpdate, actor: SuperAdmin, db: 
     for key, value in values.items():
         if key == "password":
             account.password_hash = hash_password(value)
+            account.session_version += 1
+            invalidate_reset(account)
         else:
             value = str(value).lower() if key == "email" else value
             if key == "name":
                 value = value.strip()
                 if not value: raise HTTPException(422, "Name is required")
             setattr(account, key, value)
+            if key == "email": invalidate_reset(account)
     student = db.scalar(select(Student).where(Student.user_id == account.id))
     if student:
         student.name, student.email = account.name, account.email
@@ -226,6 +230,14 @@ def update_account(user_id: int, payload: AccountUpdate, actor: SuperAdmin, db: 
     log_audit(db, actor.id, "platform.user_updated", "user", account.id, before, safe_changes)
     save(db)
     return account
+
+
+@router.post("/users/{user_id}/unlock", response_model=UserRead)
+def unlock_platform_account(user_id: int, actor: SuperAdmin, db: DbSession):
+    account = db.scalar(select(User).where(User.id == user_id).with_for_update())
+    if not account:
+        raise HTTPException(404, "Account not found")
+    return unlock_account(db, account, actor)
 
 
 @router.delete("/users/{user_id}", status_code=204)

@@ -189,7 +189,7 @@ export default function RoutineMasterPage({
       {loading ? <LoadingState label={`Loading ${title.toLowerCase()}…`} /> : !rows.length ? (
         <EmptyState title={`No ${title.toLowerCase()} yet`} description="Create the first record using the form above." />
       ) : (
-        <div className="table-wrap">
+        <div className="table-wrap" role="region" aria-label="Scrollable records" tabIndex={0}>
           <table>
             <thead>
               <tr>

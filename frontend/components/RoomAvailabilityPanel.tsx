@@ -383,7 +383,7 @@ export default function RoomAvailabilityPanel() {
                   {block.rooms.length} room{block.rooms.length === 1 ? "" : "s"}
                 </span>
               </div>
-              <div className="table-wrap">
+              <div className="table-wrap" role="region" aria-label="Scrollable records" tabIndex={0}>
                 <table>
                   <thead>
                     <tr>

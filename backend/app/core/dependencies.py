@@ -30,7 +30,7 @@ def get_current_user(request: Request, token: Annotated[str | None, Depends(oaut
     except (ValueError, TypeError):
         raise HTTPException(401, "Invalid session")
     user = db.scalar(select(User).where(User.id == user_id).execution_options(tenant_bypass=True))
-    if user is None or not user.is_active:
+    if user is None or not user.is_active or user.is_locked or payload.get("sv", 0) != user.session_version:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
     db.info["actor_id"] = user.id
     scope = None

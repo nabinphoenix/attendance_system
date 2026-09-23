@@ -17,9 +17,9 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
     return password_context.verify(plain_password, hashed_password)
 
 
-def create_access_token(subject: str, role: str | None = None, expires_delta: timedelta | None = None) -> str:
+def create_access_token(subject: str, role: str | None = None, expires_delta: timedelta | None = None, *, session_version: int = 0) -> str:
     expires = datetime.now(UTC) + (expires_delta or timedelta(minutes=settings.access_token_expire_minutes))
-    claims = {"sub": subject, "exp": expires}
+    claims = {"sub": subject, "exp": expires, "sv": session_version}
     if role:
         claims["role"] = role
     return jwt.encode(claims, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)

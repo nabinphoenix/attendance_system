@@ -1,2 +1,2 @@
 import type { AttendanceRecord } from "@/types";
-export default function AttendanceTable({ records = [] }: { records?: AttendanceRecord[] }) { return <table className="w-full"><thead><tr><th className="text-left">Student</th><th>Status</th></tr></thead><tbody>{records.map((r) => <tr key={r.id}><td>{r.studentName}</td><td>{r.status}</td></tr>)}</tbody></table>; }
+export default function AttendanceTable({ records = [] }: { records?: AttendanceRecord[] }) { return <div className="table-wrap" role="region" aria-label="Attendance records" tabIndex={0}><table className="w-full"><thead><tr><th className="text-left">Student</th><th>Status</th></tr></thead><tbody>{records.map((r) => <tr key={r.id}><td>{r.studentName}</td><td>{r.status}</td></tr>)}</tbody></table></div>; }

@@ -54,7 +54,7 @@ export default function Page() {
       <input type="date" value={filters.date_to} onChange={(event) => updateFilter("date_to", event.target.value)} />
     </div>
     {error && <SystemFeedback className="mb-3" tone="danger" title="Unable to load audit log" description={error} />}
-    <div className="table-wrap">
+    <div className="table-wrap" role="region" aria-label="Scrollable records" tabIndex={0}>
       <table>
         <thead><tr><th>Timestamp</th><th>Actor</th><th>Action</th><th>Entity</th><th>Before / after</th></tr></thead>
         <tbody>

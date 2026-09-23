@@ -172,7 +172,7 @@ export default function Page() {
 
     <div className="mt-7">
       {loading ? <LoadingState label="Loading module offerings…" /> : !rows.length ? <EmptyState title="No module offerings yet" description="Create an offering once for the cohort, then select it automatically while building or importing routines." /> : (
-        <div className="table-wrap">
+        <div className="table-wrap" role="region" aria-label="Scrollable records" tabIndex={0}>
           <table>
             <thead><tr><th>Module</th><th>Intake</th><th>Batch</th><th>Semester</th><th>Inherited sections</th><th>Status</th><th><span className="sr-only">Actions</span></th></tr></thead>
             <tbody>{rows.map((row) => <tr key={row.id}>

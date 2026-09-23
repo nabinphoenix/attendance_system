@@ -170,7 +170,7 @@ export default function AcademicSetupPage({ config }: { config: AcademicSetupCon
 
     <div className="mt-7">
       {loading ? <LoadingState label={`Loading ${config.title}`} /> : (
-        <div className="table-wrap">
+        <div className="table-wrap" role="region" aria-label="Scrollable records" tabIndex={0}>
           <table>
             <thead><tr>{columns.map((column) => <th key={column.field}>{column.label}</th>)}<th><span className="sr-only">Actions</span></th></tr></thead>
             <tbody>

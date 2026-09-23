@@ -176,7 +176,7 @@ export default function Page() {
       <h2 className='text-lg font-semibold'>{editingId == null ? 'Create Batch' : 'Edit Batch'}</h2>
       <p className='mt-1 text-sm text-slate-400'>The end date is fixed to three years minus one day from the start date.</p>
       <form onSubmit={submit} className='mt-5 grid gap-4'>
-        <div className='grid gap-4 md:grid-cols-4'>
+        <div className='grid gap-4 sm:grid-cols-2 xl:grid-cols-4'>
           <label><span className='field-label'>Batch name</span><input className='w-full' required value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} /></label>
           <label><span className='field-label'>Program</span><select className='w-full' required disabled={editingId != null} value={form.program_id} onChange={(event) => setForm({ ...form, program_id: event.target.value })}><option value=''>Select program</option>{programs.map((program) => <option key={program.id} value={program.id}>{program.name}</option>)}</select></label>
           <label><span className='field-label'>Start date</span><input className='w-full' required type='date' value={form.start_date} onChange={(event) => changeStart(event.target.value)} /></label>
@@ -193,7 +193,7 @@ export default function Page() {
       </form>
     </section>
 
-    <section className='mt-7 table-wrap'>
+    <section className="mt-7 table-wrap" role="region" aria-label="Batches" tabIndex={0}>
       <table>
         <thead><tr><th>Batch</th><th>Program</th><th>Dates</th><th>Level Intake Codes</th><th><span className='sr-only'>Actions</span></th></tr></thead>
         <tbody>{batches.map((batch) => <tr key={batch.id}>

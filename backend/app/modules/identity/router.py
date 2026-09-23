@@ -1,10 +1,11 @@
 import hashlib
+import secrets
 import io
 from pathlib import Path
 from uuid import uuid4
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Annotated
-from fastapi import APIRouter, Depends, File, HTTPException, Response, UploadFile, status
+from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Request, Response, UploadFile, status
 from PIL import Image, UnidentifiedImageError
 from pydantic import BaseModel
 from sqlalchemy import func, select
@@ -13,8 +14,10 @@ from app.modules.operations.service import log_audit
 from app.core.security import hash_password, verify_password
 from app.modules.academic.models import InvitationPurpose, InvitationStatus, Student, StudentInvitation
 from app.modules.identity.models import User, UserRole
-from app.modules.identity.schemas import LoginRequest, PasswordChange, ProfileUpdate, TokenResponse, UserRead, UserUpdate
-from app.modules.identity.service import authenticate, issue_token
+from app.modules.identity.schemas import LoginRequest, PasswordChange, ProfileUpdate, TokenResponse, UserRead, UserUpdate, ForgotPasswordRequest, ResetChallenge, ResetPasswordRequest
+from app.modules.identity.service import authenticate, issue_token, clear_login_failures, invalidate_reset, reset_account, unlock_account
+from app.modules.identity.rate_limit import client_key, consume
+from app.workers.jobs.notification_job import send_password_reset_email
 from app.core.config import settings
 from app.core.profile_media import ProfileMediaNotFound, ProfileMediaStore, ProfileMediaUnavailable
 
@@ -82,6 +85,9 @@ def activate(payload:ActivationRequest,response:Response,db:DbSession):
         if not account:raise HTTPException(409,"The linked student account no longer exists")
         if not account.is_active:raise HTTPException(403,"Account inactive. Contact an administrator.")
         account.password_hash=hash_password(payload.password)
+        clear_login_failures(account)
+        invalidate_reset(account)
+        account.session_version += 1
         invite.status=InvitationStatus.ACTIVATED;invite.used_at=datetime.now(UTC)
         log_audit(db,account.id,"student.password_setup_completed","student",student.id,None,{"invitation_id":invite.id});db.commit();db.refresh(account)
         return browser_session(response,account)
@@ -96,10 +102,11 @@ def activate(payload:ActivationRequest,response:Response,db:DbSession):
 def health() -> dict[str, str]: return {"module": "identity", "status": "ok"}
 
 @router.post("/auth/login", response_model=TokenResponse)
-def login(payload: LoginRequest, response: Response, db: DbSession) -> TokenResponse:
+def login(payload: LoginRequest, request: Request, response: Response, db: DbSession) -> TokenResponse:
+    consume(db, "login-ip", client_key(request), settings.login_rate_limit, settings.login_rate_window_seconds)
     user = authenticate(db, payload.email, payload.password)
     if not user:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password")
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Incorrect email or password.")
     if not user.is_active:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account inactive. Contact an administrator.")
     college = db.get(College, user.college_id) if user.college_id else None
@@ -110,6 +117,70 @@ def login(payload: LoginRequest, response: Response, db: DbSession) -> TokenResp
     log_audit(db, user.id, "user.login", "user", user.id)
     db.commit()
     return browser_session(response,user)
+
+RESET_REQUEST_MESSAGE = "If an account exists for that email, password reset instructions have been sent."
+
+
+@router.post("/auth/forgot-password")
+def forgot_password(payload: ForgotPasswordRequest, request: Request, background: BackgroundTasks, db: DbSession):
+    consume(db, "reset-request-ip", client_key(request), settings.reset_request_ip_limit, settings.reset_rate_window_seconds)
+    email = str(payload.email).strip().lower()
+    if not consume(db, "reset-request-email", email, settings.reset_request_email_limit, settings.reset_rate_window_seconds, reject=False):
+        return {"message": RESET_REQUEST_MESSAGE}
+    user = db.scalar(select(User).where(User.email == email).execution_options(tenant_bypass=True).with_for_update())
+    now = datetime.now(UTC)
+    if user and user.is_active:
+        previous = user.reset_requested_at
+        if previous and previous.tzinfo is None:
+            previous = previous.replace(tzinfo=UTC)
+        if not previous or (now - previous).total_seconds() >= settings.reset_email_cooldown_seconds:
+            set_college_scope(db, user.college_id)
+            token = secrets.token_urlsafe(32)
+            user.reset_token_hash = hashlib.sha256(token.encode()).hexdigest()
+            user.reset_expires_at = now + timedelta(minutes=settings.reset_token_expire_minutes)
+            user.reset_requested_at = now
+            log_audit(db, user.id, "auth.password_reset_requested", "user", user.id)
+            db.commit()
+            # Secrets stay in memory and email, never in the notification table.
+            # Background delivery gives known/unknown accounts the same HTTP response.
+            background.add_task(send_password_reset_email, email, token)
+    return {"message": RESET_REQUEST_MESSAGE}
+
+
+def throttle_reset(db, request):
+    consume(db, "reset-verify-ip", client_key(request), settings.reset_verify_rate_limit, settings.reset_rate_window_seconds)
+
+
+@router.post("/auth/reset-password/validate")
+def validate_reset(payload: ResetChallenge, request: Request, db: DbSession):
+    throttle_reset(db, request)
+    reset_account(db, payload.token)
+    return {"message": "Reset link verified."}
+
+
+@router.post("/auth/reset-password")
+def reset_password(payload: ResetPasswordRequest, request: Request, response: Response, db: DbSession):
+    throttle_reset(db, request)
+    user = reset_account(db, payload.token)
+    user.password_hash = hash_password(payload.new_password)
+    clear_login_failures(user)
+    invalidate_reset(user)
+    user.session_version += 1
+    log_audit(db, user.id, "auth.password_reset_completed", "user", user.id)
+    db.commit()
+    response.delete_cookie(key=settings.auth_cookie_name, path="/")
+    return {"message": "Your password has been reset and your account unlocked. Please sign in again."}
+
+
+@router.post("/users/{id}/unlock", response_model=UserRead)
+def unlock_user(id: int, actor: Annotated[User, Depends(require_role("admin"))], db: DbSession):
+    account = db.scalar(select(User).where(User.id == id).with_for_update())
+    if not account:
+        raise HTTPException(404, "User not found")
+    if account.role == UserRole.SUPER_ADMIN:
+        raise HTTPException(403, "Platform accounts are managed in the Super Admin workspace")
+    return unlock_account(db, account, actor)
+
 
 @router.get("/auth/me", response_model=UserRead)
 def me(user: Annotated[User, Depends(get_current_user)]) -> User: return user
@@ -138,6 +209,7 @@ def update_profile(payload: ProfileUpdate, user: Annotated[User, Depends(get_cur
         before["email"] = user.email
         after["email"] = email
         user.email = email
+        invalidate_reset(user)
     if not after:
         raise HTTPException(422, "Provide a different name or email address")
 
@@ -152,15 +224,19 @@ def update_profile(payload: ProfileUpdate, user: Annotated[User, Depends(get_cur
     return user
 
 @router.post("/auth/me/password", status_code=status.HTTP_204_NO_CONTENT)
-def change_password(payload: PasswordChange, user: Annotated[User, Depends(get_current_user)], db: DbSession) -> Response:
+def change_password(payload: PasswordChange, response: Response, user: Annotated[User, Depends(get_current_user)], db: DbSession) -> Response:
     if not verify_password(payload.current_password, user.password_hash):
         raise HTTPException(422, "Your current password is incorrect")
     if payload.current_password == payload.new_password:
         raise HTTPException(422, "Choose a password you have not used for this change")
     user.password_hash = hash_password(payload.new_password)
+    user.session_version += 1
+    invalidate_reset(user)
     log_audit(db, user.id, "user.password_changed", "user", user.id)
     db.commit()
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
+    browser_session(response, user)
+    response.status_code = status.HTTP_204_NO_CONTENT
+    return response
 
 @router.post("/auth/me/avatar", response_model=UserRead)
 async def upload_avatar(

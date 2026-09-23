@@ -42,14 +42,14 @@ html[data-theme="dark"] {
 @layer base {
   * { @apply border-slate-800; }
   html { background: rgb(var(--background)); -webkit-text-size-adjust: 100%; }
-  body { @apply min-h-screen overflow-x-hidden antialiased; background-color: rgb(var(--background)); color: rgb(var(--text)); background-image: radial-gradient(circle at 100% 0%, rgb(var(--primary) / .10), transparent 32rem); font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  body { @apply min-h-screen antialiased; background-color: rgb(var(--background)); color: rgb(var(--text)); background-image: radial-gradient(circle at 100% 0%, rgb(var(--primary) / .10), transparent 32rem); font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
   h1, h2, h3 { @apply tracking-tight; color: rgb(var(--text)); }
   button, a, input, select, textarea { @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 focus-visible:ring-offset-2; }
   /* Form controls must shrink inside responsive grid columns. Without these
      constraints a long native <option> can make its select overflow into the
      next field (for example, Module over Section in schedule filters). */
   label { min-width: 0; }
-  input:not([type="checkbox"]):not([type="radio"]):not([type="file"]), select, textarea { @apply min-h-10 w-full min-w-0 rounded-lg px-3 py-2 text-sm shadow-sm transition disabled:cursor-not-allowed disabled:opacity-60; border-color: rgb(var(--border)); background: rgb(var(--surface)); color: rgb(var(--text)); }
+  input:not([type="checkbox"]):not([type="radio"]):not([type="file"]), select, textarea { @apply min-h-11 w-full min-w-0 max-w-full rounded-lg px-3 py-2 text-sm shadow-sm transition disabled:cursor-not-allowed disabled:opacity-60; border-color: rgb(var(--border)); background: rgb(var(--surface)); color: rgb(var(--text)); }
   input[type="checkbox"], input[type="radio"] { @apply h-4 w-4 accent-emerald-500; }
   table { @apply w-full text-left text-sm; }
   thead { @apply text-xs font-semibold uppercase tracking-wider; background: rgb(var(--surface-muted)); color: rgb(var(--text-muted)); }
@@ -61,7 +61,16 @@ html[data-theme="dark"] {
 
 @layer components {
   .page-container { @apply mx-auto w-full max-w-screen-2xl px-4 py-5 sm:px-6 sm:py-6 lg:px-8 lg:py-8; }
-  .page-container > * { min-width: 0; }
+  .page-container > *, .page-container .grid > * { min-width: 0; }
+  .page-container { min-width: 0; overflow-wrap: anywhere; }
+  .page-container .panel { min-width: 0; max-width: 100%; }
+  input[type="file"] { max-width: 100%; min-width: 0; }
+  .page-container .overflow-x-auto { position: relative; min-width: 0; max-width: 100%; }
+  .page-container [role="dialog"] > .panel { max-height: calc(100dvh - 2rem); overflow-y: auto; }
+  .table-wrap { position: relative; max-width: 100%; min-width: 0; }
+  .page-container table { overflow-wrap: normal; }
+  .table-wrap table { min-width: 36rem; }
+  .table-wrap:focus-visible { outline: 2px solid rgb(var(--primary)); outline-offset: 2px; }
   .panel { @apply rounded-xl border; border-color: rgb(var(--border)); background: rgb(var(--surface)); box-shadow: var(--shadow); }
   .field-label { @apply mb-1.5 block text-sm font-medium; color: rgb(var(--text)); }
   .helper-text { @apply mt-1.5 text-sm; color: rgb(var(--text-muted)); }
@@ -280,13 +289,13 @@ html[data-theme="light"] .hover\:text-emerald-300:hover { color: rgb(4 120 87); 
 html[data-theme="light"] .border-slate-600,
 html[data-theme="light"] .border-slate-500 { border-color: rgb(var(--border)); }
 
+/* Touch sizing is scoped to workspace controls, without changing desktop density. */
 @media (max-width: 639px) {
-  .page-container table:not(.no-mobile-scroll) { display: block; max-width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; white-space: nowrap; }
-  .page-container table:not(.no-mobile-scroll) > thead,
-  .page-container table:not(.no-mobile-scroll) > tbody { display: table; min-width: 38rem; width: 100%; }
-  .page-container form, .page-container section, .page-container article, .page-container [role="dialog"] { min-width: 0; }
+  .page-container button, .page-container a:not(.inline), .app-header button, .app-nav-link { min-height: 44px; }
   .page-container button, .page-container a { max-width: 100%; }
+  .page-container input, .page-container select, .page-container textarea { font-size: 16px; }
 }
+dialog::backdrop { background: rgb(0 0 0 / .55); }
 
 @media (max-width: 860px) {
   .landing-hero { grid-template-columns: 1fr; gap: 2.25rem; padding-top: 2.5rem; }
