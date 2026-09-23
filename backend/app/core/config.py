@@ -93,6 +93,17 @@ class Settings(BaseSettings):
     ai_request_timeout_seconds: float = Field(default=30, ge=5, le=120)
     ai_max_tool_rounds: int = Field(default=8, ge=1, le=8)
     ai_confirmation_expire_minutes: int = Field(default=10, ge=1, le=60)
+    # Google Forms access is opt-in and read-only. The OAuth token must carry
+    # forms.responses.readonly; adding forms.body.readonly maps answer IDs to
+    # their question titles.
+    google_forms_enabled: bool = False
+    google_forms_form_id: str | None = None
+    google_forms_access_token: str | None = None
+    google_forms_oauth_client_id: str | None = None
+    google_forms_oauth_client_secret: str | None = None
+    google_forms_oauth_refresh_token: str | None = None
+    google_forms_response_limit: int = Field(default=25, ge=1, le=100)
+    google_forms_timeout_seconds: float = Field(default=15, ge=5, le=60)
 
 
 @lru_cache

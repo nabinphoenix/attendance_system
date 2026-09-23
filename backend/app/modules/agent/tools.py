@@ -21,6 +21,7 @@ from app.modules.analytics.service import subject_stats
 from app.modules.identity.models import User
 from app.modules.operations.service import log_audit
 from .models import AgentApproval
+from .read_tools import data_catalog, database_records, google_form_responses, import_history
 
 
 class AgentActionError(ValueError):
@@ -51,6 +52,10 @@ TOOL_DEFINITIONS = [
     _tool("create_section", "Propose a permanent Section owned by a Batch.", {"name": {"type": "string"}, "batch_id": {"type": "integer"}, "combined_with": {"type": "string"}}, ["name", "batch_id"]),
     _tool("create_cohort_semester", "Propose a dated Semester for a configured Batch Level. This does not promote students.", {"batch_level_id": {"type": "integer"}, "semester_number": {"type": "integer", "minimum": 1, "maximum": 6}, "attempt_number": {"type": "integer", "minimum": 1}, "start_date": {"type": "string"}, "end_date": {"type": "string"}, "status": {"type": "string", "enum": ["planned", "active", "completed"]}}, ["batch_level_id", "semester_number", "start_date", "end_date"]),
     _tool("preview_promotion", "Preview a single intake and batch moving to its next dated semester. Search for all IDs first. A valid preview becomes an approval-only proposal.", {"intake_id": {"type": "integer"}, "batch_id": {"type": "integer"}, "from_cohort_semester_id": {"type": "integer"}, "to_cohort_semester_id": {"type": "integer"}, "effective_date": {"type": "string"}, "section_mapping": {"type": "object", "additionalProperties": {"type": "integer"}}, "hold_student_ids": {"type": "array", "items": {"type": "integer"}}, "notes": {"type": "string"}}, ["intake_id", "batch_id", "from_cohort_semester_id", "to_cohort_semester_id", "effective_date"]),
+    _tool("get_database_catalog", "List every database dataset available to this administrator, its safe columns, and row count. Contact, authentication, location, token, and free-text private fields are excluded.", {}),
+    _tool("read_database_records", "Read a bounded set of safe fields from one catalog dataset. Always call get_database_catalog before using a new dataset name. This is read-only and scoped to the active college.", {"dataset": {"type": "string"}, "query": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 50}}, ["dataset"]),
+    _tool("get_import_history", "Read saved CSV/XLSX import outcomes. Original uploaded files are not retained; contact fields in saved row data are redacted.", {"import_job_id": {"type": "integer"}, "limit": {"type": "integer", "minimum": 1, "maximum": 50}}),
+    _tool("get_google_form_responses", "Read a bounded page of the configured Google Form responses. This is read-only; respondent email and sensitive answer fields are redacted.", {"limit": {"type": "integer", "minimum": 1, "maximum": 100}}),
 ]
 
 
@@ -62,6 +67,10 @@ def execute_tool(db: Session, actor: User, name: str, arguments: dict[str, Any])
         "search_academic": _search_academic,
         "get_attendance_summary": _attendance_summary,
         "get_at_risk_students": _at_risk_students,
+        "get_database_catalog": _database_catalog,
+        "read_database_records": _database_records,
+        "get_import_history": _import_history,
+        "get_google_form_responses": _google_form_responses,
         "create_program": _propose_program,
         "create_batch": _propose_batch,
         "create_intake": _propose_intake,
@@ -453,3 +462,35 @@ def _three_year_end(start: date) -> date:
 
 def _cohort_data(item: CohortSemester) -> dict[str, Any]:
     return {"id": item.id, "batch_level_id": item.batch_level_id, "intake_id": item.intake_id, "batch_id": item.batch_id, "semester_number": item.semester_number, "attempt_number": item.attempt_number, "start_date": item.start_date.isoformat(), "end_date": item.end_date.isoformat(), "status": item.status}
+
+
+def _database_catalog(db: Session, actor: User, args: dict[str, Any]) -> ToolOutcome:
+    return ToolOutcome(data_catalog(db, actor))
+
+
+def _database_records(db: Session, actor: User, args: dict[str, Any]) -> ToolOutcome:
+    try:
+        return ToolOutcome(database_records(
+            db, actor, _string(args, "dataset", 100), _optional_string(args, "query", 150),
+            _integer(args, "limit", 20, 1, 50),
+        ))
+    except ValueError as exc:
+        raise AgentActionError(str(exc)) from exc
+
+
+def _import_history(db: Session, actor: User, args: dict[str, Any]) -> ToolOutcome:
+    try:
+        return ToolOutcome(import_history(
+            db, _optional_integer(args, "import_job_id"), _integer(args, "limit", 20, 1, 50),
+        ))
+    except ValueError as exc:
+        raise AgentActionError(str(exc)) from exc
+
+
+def _google_form_responses(db: Session, actor: User, args: dict[str, Any]) -> ToolOutcome:
+    try:
+        return ToolOutcome(google_form_responses(
+            _integer(args, "limit", settings.google_forms_response_limit, 1, 100),
+        ))
+    except ValueError as exc:
+        raise AgentActionError(str(exc)) from exc
