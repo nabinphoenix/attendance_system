@@ -26,9 +26,10 @@ Never commit AWS keys, session tokens, database passwords, JWT secrets, SMTP
 passwords, or GitHub tokens. Credentials pasted into chat, a terminal, or a
 repository must be revoked and replaced immediately.
 
-Production deployment uses GitHub Actions OIDC. The workflow does not accept
-AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_SESSION_TOKEN, or Vercel
-credentials.
+The deployment workflow uses the existing AWS Academy/VocLabs temporary session
+credentials stored as GitHub `production` environment secrets. These credentials
+expire when the lab session ends, so refresh all three secrets after starting a
+new session. Do not use long-lived IAM user access keys.
 
 ## Provision the AWS foundation
 
@@ -42,14 +43,24 @@ foundation. It creates:
 - encrypted S3 buckets for deployment bundles and private profile media;
 - Elastic Beanstalk application/environment roles and instance profile;
 - the load-balanced AntimBench-Prod Node.js 22 environment;
-- a GitHub Actions OIDC deployment role restricted to
-  nabinphoenix/attendance_system on main.
+- an optional GitHub Actions OIDC deployment role restricted to
+  the `production` environment in `nabinphoenix/attendance_system`.
 
 The template enables the HTTPS listener when CertificateArn is supplied. The
 ACM certificate must be issued in us-east-1 for
 antimbench.sunitanepali.com.np. If the account already has the GitHub OIDC
 provider, pass its ARN as ExistingGitHubOidcProviderArn; otherwise the stack
-creates it.
+creates it when `CreateGitHubOidcResources=true` is supplied by an
+IAM-authorized bootstrap principal. The default is `false` because AWS Academy
+roles generally cannot create IAM identity providers or roles.
+
+This repository was created after GitHub introduced immutable OIDC subjects.
+The deployment job also uses the `production` environment, so the role trust
+policy must match this subject exactly:
+
+~~~text
+repo:nabinphoenix@159899712/attendance_system@1321622311:environment:production
+~~~
 
 Use a fresh, URL-safe database password and a unique JWT secret through the
 CloudFormation console or a secrets-aware deployment process. Do not place
@@ -62,10 +73,20 @@ aws cloudformation deploy \
   --template-file infra/aws/antimbench-production.yml \
   --capabilities CAPABILITY_NAMED_IAM \
   --parameter-overrides \
+    CreateGitHubOidcResources=true \
+    GitHubRepository=nabinphoenix/attendance_system \
+    GitHubRepositoryOwnerId=159899712 \
+    GitHubRepositoryId=1321622311 \
+    GitHubEnvironment=production \
     DBPassword="$DB_PASSWORD" \
     JWTSecretKey="$JWT_SECRET_KEY" \
     CertificateArn="$ACM_CERTIFICATE_ARN"
 ~~~
+If the stack already exists, run the same update from an IAM-authorized
+principal and retain the existing secret parameter values. The OIDC provider
+and deployment role are an optional authentication path; the current workflow
+uses the existing AWS Academy session credentials described below.
+
 
 The Node.js solution stack changes over time. Before creating or updating the
 stack, confirm the current value:
@@ -153,14 +174,18 @@ The workflow .github/workflows/deploy.yml runs:
 
 Configure these GitHub repository settings:
 
-### Secret
+### Production environment secrets
 
 ~~~text
-AWS_DEPLOY_ROLE_ARN
+AWS_ACCESS_KEY_ID
+AWS_SECRET_ACCESS_KEY
+AWS_SESSION_TOKEN
 ~~~
 
-This is the ARN output by the CloudFormation stack. Do not add static AWS key
-secrets.
+Add these under **Settings → Environments → production → Secrets** using the
+current AWS Academy/VocLabs session values. The session token is required.
+Refresh all three values whenever the lab session is restarted or expires.
+
 
 ### Variables
 
@@ -184,9 +209,9 @@ aws cloudformation describe-stacks \
 ~~~
 
 Update the production environment variable with that value before rerunning a
-deployment. The workflow performs an S3 preflight check after assuming the
-GitHub OIDC role, so a stale bucket variable fails with an actionable error
-before the upload step.
+deployment. The workflow performs an S3 preflight check after authenticating
+with the AWS Academy session credentials, so a stale bucket variable fails with
+an actionable error before the upload step.
 
 There are no Vercel variables or deployment stages. The frontend and backend
 are always delivered by the same Elastic Beanstalk version.

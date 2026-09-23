@@ -299,7 +299,7 @@ For a live dashboard test, import one test student with an inbox you control, or
 
 ## Configuration and deployment
 
-Production uses one AWS Elastic Beanstalk environment for the Next.js frontend, FastAPI backend, nginx reverse proxy, and notification worker. PostgreSQL runs on private Amazon RDS. The deployment workflow tests, packages, migrates, and deploys the complete application to https://antimbench.sunitanepali.com.np using GitHub Actions OIDC; no separate Vercel frontend or public backend hostname is used.
+Production uses one AWS Elastic Beanstalk environment for the Next.js frontend, FastAPI backend, nginx reverse proxy, and notification worker. PostgreSQL runs on private Amazon RDS. The deployment workflow tests, packages, migrates, and deploys the complete application to https://antimbench.sunitanepali.com.np using the AWS Academy temporary session credentials stored in the protected GitHub production environment; these credentials must be refreshed when the lab session expires. No separate Vercel frontend or public backend hostname is used.
 
 ```env
 DATABASE_URL=postgresql://USER:URL_ENCODED_PASSWORD@HOST:5432/antimbench
