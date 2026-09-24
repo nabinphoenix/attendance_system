@@ -1,5 +1,5 @@
 import io
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, select
@@ -23,6 +23,14 @@ def row(*, day: str, sections: str = "A1", module_code: str = "CT004-3-3", modul
 
 
 def test_section_import_readiness_projection_and_negative_validation():
+    # Keep Semester 6 current so the student-facing current-routine endpoints
+    # exercise their date-bounded visibility rather than a future semester.
+    today = date.today()
+    month_index = today.year * 12 + today.month - 1 - 30
+    start_year, start_month = divmod(month_index, 12)
+    batch_start = date(start_year, start_month + 1, 1)
+    batch_end = batch_start.replace(year=batch_start.year + 3) - timedelta(days=1)
+
     engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
     Session = sessionmaker(bind=engine)
     Base.metadata.create_all(engine)
@@ -49,8 +57,8 @@ def test_section_import_readiness_projection_and_negative_validation():
         batch_response = client.post("/api/v1/academic/batches", headers=admin_headers, json={
             "name": "First batch",
             "program_id": program["id"],
-            "start_date": "2024-09-01",
-            "end_date": "2027-08-31",
+            "start_date": batch_start.isoformat(),
+            "end_date": batch_end.isoformat(),
             "levels": [
                 {"level_number": 1, "intake_code": "SEP24"},
                 {"level_number": 2, "intake_code": "SEP25"},
