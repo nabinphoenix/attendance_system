@@ -17,7 +17,7 @@ export default function StudentInvitationPanel() {
   const [sections, setSections] = useState<Section[]>([]);
   const [intakes, setIntakes] = useState<Intake[]>([]);
   const [selected, setSelected] = useState<number[]>([]);
-  const [onlyUnregistered, setOnlyUnregistered] = useState(true);
+  const [onlyUnregistered, setOnlyUnregistered] = useState(false);
   const [intakeId, setIntakeId] = useState("");
   const [sectionId, setSectionId] = useState("");
   const [summary, setSummary] = useState("");
