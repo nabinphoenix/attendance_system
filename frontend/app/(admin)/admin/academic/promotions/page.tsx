@@ -359,25 +359,18 @@ export default function Page() {
   </div>;
 
   return <div className='max-w-7xl'>
-    <PageHeader title='Semester placement and progression' description='Create six sequential Semesters, preview every placement decision, preserve history, and control holds before persistence.' />
+    <PageHeader title='Semester placement and progression' description='Intake setup creates the fixed semester pairs; use this page to assign students, progress them, and preserve history.' />
     {message && <p className='mb-4 text-sm text-emerald-400'>{message}</p>}
     {error && <p className='mb-4 text-sm text-red-400'>{error}</p>}
 
     <section className='panel p-5'>
-      <h2 className='text-lg font-semibold'>1. Create sequential Semesters</h2>
-      <p className='mt-1 text-sm text-slate-400'>Level 1 contains Semesters 1-2, Level 2 contains 3-4, and Level 3 contains 5-6.</p>
-      <form onSubmit={createSemester} className='mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-5'>
-        <select aria-label='Batch' className={fieldClass} required value={semesterForm.batch_id} onChange={(event) => setSemesterForm({ ...semesterForm, batch_id: event.target.value, batch_level_id: '', semester_number: '' })}><option value=''>Batch</option>{batches.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select>
-        <select aria-label='Level / intake code' className={fieldClass} required value={semesterForm.batch_level_id} onChange={(event) => setSemesterForm({ ...semesterForm, batch_level_id: event.target.value, semester_number: '' })}><option value=''>Level / Intake Code</option>{selectedBatch?.levels.map((item) => <option key={item.id} value={item.id}>Level {item.level_number} - {item.intake_code}</option>)}</select>
-        <select aria-label='Semester number' className={fieldClass} required value={semesterForm.semester_number} onChange={(event) => setSemesterForm({ ...semesterForm, semester_number: event.target.value })}><option value=''>Semester</option>{selectedLevel && [selectedLevel.level_number * 2 - 1, selectedLevel.level_number * 2].map((number) => <option key={number} value={number}>Semester {number}</option>)}</select>
-        <input className={fieldClass} required type='date' aria-label='Semester start date' value={semesterForm.start_date} onChange={(event) => setSemesterForm({ ...semesterForm, start_date: event.target.value })} />
-        <div className='flex gap-2'><input className={fieldClass} required type='date' aria-label='Semester end date' value={semesterForm.end_date} onChange={(event) => setSemesterForm({ ...semesterForm, end_date: event.target.value })} /><Button type='submit'>Add</Button></div>
-      </form>
+      <h2 className='text-lg font-semibold'>Semester readiness</h2>
+      <p className='mt-1 text-sm text-slate-400'>Semester records are created automatically with each Intake Code: Level 1 creates 1?2, Level 2 creates 3?4, and Level 3 creates 5?6.</p>
       <div className='mt-5 overflow-x-auto' role="region" aria-label="Scrollable records" tabIndex={0}><table><thead><tr><th>Semester</th><th>Dates</th><th>Calendar readiness</th></tr></thead><tbody>{semesters.map((item) => <tr key={item.id}><td>{semesterLabel(item)}</td><td>{item.start_date} to {item.end_date}</td><td>{item.calendar_uploaded ? <span className='text-emerald-400'>PDF uploaded</span> : <Link className='text-amber-300 underline' href='/admin/academic/semester-resources'>Upload required PDF</Link>}</td></tr>)}</tbody></table></div>
     </section>
 
     <section className='panel mt-7 p-5'>
-      <h2 className='text-lg font-semibold'>2. Initial student assignment</h2>
+      <h2 className='text-lg font-semibold'>1. Initial student assignment</h2>
       <p className='mt-1 text-sm text-slate-400'>Bulk-assign students not yet placed in the Semester. A calendar PDF is required.</p>
       <form onSubmit={previewPlacement}>
         <select aria-label='Initial assignment semester' className={`${fieldClass} mt-4 max-w-xl`} required value={placementSemesterId} onChange={(event) => setPlacementSemesterId(event.target.value)}><option value=''>Target Semester</option>{semesters.map((item) => <option key={item.id} value={item.id}>{semesterLabel(item)}</option>)}</select>
@@ -388,7 +381,7 @@ export default function Page() {
     </section>
 
     <section className='panel mt-7 p-5'>
-      <h2 className='text-lg font-semibold'>3. Semester / Level progression</h2>
+      <h2 className='text-lg font-semibold'>2. Semester / Level progression</h2>
       <p className='mt-1 text-sm text-slate-400'>Allowed paths are 1 to 2, 2 to 3, 3 to 4, 4 to 5, and 5 to 6. Cross-Level transitions require the next Level Intake Code.</p>
       <form onSubmit={previewPromotion}>
         <div className='mt-4 grid gap-3 md:grid-cols-2'>
@@ -402,7 +395,7 @@ export default function Page() {
     </section>
 
     <section className='panel mt-7 p-5'>
-      <h2 className='text-lg font-semibold'>4. Promotion history and held students</h2>
+      <h2 className='text-lg font-semibold'>3. Promotion history and held students</h2>
       <div className='mt-4 space-y-3'>{runs.map((run) => {
         const runTarget = semesters.find((item) => item.id === run.to_cohort_semester_id);
         const targets = sections.filter((item) => item.batch_id === runTarget?.batch_id);
@@ -411,7 +404,7 @@ export default function Page() {
     </section>
 
     <section className='panel mt-7 p-5'>
-      <h2 className='text-lg font-semibold'>5. Individual Section move and placement history</h2>
+      <h2 className='text-lg font-semibold'>4. Individual Section move and placement history</h2>
       <form onSubmit={moveStudent} className='mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-5'>
         <select aria-label='Student to move' className={fieldClass} required value={move.student_id} onChange={(event) => void loadHistory(event.target.value)}><option value=''>Student</option>{students.map((item) => <option key={item.id} value={item.id}>{item.roll_number} - {item.name}</option>)}</select>
         <select aria-label='Placement semester' className={fieldClass} required value={move.cohort_semester_id} onChange={(event) => setMove({ ...move, cohort_semester_id: event.target.value, target_section_id: '', effective_date: '' })}><option value=''>Semester</option>{semesters.map((item) => <option key={item.id} value={item.id}>{semesterLabel(item)}</option>)}</select>

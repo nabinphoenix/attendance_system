@@ -67,15 +67,10 @@ def test_section_import_readiness_projection_and_negative_validation():
         )
         assert cleared_name.status_code == 200 and cleared_name.json()["intake_name"] is None
         intake = next(item for item in client.get("/api/v1/academic/intakes", headers=admin_headers).json() if item["code"] == "SEP26")
+        automatic_semesters = client.get("/api/v1/academic/cohort-semesters", headers=admin_headers).json()
+        assert [item["semester_number"] for item in automatic_semesters] == [1, 2, 3, 4, 5, 6]
         level_ids = {item["level_number"]: item["id"] for item in batch["levels"]}
-        semester_dates = [
-            ("2024-09-01", "2025-01-31"),
-            ("2025-02-01", "2025-06-30"),
-            ("2025-07-01", "2025-11-30"),
-            ("2025-12-01", "2026-03-31"),
-            ("2026-04-01", "2026-08-31"),
-            ("2026-09-01", "2027-01-31"),
-        ]
+        semester_dates = []  # Semesters are created with their Level Intake Codes.
         for semester_number, (start_date, end_date) in enumerate(semester_dates, 1):
             response = client.post("/api/v1/academic/cohort-semesters", headers=admin_headers, json={
                 "batch_level_id": level_ids[(semester_number + 1) // 2],

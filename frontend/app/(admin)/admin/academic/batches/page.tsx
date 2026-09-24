@@ -16,26 +16,18 @@ type Batch = {
   end_date: string;
   levels: Level[];
 };
-type LevelDraft = { level_number: number; intake_code: string; intake_name: string };
 type BatchDraft = {
   name: string;
   program_id: string;
   start_date: string;
   end_date: string;
-  levels: LevelDraft[];
 };
 
-const blankLevels = (): LevelDraft[] => [1, 2, 3].map((level_number) => ({
-  level_number,
-  intake_code: '',
-  intake_name: '',
-}));
 const blank = (): BatchDraft => ({
   name: '',
   program_id: '',
   start_date: '',
   end_date: '',
-  levels: blankLevels(),
 });
 
 function threeYearEnd(start: string) {
@@ -75,12 +67,6 @@ export default function Page() {
     setForm((current) => ({ ...current, start_date, end_date: threeYearEnd(start_date) }));
   }
 
-  function changeLevel(index: number, values: Partial<LevelDraft>) {
-    setForm((current) => ({
-      ...current,
-      levels: current.levels.map((level, itemIndex) => itemIndex === index ? { ...level, ...values } : level),
-    }));
-  }
 
   function startEdit(batch: Batch) {
     setEditingId(batch.id);
@@ -91,14 +77,6 @@ export default function Page() {
       program_id: String(batch.program_id),
       start_date: batch.start_date,
       end_date: batch.end_date,
-      levels: [1, 2, 3].map((number) => {
-        const level = batch.levels.find((item) => item.level_number === number);
-        return {
-          level_number: number,
-          intake_code: level?.intake_code ?? '',
-          intake_name: level?.intake_name ?? '',
-        };
-      }),
     });
   }
 
@@ -117,28 +95,15 @@ export default function Page() {
         await api.post('/api/v1/academic/batches', {
           ...form,
           program_id: Number(form.program_id),
-          levels: form.levels.map((level) => ({
-            ...level,
-            intake_code: level.intake_code.trim(),
-            intake_name: level.intake_name.trim() || null,
-          })),
         });
-        setMessage('Three-year Batch and Levels 1-3 created.');
+        setMessage('Three-year Batch created. Add its Intake Codes one Level at a time from Intake setup.');
       } else {
-        const batch = batches.find((item) => item.id === editingId)!;
         await api.patch(`/api/v1/academic/batches/${editingId}`, {
           name: form.name,
           start_date: form.start_date,
           end_date: form.end_date,
         });
-        await Promise.all(batch.levels.map((level) => {
-          const draft = form.levels.find((item) => item.level_number === level.level_number)!;
-          return api.patch(`/api/v1/academic/levels/${level.id}`, {
-            intake_code: draft.intake_code.trim(),
-            intake_name: draft.intake_name.trim() || null,
-          });
-        }));
-        setMessage('Batch and Level Intake Codes updated.');
+        setMessage('Batch updated.');
       }
       cancelEdit();
       await load();
@@ -167,7 +132,7 @@ export default function Page() {
   return <div className='max-w-7xl'>
     <PageHeader
       title='Three-year Batches'
-      description='A Batch owns permanent Sections and exactly three Levels. Each Level has its own required Intake Code.'
+      description='Create the three-year Batch first, then configure each Level and Intake Code from Intake setup.'
     />
     {message && <p className='mb-4 text-sm text-emerald-400'>{message}</p>}
     {error && <p className='mb-4 text-sm text-red-400'>{error}</p>}
@@ -181,13 +146,6 @@ export default function Page() {
           <label><span className='field-label'>Program</span><select className='w-full' required disabled={editingId != null} value={form.program_id} onChange={(event) => setForm({ ...form, program_id: event.target.value })}><option value=''>Select program</option>{programs.map((program) => <option key={program.id} value={program.id}>{program.name}</option>)}</select></label>
           <label><span className='field-label'>Start date</span><input className='w-full' required type='date' value={form.start_date} onChange={(event) => changeStart(event.target.value)} /></label>
           <label><span className='field-label'>End date</span><input className='w-full' required readOnly type='date' value={form.end_date} /></label>
-        </div>
-        <div className='grid gap-4 md:grid-cols-3'>
-          {form.levels.map((level, index) => <fieldset key={level.level_number} className='rounded-xl border border-slate-800 p-4'>
-            <legend className='px-2 font-semibold'>Level {level.level_number}</legend>
-            <label><span className='field-label'>Intake Code</span><input className='w-full' required maxLength={50} value={level.intake_code} onChange={(event) => changeLevel(index, { intake_code: event.target.value })} /></label>
-            <label className='mt-3 block'><span className='field-label'>Intake Name (optional)</span><input className='w-full' maxLength={100} value={level.intake_name} onChange={(event) => changeLevel(index, { intake_name: event.target.value })} /></label>
-          </fieldset>)}
         </div>
         <div className='flex gap-2'><Button type='submit' loading={saving}>{editingId == null ? 'Create Batch' : 'Save changes'}</Button>{editingId != null && <Button type='button' variant='ghost' onClick={cancelEdit}>Cancel</Button>}</div>
       </form>
