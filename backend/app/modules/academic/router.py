@@ -1,16 +1,18 @@
-import calendar
 from datetime import date, timedelta
+import json
 from typing import Annotated, TypeVar
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 from app.core.dependencies import DbSession, require_role
 from app.core.security import hash_password
 from app.modules.identity.models import User, UserRole
 from app.modules.operations.service import log_audit
+from pydantic import ValidationError
 from . import schemas
-from .models import Batch, BatchLevel, CohortSemester, Guardian, Intake, Program, Section, Student, StudentSubjectEnrollment, Subject, Teacher
+from .models import AcademicCalendar, Batch, BatchLevel, CohortSemester, Guardian, Intake, Program, Section, Student, StudentSubjectEnrollment, Subject, Teacher
 from .module_offering_service import synchronize_section_module_offerings
+from .semester_resource_service import MAX_CALENDAR_BYTES, validate_calendar
 from .models import StudentEnrollment
 from app.modules.scheduling.models import ClassSession, ScheduleOverride, TimetableEntry
 
@@ -76,36 +78,41 @@ def validate_level_seeds(levels: list[schemas.BatchLevelSeed]) -> None:
         raise HTTPException(422, 'Each Level requires a different Intake Code')
 
 
-def add_months(value: date, months: int) -> date:
-    """Return ``value`` shifted by whole months, preserving its day when possible."""
+def validate_semester_details(
+    level_number: int,
+    details: list[schemas.SemesterDetails],
+) -> list[tuple[int, str, date, date]]:
+    """Bind administrator-entered dates and labels to a Level's fixed numbers."""
 
-    month_index = value.month - 1 + months
-    year, month = divmod(month_index, 12)
-    year += value.year
-    month += 1
-    day = min(value.day, calendar.monthrange(year, month)[1])
-    return date(year, month, day)
+    if len(details) != 2:
+        raise HTTPException(422, 'Provide details for both semesters of this Level')
+    resolved: list[tuple[int, str, date, date]] = []
+    for offset, details_row in enumerate(details):
+        display_name = details_row.display_name.strip()
+        if not display_name:
+            raise HTTPException(422, 'Each semester needs a display name')
+        if details_row.start_date > details_row.end_date:
+            raise HTTPException(422, f'{display_name}: start date must be on or before end date')
+        resolved.append((level_number * 2 - 1 + offset, display_name, details_row.start_date, details_row.end_date))
+    return resolved
 
 
-def semester_dates(batch: Batch, semester_number: int) -> tuple[date, date]:
-    """Derive one of a batch's six consecutive semester date ranges."""
-
-    start = add_months(batch.start_date, (semester_number - 1) * 6)
-    end = add_months(batch.start_date, semester_number * 6) - timedelta(days=1)
-    return start, end
-
-
-def create_level_semesters(db: Session, batch: Batch, level: BatchLevel) -> list[CohortSemester]:
-    """Create the two fixed semester records owned by a newly configured Level."""
+def create_level_semesters(
+    db: Session,
+    batch: Batch,
+    level: BatchLevel,
+    details: list[schemas.SemesterDetails],
+) -> list[CohortSemester]:
+    """Create a Level's two fixed-number semesters using supplied, never derived dates."""
 
     records: list[CohortSemester] = []
-    for semester_number in (level.level_number * 2 - 1, level.level_number * 2):
-        start_date, end_date = semester_dates(batch, semester_number)
+    for semester_number, display_name, start_date, end_date in validate_semester_details(level.level_number, details):
         semester = CohortSemester(
             intake_id=level.intake_id,
             batch_id=batch.id,
             batch_level_id=level.id,
             semester_number=semester_number,
+            display_name=display_name,
             start_date=start_date,
             end_date=end_date,
         )
@@ -113,6 +120,28 @@ def create_level_semesters(db: Session, batch: Batch, level: BatchLevel) -> list
         records.append(semester)
     db.flush()
     return records
+
+
+def create_level_with_semesters(
+    db: Session,
+    payload: schemas.BatchLevelCreate,
+) -> tuple[Batch, BatchLevel, list[CohortSemester]]:
+    batch = get_or_404(db, Batch, payload.batch_id, 'Batch')
+    if db.scalar(select(BatchLevel.id).where(
+        BatchLevel.batch_id == batch.id,
+        BatchLevel.level_number == payload.level_number,
+    )):
+        raise HTTPException(409, f'Level {payload.level_number} already exists for this batch')
+    intake = resolve_intake(
+        db,
+        program_id=batch.program_id,
+        code=payload.intake_code,
+        name=payload.intake_name,
+    )
+    level = BatchLevel(batch_id=batch.id, level_number=payload.level_number, intake_id=intake.id)
+    db.add(level)
+    db.flush()
+    return batch, level, create_level_semesters(db, batch, level, payload.semesters)
 
 
 def resolve_intake(
@@ -172,20 +201,13 @@ def create_batch(p: schemas.BatchCreate, user: Annotated[User, Depends(require_r
     get_or_404(db, Program, p.program_id, "Program")
     validate_batch_dates(p.start_date, p.end_date)
     validate_level_seeds(p.levels)
+    if p.levels:
+        raise HTTPException(
+            422,
+            'Create the Batch first, then add each Level / Intake with both semester dates and academic calendars.',
+        )
     batch = Batch(**p.model_dump(exclude={'levels'}))
     db.add(batch)
-    db.flush()
-    for seed in sorted(p.levels, key=lambda item: item.level_number):
-        intake = resolve_intake(
-            db,
-            program_id=p.program_id,
-            code=seed.intake_code,
-            name=seed.intake_name,
-        )
-        level = BatchLevel(batch_id=batch.id, level_number=seed.level_number, intake_id=intake.id)
-        db.add(level)
-        db.flush()
-        create_level_semesters(db, batch, level)
     db.flush()
     log_audit(
         db,
@@ -257,34 +279,72 @@ def create_level(
     user: Annotated[User, Depends(require_role('admin'))],
     db: DbSession,
 ):
-    batch = get_or_404(db, Batch, p.batch_id, 'Batch')
-    if db.scalar(select(BatchLevel.id).where(
-        BatchLevel.batch_id == batch.id,
-        BatchLevel.level_number == p.level_number,
-    )):
-        raise HTTPException(409, f'Level {p.level_number} already exists for this batch')
-    intake = resolve_intake(
-        db,
-        program_id=batch.program_id,
-        code=p.intake_code,
-        name=p.intake_name,
+    # The normal administrator workflow must include both calendar PDFs. Keep
+    # this JSON endpoint from silently creating incomplete semester records.
+    raise HTTPException(
+        422,
+        'Academic calendar PDFs are required. Use the Level setup workflow with both semester calendars.',
     )
-    level = BatchLevel(batch_id=batch.id, level_number=p.level_number, intake_id=intake.id)
-    db.add(level)
-    db.flush()
-    semesters = create_level_semesters(db, batch, level)
-    after = p.model_dump() | {
-        'semester_ids': [semester.id for semester in semesters],
-        'semester_numbers': [semester.semester_number for semester in semesters],
-    }
-    log_audit(db, user.id, 'batch_level.created', 'batch_level', level.id, None, after)
-    db.commit()
+
+
+@router.post('/levels/with-calendars', response_model=schemas.BatchLevelRead, status_code=201)
+def create_level_with_calendars(
+    batch_id: Annotated[int, Form()],
+    level_number: Annotated[int, Form()],
+    intake_code: Annotated[str, Form()],
+    semester_details: Annotated[str, Form()],
+    user: Annotated[User, Depends(require_role('admin'))],
+    db: DbSession,
+    semester_one_calendar: UploadFile = File(...),
+    semester_two_calendar: UploadFile = File(...),
+    intake_name: Annotated[str | None, Form()] = None,
+):
+    try:
+        payload = schemas.BatchLevelCreate(
+            batch_id=batch_id,
+            level_number=level_number,
+            intake_code=intake_code,
+            intake_name=intake_name,
+            semesters=json.loads(semester_details),
+        )
+    except (json.JSONDecodeError, TypeError, ValidationError) as exc:
+        raise HTTPException(422, 'Provide valid details for both semesters') from exc
+
+    uploaded_calendars: list[tuple[str, bytes]] = []
+    for calendar_file in (semester_one_calendar, semester_two_calendar):
+        try:
+            content = calendar_file.file.read(MAX_CALENDAR_BYTES + 1)
+            filename = validate_calendar(calendar_file.filename, content)
+        finally:
+            calendar_file.file.close()
+        uploaded_calendars.append((filename, content))
+
+    try:
+        _, level, semesters = create_level_with_semesters(db, payload)
+        for semester, (filename, content) in zip(semesters, uploaded_calendars, strict=True):
+            db.add(AcademicCalendar(
+                cohort_semester_id=semester.id,
+                filename=filename,
+                pdf_data=content,
+                size_bytes=len(content),
+                uploaded_by=user.id,
+            ))
+        db.flush()
+        after = payload.model_dump(mode='json') | {
+            'semester_ids': [semester.id for semester in semesters],
+            'semester_numbers': [semester.semester_number for semester in semesters],
+            'calendar_filenames': [filename for filename, _ in uploaded_calendars],
+        }
+        log_audit(db, user.id, 'batch_level.created', 'batch_level', level.id, None, after)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
     return db.scalar(
         select(BatchLevel)
         .options(selectinload(BatchLevel.intake))
         .where(BatchLevel.id == level.id)
     )
-
 @router.patch('/levels/{id}', response_model=schemas.BatchLevelRead)
 def update_level(
     id: int,

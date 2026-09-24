@@ -7,11 +7,22 @@ class ProgramCreate(BaseModel): name: str
 class ProgramRead(ORMModel): id: int; name: str
 class ProgramUpdate(BaseModel): name: str | None = None
 class ProgramPage(BaseModel): items: list[ProgramRead]; total: int; page: int; page_size: int
+class SemesterDetails(BaseModel):
+    """Administrator-entered details for one of a Level's two semesters.
+
+    Semester numbers are not accepted here: the server derives those immutable
+    numbers from the selected Level.
+    """
+    display_name: str = Field(min_length=1, max_length=150)
+    start_date: date
+    end_date: date
 class BatchLevelSeed(BaseModel):
     level_number: int = Field(ge=1, le=3)
     intake_code: str = Field(min_length=1, max_length=50)
     intake_name: str | None = Field(default=None, max_length=100)
-class BatchLevelCreate(BatchLevelSeed): batch_id: int
+class BatchLevelCreate(BatchLevelSeed):
+    batch_id: int
+    semesters: list[SemesterDetails] = Field(min_length=2, max_length=2)
 class BatchLevelUpdate(BaseModel):
     intake_code: str | None = Field(default=None, min_length=1, max_length=50)
     intake_name: str | None = Field(default=None, max_length=100)

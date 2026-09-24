@@ -39,6 +39,7 @@ RESETTABLE_TABLES: tuple[str, ...] = (
     "leave_requests",
     "case_interactions",
     "student_cases",
+    "attendance_threshold_alerts",
     "student_invitations",
     "makeup_suggestions",
     "academic_calendars",
@@ -59,18 +60,12 @@ RESETTABLE_TABLES: tuple[str, ...] = (
     "subjects",
     "guardians",
     "students",
-    "teachers",
     "sections",
     "cohort_semesters",
     "batch_levels",
     "batches",
     "intakes",
-    "notifications",
-    "import_jobs",
-    "agent_approvals",
-    "audit_logs",
 )
-
 EXPECTED_PROGRAM_NAME = "BSc.IT"
 EXPECTED_CATALOG_COUNT = 39
 PRESERVED_CONFIGURATION_TABLES: tuple[str, ...] = (
@@ -78,14 +73,52 @@ PRESERVED_CONFIGURATION_TABLES: tuple[str, ...] = (
     "platform_configuration",
     "programs",
     "modules",
+    "teachers",
     "blocks",
     "rooms",
     "class_types",
     "time_slots",
     "campus_networks",
+    "notifications",
+    "import_jobs",
+    "agent_approvals",
     "alembic_version",
 )
-
+# Reset only notification/audit data that belongs to student records being
+# removed.  Staff/system notifications, import history, approvals, and their
+# configuration remain intact as requested for the live presentation reset.
+STUDENT_NOTIFICATION_RECIPIENT_TYPES: tuple[str, ...] = ("student", "guardian")
+STUDENT_NOTIFICATION_RELATED_ENTITY_TYPES: tuple[str, ...] = (
+    "student_invitation",
+    "attendance_threshold_alert",
+    "student_case",
+    "promotion_run",
+)
+STUDENT_ACADEMIC_AUDIT_ENTITY_TYPES: tuple[str, ...] = (
+    "student",
+    "students",
+    "student_enrollment",
+    "student_enrollments",
+    "student_invitation",
+    "student_invitations",
+    "guardian",
+    "guardians",
+    "batch",
+    "batches",
+    "batch_level",
+    "batch_levels",
+    "intake",
+    "intakes",
+    "section",
+    "sections",
+    "cohort_semester",
+    "module_offering",
+    "routine_entry",
+    "class_session",
+    "attendance_record",
+    "attendance_threshold_alert",
+    "promotion_run",
+)
 USER_COLUMNS = (
     "id",
     "name",
@@ -157,6 +190,66 @@ def validate_protected_accounts(
     return accounts
 
 
+def protected_teacher_accounts(conn: Connection) -> dict[int, dict[str, Any]]:
+    """Return immutable snapshots of every existing teacher login.
+
+    The live reset replaces academic operations, not the staff directory.  A
+    teacher without a matching TEACHER user is unsafe to preserve because the
+    service would be left with a broken identity relationship.
+    """
+    teacher_user_ids = conn.execute(
+        text("SELECT user_id FROM teachers ORDER BY user_id")
+    ).scalars().all()
+    accounts: dict[int, dict[str, Any]] = {}
+    for user_id in teacher_user_ids:
+        account = protected_user(conn, int(user_id))
+        if account["role"] != "TEACHER":
+            raise ResetError(
+                f"Teacher user ID {user_id} has role {account['role']!r}, expected TEACHER"
+            )
+        accounts[int(user_id)] = account
+    if not accounts:
+        raise ResetError("No teachers exist; refusing to replace presentation academic data")
+    return accounts
+
+
+def teacher_snapshot(conn: Connection) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        text(
+            "SELECT id, user_id, employee_code, college_id "
+            "FROM teachers ORDER BY id"
+        )
+    ).mappings().all()
+    return [dict(row) for row in rows]
+
+
+def notification_preservation_condition() -> str:
+    recipient_types = ", ".join(
+        f"'{recipient_type}'" for recipient_type in STUDENT_NOTIFICATION_RECIPIENT_TYPES
+    )
+    related_entities = ", ".join(
+        f"'{entity_type}'" for entity_type in STUDENT_NOTIFICATION_RELATED_ENTITY_TYPES
+    )
+    return (
+        f"recipient_type NOT IN ({recipient_types}) AND "
+        f"(related_entity IS NULL OR related_entity NOT IN ({related_entities}))"
+    )
+
+
+def preserved_notifications_snapshot(conn: Connection) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        text(
+            "SELECT id, recipient_type, recipient_id, channel, subject, body, html_body, "
+            "status::text AS status, related_entity, related_entity_id, actor_id, "
+            "delivery_attempts, last_attempt_at, next_attempt_at, failure_reason, "
+            "created_at, sent_at, college_id FROM notifications WHERE "
+            + notification_preservation_condition()
+            + " ORDER BY id"
+        )
+    ).mappings().all()
+    return [dict(row) for row in rows]
+
+
 def catalog_snapshot(conn: Connection) -> dict[str, Any]:
     rows = conn.execute(
         text(
@@ -220,16 +313,47 @@ def create_backup(backup_dir: Path) -> Path:
     return backup_path
 
 
+def delete_student_audits(conn: Connection) -> int:
+    audit_entities = ", ".join(
+        f"'{entity_type}'" for entity_type in STUDENT_ACADEMIC_AUDIT_ENTITY_TYPES
+    )
+    result = conn.execute(
+        text(
+            "DELETE FROM audit_logs WHERE actor_id IN ("
+            "SELECT id FROM users WHERE role::text = 'STUDENT'"
+            f") OR entity_type IN ({audit_entities})"
+        )
+    )
+    return int(result.rowcount or 0)
+
+
+def delete_student_notifications(conn: Connection) -> int:
+    recipient_types = ", ".join(
+        f"'{recipient_type}'" for recipient_type in STUDENT_NOTIFICATION_RECIPIENT_TYPES
+    )
+    related_entities = ", ".join(
+        f"'{entity_type}'" for entity_type in STUDENT_NOTIFICATION_RELATED_ENTITY_TYPES
+    )
+    result = conn.execute(
+        text(
+            "DELETE FROM notifications WHERE "
+            f"recipient_type IN ({recipient_types}) OR related_entity IN ({related_entities})"
+        )
+    )
+    return int(result.rowcount or 0)
+
+
 def delete_resettable_data(conn: Connection) -> dict[str, int]:
-    deleted: dict[str, int] = {}
+    deleted: dict[str, int] = {
+        "student_academic_audit_logs": delete_student_audits(conn),
+    }
     for table in RESETTABLE_TABLES:
         result = conn.execute(text(f'DELETE FROM "{table}"'))
         deleted[table] = int(result.rowcount or 0)
-
-    # All remaining users are academic/demo accounts.  The exact two IDs are
-    # protected separately in reset_database(), after all user FKs are gone.
+    # Attendance alerts reference their queued notification.  Delete alerts
+    # first, then remove only the notifications associated with old students.
+    deleted["student_notifications"] = delete_student_notifications(conn)
     return deleted
-
 
 def delete_non_protected_users(
     conn: Connection, protected_ids: tuple[int, ...]
@@ -247,6 +371,8 @@ def verify_reset(
     protected_accounts: dict[int, dict[str, Any]],
     program_before: dict[str, Any],
     catalog_before: dict[str, Any],
+    teacher_before: list[dict[str, Any]],
+    preserved_notifications_before: list[dict[str, Any]],
     revision_before: str,
 ) -> None:
     for user_id, before in protected_accounts.items():
@@ -260,6 +386,11 @@ def verify_reset(
         raise ResetError(
             f"Expected {len(protected_ids)} preserved users, found {remaining_users}"
         )
+
+    if teacher_snapshot(conn) != teacher_before:
+        raise ResetError("Teacher directory changed during reset")
+    if preserved_notifications_snapshot(conn) != preserved_notifications_before:
+        raise ResetError("System/staff notifications changed during reset")
 
     if migration_revision(conn) != revision_before:
         raise ResetError("Migration revision changed during reset")
@@ -287,6 +418,7 @@ def reset_database(
     program_id: int,
     allow_legacy_super_admin_role: bool,
     backup_dir: Path,
+    verified_rds_snapshot: str | None,
     dry_run: bool,
 ) -> None:
     with engine.connect() as conn:
@@ -297,6 +429,13 @@ def reset_database(
             admin_id,
             allow_legacy_super_admin_role,
         )
+        teacher_accounts = protected_teacher_accounts(conn)
+        overlap = set(protected_accounts).intersection(teacher_accounts)
+        if overlap:
+            raise ResetError(f"Administrator and teacher preservation IDs overlap: {sorted(overlap)}")
+        protected_accounts.update(teacher_accounts)
+        teacher_before = teacher_snapshot(conn)
+        preserved_notifications_before = preserved_notifications_snapshot(conn)
         program_before = protected_program(conn, program_id)
         catalog_before = catalog_snapshot(conn)
         if program_before["name"].strip().casefold() != EXPECTED_PROGRAM_NAME.casefold():
@@ -351,8 +490,11 @@ def reset_database(
             print("Dry run only: no backup or deletion performed.")
             return
 
-    backup_path = create_backup(backup_dir)
-    print(f"Backup created: {backup_path}")
+    if verified_rds_snapshot:
+        print(f"Using verified RDS snapshot backup: {verified_rds_snapshot}")
+    else:
+        backup_path = create_backup(backup_dir)
+        print(f"Backup created: {backup_path}")
 
     protected_ids = tuple(sorted(protected_accounts))
     # Use a fresh transaction after the preflight connection is closed.  This
@@ -375,10 +517,26 @@ def reset_database(
 
         delete_resettable_data(conn)
         delete_non_protected_users(conn, protected_ids)
-        verify_reset(conn, protected_accounts, program_before, catalog_before, revision_before)
+        verify_reset(
+            conn,
+            protected_accounts,
+            program_before,
+            catalog_before,
+            teacher_before,
+            preserved_notifications_before,
+            revision_before,
+        )
 
     with engine.connect() as conn:
-        verify_reset(conn, protected_accounts, program_before, catalog_before, revision_before)
+        verify_reset(
+            conn,
+            protected_accounts,
+            program_before,
+            catalog_before,
+            teacher_before,
+            preserved_notifications_before,
+            revision_before,
+        )
     print("Controlled academic reset completed and verified.")
 
 
@@ -396,6 +554,10 @@ def parse_args() -> argparse.Namespace:
         default=Path("backups"),
         help="Directory for the custom-format PostgreSQL backup",
     )
+    parser.add_argument(
+        "--verified-rds-snapshot",
+        help="Exact identifier of an already verified available RDS snapshot",
+    )
     return parser.parse_args()
 
 
@@ -407,12 +569,18 @@ def main() -> None:
         raise SystemExit(
             "Refusing live deletion. Pass --confirm-live-reset explicitly."
         )
+    if args.confirm_live_reset and not args.verified_rds_snapshot:
+        raise SystemExit(
+            "Live reset requires --verified-rds-snapshot or the pg_dump backup path. "
+            "Supply the verified snapshot identifier explicitly."
+        )
     reset_database(
         super_admin_id=args.super_admin_id,
         admin_id=args.admin_id,
         program_id=args.program_id,
         allow_legacy_super_admin_role=args.allow_legacy_super_admin_role,
         backup_dir=args.backup_dir,
+        verified_rds_snapshot=args.verified_rds_snapshot,
         dry_run=args.dry_run,
     )
 

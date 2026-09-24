@@ -1,7 +1,9 @@
 import io
+import json
 from datetime import date, datetime, timedelta
 
 from fastapi.testclient import TestClient
+from pypdf import PdfWriter
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -53,21 +55,48 @@ def test_section_import_readiness_projection_and_negative_validation():
             return {"Authorization": f"Bearer {response.json()['access_token']}"}
 
         admin_headers = auth("admin@example.com")
+
+        def calendar_pdf() -> bytes:
+            buffer = io.BytesIO()
+            writer = PdfWriter()
+            writer.add_blank_page(width=144, height=144)
+            writer.write(buffer)
+            return buffer.getvalue()
+
+        def create_level_with_calendars(batch_id: int, level_number: int, intake_code: str, first_start: date, first_end: date, second_start: date, second_end: date, intake_name: str | None = None):
+            details = [
+                {"display_name": f"Semester {level_number * 2 - 1}", "start_date": first_start.isoformat(), "end_date": first_end.isoformat()},
+                {"display_name": f"Semester {level_number * 2}", "start_date": second_start.isoformat(), "end_date": second_end.isoformat()},
+            ]
+            response = client.post(
+                "/api/v1/academic/levels/with-calendars",
+                headers=admin_headers,
+                data={
+                    "batch_id": str(batch_id),
+                    "level_number": str(level_number),
+                    "intake_code": intake_code,
+                    "intake_name": intake_name or "",
+                    "semester_details": json.dumps(details),
+                },
+                files={
+                    "semester_one_calendar": ("semester-one.pdf", calendar_pdf(), "application/pdf"),
+                    "semester_two_calendar": ("semester-two.pdf", calendar_pdf(), "application/pdf"),
+                },
+            )
+            assert response.status_code == 201, response.text
+            return response.json()
         program = client.post("/api/v1/academic/programs", headers=admin_headers, json={"name": "BSc.IT"}).json()
         batch_response = client.post("/api/v1/academic/batches", headers=admin_headers, json={
             "name": "First batch",
             "program_id": program["id"],
             "start_date": batch_start.isoformat(),
             "end_date": batch_end.isoformat(),
-            "levels": [
-                {"level_number": 1, "intake_code": "SEP24"},
-                {"level_number": 2, "intake_code": "SEP25"},
-                {"level_number": 3, "intake_code": "SEP26", "intake_name": "September 2026"},
-            ],
         })
         assert batch_response.status_code == 200, batch_response.text
         batch = batch_response.json()
-        level_three = next(item for item in batch["levels"] if item["level_number"] == 3)
+        create_level_with_calendars(batch["id"], 1, "SEP24", batch_start, batch_start + timedelta(days=50), batch_start + timedelta(days=75), batch_start + timedelta(days=150))
+        create_level_with_calendars(batch["id"], 2, "SEP25", batch_start + timedelta(days=375), batch_start + timedelta(days=430), batch_start + timedelta(days=460), batch_start + timedelta(days=525))
+        level_three = create_level_with_calendars(batch["id"], 3, "SEP26", today - timedelta(days=90), today - timedelta(days=31), today - timedelta(days=30), today + timedelta(days=30), "September 2026")
         cleared_name = client.patch(
             f"/api/v1/academic/levels/{level_three['id']}",
             headers=admin_headers,
@@ -77,16 +106,25 @@ def test_section_import_readiness_projection_and_negative_validation():
         intake = next(item for item in client.get("/api/v1/academic/intakes", headers=admin_headers).json() if item["code"] == "SEP26")
         automatic_semesters = client.get("/api/v1/academic/cohort-semesters", headers=admin_headers).json()
         assert [item["semester_number"] for item in automatic_semesters] == [1, 2, 3, 4, 5, 6]
-        level_ids = {item["level_number"]: item["id"] for item in batch["levels"]}
-        semester_dates = []  # Semesters are created with their Level Intake Codes.
-        for semester_number, (start_date, end_date) in enumerate(semester_dates, 1):
-            response = client.post("/api/v1/academic/cohort-semesters", headers=admin_headers, json={
-                "batch_level_id": level_ids[(semester_number + 1) // 2],
-                "semester_number": semester_number,
-                "start_date": start_date,
-                "end_date": end_date,
-            })
-            assert response.status_code == 201, response.text
+
+        second_batch_response = client.post("/api/v1/academic/batches", headers=admin_headers, json={
+            "name": "Second batch",
+            "program_id": program["id"],
+            "start_date": batch_start.isoformat(),
+            "end_date": batch_end.isoformat(),
+        })
+        assert second_batch_response.status_code == 200, second_batch_response.text
+        second_batch = second_batch_response.json()
+        for level_number, intake_code in ((1, "NPT1F2309IT"), (2, "NPT2F2409IT"), (3, "NPT3F2509IT")):
+            offset = level_number * 100
+            create_level_with_calendars(second_batch["id"], level_number, intake_code, batch_start + timedelta(days=offset), batch_start + timedelta(days=offset + 20), batch_start + timedelta(days=offset + 30), batch_start + timedelta(days=offset + 55))
+        second_batch_semesters = [
+            item for item in client.get("/api/v1/academic/cohort-semesters", headers=admin_headers).json()
+            if item["batch_id"] == second_batch["id"]
+        ]
+        assert [(item["level_number"], item["semester_number"]) for item in second_batch_semesters] == [
+            (1, 1), (1, 2), (2, 3), (2, 4), (3, 5), (3, 6),
+        ]
         sections = {}
         for name in ("A1", "A2"):
             sections[name] = client.post("/api/v1/academic/sections", headers=admin_headers, json={"name": name, "batch_id": batch["id"]}).json()
@@ -158,7 +196,7 @@ def test_section_import_readiness_projection_and_negative_validation():
         assert wrong_semester.status_code == 422 and "does not belong to the requested academic context" in wrong_semester.json()["detail"]
 
         client.patch(f"/api/v1/academic/module-offerings/{offering['id']}/activation?is_active=false", headers=admin_headers)
-        assert "No active module offering exists" in invalid(row(day=day, start="10:00", end="11:00")).json()["errors"][0]["error_message"]
+        assert "No active course assignment exists" in invalid(row(day=day, start="10:00", end="11:00")).json()["errors"][0]["error_message"]
         client.patch(f"/api/v1/academic/module-offerings/{offering['id']}/activation?is_active=true", headers=admin_headers)
 
         teacher_conflict = invalid(row(day=day, sections="A2", room="Badimalika-LT07"), selected="A2")

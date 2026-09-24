@@ -45,6 +45,10 @@ class CohortSemester(CollegeOwned, Base):
     batch_id: Mapped[int] = mapped_column(ForeignKey('batches.id'))
     batch_level_id: Mapped[int] = mapped_column(ForeignKey('batch_levels.id'), index=True)
     semester_number: Mapped[int] = mapped_column(Integer)
+    # This label is deliberately separate from the immutable academic sequence.
+    # It is scoped to this Batch/Level record, so a rename never affects another
+    # Batch's Semester 1..6 records.
+    display_name: Mapped[str | None] = mapped_column(String(150), nullable=True)
     attempt_number: Mapped[int] = mapped_column(Integer, default=1, server_default='1')
     start_date: Mapped[date] = mapped_column(Date)
     end_date: Mapped[date] = mapped_column(Date)

@@ -7,8 +7,6 @@ import { Button } from '@/components/ui/Button';
 import { PageHeader } from '@/components/ui/PageHeader';
 
 type Strategy = 'keep_existing' | 'whole_section' | 'random_balanced';
-type Level = { id: number; batch_id: number; level_number: number; intake_code: string; intake_name: string | null };
-type Batch = { id: number; name: string; start_date: string; end_date: string; levels: Level[] };
 type Section = { id: number; name: string; batch_id: number };
 type Semester = {
   id: number;
@@ -69,7 +67,6 @@ function numericMap(values: Record<number, string>) {
 }
 
 export default function Page() {
-  const [batches, setBatches] = useState<Batch[]>([]);
   const [sections, setSections] = useState<Section[]>([]);
   const [semesters, setSemesters] = useState<Semester[]>([]);
   const [students, setStudents] = useState<Student[]>([]);
@@ -77,7 +74,6 @@ export default function Page() {
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
 
-  const [semesterForm, setSemesterForm] = useState({ batch_id: '', batch_level_id: '', semester_number: '', start_date: '', end_date: '' });
 
   const [placementSemesterId, setPlacementSemesterId] = useState('');
   const [placementStrategy, setPlacementStrategy] = useState<Strategy>('keep_existing');
@@ -109,17 +105,15 @@ export default function Page() {
   async function load() {
     try {
       const responses = await Promise.all([
-        api.get('/api/v1/academic/batches'),
         api.get('/api/v1/academic/sections'),
         api.get('/api/v1/academic/cohort-semesters'),
         api.get('/api/v1/academic/students'),
         api.get('/api/v1/academic/promotions'),
       ]);
-      setBatches(responses[0].data);
-      setSections(responses[1].data);
-      setSemesters(responses[2].data);
-      setStudents(responses[3].data);
-      setRuns(responses[4].data);
+      setSections(responses[0].data);
+      setSemesters(responses[1].data);
+      setStudents(responses[2].data);
+      setRuns(responses[3].data);
     } catch (requestError: any) {
       setError(requestError.response?.data?.detail ?? 'Unable to load progression data.');
     }
@@ -127,8 +121,6 @@ export default function Page() {
 
   useEffect(() => { void load(); }, []);
 
-  const selectedBatch = batches.find((item) => item.id === Number(semesterForm.batch_id));
-  const selectedLevel = selectedBatch?.levels.find((item) => item.id === Number(semesterForm.batch_level_id));
   const placementSemester = semesters.find((item) => item.id === Number(placementSemesterId));
   const source = semesters.find((item) => item.id === Number(sourceId));
   const target = semesters.find((item) => item.id === Number(targetId));
@@ -170,23 +162,6 @@ export default function Page() {
     return [...values, id];
   }
 
-  async function createSemester(event: FormEvent) {
-    event.preventDefault();
-    setError('');
-    try {
-      await api.post('/api/v1/academic/cohort-semesters', {
-        batch_level_id: Number(semesterForm.batch_level_id),
-        semester_number: Number(semesterForm.semester_number),
-        start_date: semesterForm.start_date,
-        end_date: semesterForm.end_date,
-      });
-      setMessage('Semester created. Upload its Academic Calendar PDF before assignment or progression.');
-      setSemesterForm({ batch_id: '', batch_level_id: '', semester_number: '', start_date: '', end_date: '' });
-      await load();
-    } catch (requestError: any) {
-      setError(requestError.response?.data?.detail ?? 'Unable to create this Semester.');
-    }
-  }
 
   function placementPayload(signature?: string) {
     return {
@@ -365,7 +340,7 @@ export default function Page() {
 
     <section className='panel p-5'>
       <h2 className='text-lg font-semibold'>Semester readiness</h2>
-      <p className='mt-1 text-sm text-slate-400'>Semester records are created automatically with each Intake Code: Level 1 creates 1?2, Level 2 creates 3?4, and Level 3 creates 5?6.</p>
+      <p className='mt-1 text-sm text-slate-400'>Semester records are created automatically with each Intake Code: Level 1 creates 1-2, Level 2 creates 3-4, and Level 3 creates 5-6.</p>
       <div className='mt-5 overflow-x-auto' role="region" aria-label="Scrollable records" tabIndex={0}><table><thead><tr><th>Semester</th><th>Dates</th><th>Calendar readiness</th></tr></thead><tbody>{semesters.map((item) => <tr key={item.id}><td>{semesterLabel(item)}</td><td>{item.start_date} to {item.end_date}</td><td>{item.calendar_uploaded ? <span className='text-emerald-400'>PDF uploaded</span> : <Link className='text-amber-300 underline' href='/admin/academic/semester-resources'>Upload required PDF</Link>}</td></tr>)}</tbody></table></div>
     </section>
 

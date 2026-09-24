@@ -25,6 +25,7 @@ from .promotion_service import (
 class CohortSemesterCreate(BaseModel):
     batch_level_id: int
     semester_number: int = Field(ge=1, le=6)
+    display_name: str | None = Field(default=None, min_length=1, max_length=150)
     attempt_number: int = Field(default=1, ge=1)
     start_date: date
     end_date: date
@@ -39,6 +40,7 @@ class CohortSemesterRead(BaseModel):
     intake_id: int
     batch_id: int
     semester_number: int
+    display_name: str
     attempt_number: int
     start_date: date
     end_date: date
@@ -50,6 +52,7 @@ class CohortSemesterRead(BaseModel):
 
 
 class CohortSemesterUpdate(BaseModel):
+    display_name: str | None = Field(default=None, min_length=1, max_length=150)
     start_date: date | None = None
     end_date: date | None = None
     status: str | None = None
@@ -172,6 +175,7 @@ def _semester_read(db, semester: CohortSemester) -> CohortSemesterRead:
         intake_id=semester.intake_id,
         batch_id=semester.batch_id,
         semester_number=semester.semester_number,
+        display_name=semester.display_name or f'Semester {semester.semester_number}',
         attempt_number=semester.attempt_number,
         start_date=semester.start_date,
         end_date=semester.end_date,
@@ -183,7 +187,7 @@ def _semester_read(db, semester: CohortSemester) -> CohortSemesterRead:
         ) is not None,
         intake_code=semester.intake.code if semester.intake else None,
         batch_name=semester.batch.name if semester.batch else None,
-        label=f'Semester {semester.semester_number} - {semester.batch.name if semester.batch else semester.batch_id} - {semester.intake.code if semester.intake else semester.intake_id}',
+        label=f'{semester.display_name or "Semester " + str(semester.semester_number)} - {semester.batch.name if semester.batch else semester.batch_id} - {semester.intake.code if semester.intake else semester.intake_id}',
     )
 
 

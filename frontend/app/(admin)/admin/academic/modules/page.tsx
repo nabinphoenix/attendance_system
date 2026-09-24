@@ -32,7 +32,7 @@ export default function Page() {
       setOfferings(offeringResponse.data);
       setError("");
     } catch (requestError: any) {
-      setError(requestError.response?.data?.detail ?? "Unable to load the BSc.IT course catalog.");
+      setError(requestError.response?.data?.detail ?? "Unable to load the Courses.");
     } finally {
       setLoading(false);
     }
@@ -85,9 +85,9 @@ export default function Page() {
   }
 
   return <div className="max-w-7xl">
-    <PageHeader title="BSc.IT course catalog" description="Reusable course records are kept separate from the batch-semester offerings that use them." />
+    <PageHeader title="Courses" description="Reusable course records are kept separate from the batch-semester offerings that use them." />
     <section className="panel p-5" aria-labelledby="catalog-form-title">
-      <div className="mb-5"><h2 id="catalog-form-title" className="text-lg font-semibold">{edit === null ? "Add course" : "Edit course"}</h2><p className="mt-1 text-sm text-slate-400">Semester metadata is optional catalog information; assign the actual semester through a module offering.</p></div>
+      <div className="mb-5"><h2 id="catalog-form-title" className="text-lg font-semibold">{edit === null ? "Add course" : "Edit course"}</h2><p className="mt-1 text-sm text-slate-400">Semester metadata is optional reference information; assign the actual semester through a course assignment.</p></div>
       <form onSubmit={submit} className="grid gap-4 md:grid-cols-4">
         <label><span className="field-label">Course code</span><input className="w-full" required value={form.code} onChange={(event) => setForm({ ...form, code: event.target.value })} /></label>
         <label className="md:col-span-2"><span className="field-label">Course name</span><input className="w-full" required value={form.title} onChange={(event) => setForm({ ...form, title: event.target.value })} /></label>
@@ -98,12 +98,12 @@ export default function Page() {
     </section>
     {error && <div className="mt-4"><ErrorState title="Unable to complete this action" description={error} onRetry={load} /></div>}
     <section className="mt-7" aria-labelledby="catalog-list-title">
-      <div className="mb-4 flex flex-wrap items-end justify-between gap-3"><div><h2 id="catalog-list-title" className="text-lg font-semibold">Available courses</h2><p className="text-sm text-slate-400">{filtered.length} matching course{filtered.length === 1 ? "" : "s"}</p></div><input aria-label="Search course catalog" placeholder="Search code or name" className="w-full md:w-80" value={query} onChange={(event) => setQuery(event.target.value)} /></div>
-      {loading ? <LoadingState label="Loading course catalog" /> : <div className="table-wrap" role="region" aria-label="Scrollable records" tabIndex={0}><table><thead><tr><th>Course code</th><th>Course name</th><th>Credits</th><th>Catalog semester</th><th>Assignment status</th><th><span className="sr-only">Actions</span></th></tr></thead><tbody>
-        {filtered.map((item) => { const count = offerings.filter((offering) => offering.academic_module_id === item.id).length; return <tr key={item.id}><td className="font-medium text-slate-100">{item.code}</td><td>{item.title}</td><td>{item.credits}</td><td>{item.semester_number ?? <span className="text-slate-500">Not fixed</span>}</td><td><Badge tone={count ? "success" : "neutral"}>{count ? `${count} offering${count === 1 ? "" : "s"}` : "Catalog only"}</Badge></td><td><div className="flex justify-end gap-2"><Button type="button" size="sm" variant="ghost" onClick={() => { setEdit(item.id); setForm({ code: item.code, title: item.title, credits: String(item.credits), semester_number: item.semester_number == null ? "" : String(item.semester_number) }); }}>Edit</Button><Button type="button" size="sm" variant="danger" onClick={() => setDeleteRow(item)}>Delete</Button></div></td></tr>; })}
-        {!filtered.length && <tr><td colSpan={6} className="p-0"><EmptyState title="No matching courses" description="Add the course to the catalog or change the search term." /></td></tr>}
+      <div className="mb-4 flex flex-wrap items-end justify-between gap-3"><div><h2 id="catalog-list-title" className="text-lg font-semibold">Available courses</h2><p className="text-sm text-slate-400">{filtered.length} matching course{filtered.length === 1 ? "" : "s"}</p></div><input aria-label="Search course list" placeholder="Search code or name" className="w-full md:w-80" value={query} onChange={(event) => setQuery(event.target.value)} /></div>
+      {loading ? <LoadingState label="Loading course list" /> : <div className="table-wrap" role="region" aria-label="Scrollable records" tabIndex={0}><table><thead><tr><th>Course code</th><th>Course name</th><th>Credits</th><th>Suggested semester</th><th>Assignment status</th><th><span className="sr-only">Actions</span></th></tr></thead><tbody>
+        {filtered.map((item) => { const count = offerings.filter((offering) => offering.academic_module_id === item.id).length; return <tr key={item.id}><td className="font-medium text-slate-100">{item.code}</td><td>{item.title}</td><td>{item.credits}</td><td>{item.semester_number ?? <span className="text-slate-500">Not fixed</span>}</td><td><Badge tone={count ? "success" : "neutral"}>{count ? `${count} assignment${count === 1 ? "" : "s"}` : "Not assigned"}</Badge></td><td><div className="flex justify-end gap-2"><Button type="button" size="sm" variant="ghost" onClick={() => { setEdit(item.id); setForm({ code: item.code, title: item.title, credits: String(item.credits), semester_number: item.semester_number == null ? "" : String(item.semester_number) }); }}>Edit</Button><Button type="button" size="sm" variant="danger" onClick={() => setDeleteRow(item)}>Delete</Button></div></td></tr>; })}
+        {!filtered.length && <tr><td colSpan={6} className="p-0"><EmptyState title="No matching courses" description="Add the course to the course list or change the search term." /></td></tr>}
       </tbody></table></div>}
     </section>
-    <ConfirmDialog open={deleteRow !== null} title="Delete this catalog course?" description="A course with linked offerings or routines cannot be deleted." confirmLabel="Delete course" tone="danger" onClose={() => setDeleteRow(null)} onConfirm={remove} />
+    <ConfirmDialog open={deleteRow !== null} title="Delete this course?" description="A course with linked assignments or routines cannot be deleted." confirmLabel="Delete course" tone="danger" onClose={() => setDeleteRow(null)} onConfirm={remove} />
   </div>;
 }

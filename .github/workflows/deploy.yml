@@ -171,6 +171,7 @@ jobs:
           cp Procfile "${BUNDLE_DIR}/"
           cp -a .platform "${BUNDLE_DIR}/"
           cp backend/alembic.ini backend/pyproject.toml backend/uv.lock "${BUNDLE_DIR}/backend/"
+          cp backend/reset_academic_data.py backend/seed_presentation_data.py "${BUNDLE_DIR}/backend/"
           rsync -a --exclude=__pycache__ --exclude='*.pyc' backend/app backend/migrations "${BUNDLE_DIR}/backend/"
           rsync -a backend/runtime-site-packages/ "${BUNDLE_DIR}/backend/runtime-site-packages/"
 
@@ -197,6 +198,8 @@ jobs:
             backend/alembic.ini \
             backend/pyproject.toml \
             backend/uv.lock \
+            backend/reset_academic_data.py \
+            backend/seed_presentation_data.py \
             backend/runtime-site-packages/alembic/__init__.py \
             frontend/server.js \
             frontend/.next/BUILD_ID \

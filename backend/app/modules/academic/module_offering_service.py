@@ -59,7 +59,7 @@ def synchronize_offering_sections(
     if requested_section_ids is not None:
         missing = requested_section_ids - available_ids
         if missing:
-            raise HTTPException(422, f"Section {min(missing)} does not belong to this cohort semester")
+            raise HTTPException(422, f"Section {min(missing)} does not belong to the selected batch")
         sections = [section for section in sections if section.id in requested_section_ids]
     requested_ids = {section.id for section in sections}
     for section_id in offering_section_ids(db, offering) - requested_ids:
@@ -67,7 +67,7 @@ def synchronize_offering_sections(
             section = db.get(Section, section_id)
             raise HTTPException(
                 409,
-                f"Section {section.name if section else section_id} cannot leave this cohort because an existing routine uses it",
+                f"Section {section.name if section else section_id} cannot leave this batch because an existing routine uses it",
             )
     offering.sections[:] = sections
     db.flush()
@@ -95,7 +95,7 @@ def synchronize_section_module_offerings(db: Session, section: Section) -> list[
         if offering.id not in desired_ids and routine_uses_offering_section(db, offering.id, section.id):
             raise HTTPException(
                 409,
-                f"Section {section.name} cannot move to a different cohort because an existing routine uses it",
+                f"Section {section.name} cannot move to a different batch because an existing routine uses it",
             )
     section.module_offerings[:] = desired
     db.flush()
@@ -116,7 +116,7 @@ def validate_offering_context(
     intake = db.get(Intake, intake_id)
     batch = db.get(Batch, batch_id)
     if module is None:
-        raise HTTPException(404, "Module not found")
+        raise HTTPException(404, "Course not found")
     if intake is None:
         raise HTTPException(404, "Intake not found")
     if batch is None:
@@ -125,13 +125,13 @@ def validate_offering_context(
         raise HTTPException(422, "The selected intake and batch must belong to the same program")
     period = db.get(CohortSemester, cohort_semester_id) if cohort_semester_id is not None else None
     if cohort_semester_id is not None and period is None:
-        raise HTTPException(404, "Cohort semester not found")
+        raise HTTPException(404, "Semester not found")
     if period is not None and (
         period.intake_id != intake_id
         or period.batch_id != batch_id
         or period.semester_number != semester_number
     ):
-        raise HTTPException(422, "Cohort semester does not match the selected intake, batch, and semester")
+        raise HTTPException(422, "Selected semester does not match the chosen Level / Intake and Batch")
 
     sections = list(db.scalars(select(Section).where(Section.id.in_(section_ids)))) if section_ids else []
     found_ids = {section.id for section in sections}
@@ -189,8 +189,8 @@ def resolve_active_module_offering(
     if offering is None:
         raise HTTPException(
             422,
-            f"No active module offering exists for {module.code}, {intake.name or intake.code} ({intake.code}), "
-            f"Batch {batch.name}, {semester_label}. Create the offering and include "
+            f"No active course assignment exists for {module.code}, {intake.name or intake.code} ({intake.code}), "
+            f"Batch {batch.name}, {semester_label}. Create the course assignment and include "
             f"{', '.join(section.name for section in sections)}.",
         )
     members = offering_section_ids(db, offering)
@@ -199,8 +199,8 @@ def resolve_active_module_offering(
         names = ", ".join(missing)
         raise HTTPException(
             422,
-            f"Section {names} exists but is not included in the active Module Offering for {module.code}. "
-            "It is not part of the active module offering.",
+            f"Section {names} exists but is not included in the active Course Assignment for {module.code}. "
+            "It is not part of the active course assignment.",
         )
     return offering
 
@@ -215,13 +215,13 @@ def validate_routine_entry_module_offering(db: Session, routine: RoutineEntry, o
 
     offering = offering or routine.module_offering
     if offering is None:
-        raise HTTPException(422, "Routine entry is not linked to a module offering")
+        raise HTTPException(422, "Routine entry is not linked to a course assignment")
     if routine.module_id != offering.academic_module_id:
-        raise HTTPException(422, "Routine module does not match its module offering")
+        raise HTTPException(422, "Routine course does not match its course assignment")
     if routine.intake_id != offering.intake_id:
-        raise HTTPException(422, "Routine intake does not match its module offering")
+        raise HTTPException(422, "Routine Level / Intake does not match its course assignment")
     if routine.semester_number != offering.semester_number:
-        raise HTTPException(422, "Routine semester does not match its module offering")
+        raise HTTPException(422, "Routine semester does not match its course assignment")
     if offering.cohort_semester_id is not None:
         period = db.get(CohortSemester, offering.cohort_semester_id)
         if period is None or (
@@ -229,11 +229,11 @@ def validate_routine_entry_module_offering(db: Session, routine: RoutineEntry, o
             or period.batch_id != offering.batch_id
             or period.semester_number != offering.semester_number
         ):
-            raise HTTPException(422, "Module offering cohort context is inconsistent")
+            raise HTTPException(422, "Course assignment semester context is inconsistent")
         if routine.cohort_semester_id not in (None, period.id):
-            raise HTTPException(422, "Routine cohort semester does not match its module offering")
+            raise HTTPException(422, "Routine semester does not match its course assignment")
     allowed_sections = offering_section_ids(db, offering)
     for section_id in routine_section_ids(db, routine):
         section = db.get(Section, section_id)
         if section is None or section.batch_id != offering.batch_id or section_id not in allowed_sections:
-            raise HTTPException(422, "Routine sections must belong to the linked module offering")
+            raise HTTPException(422, "Routine sections must belong to the linked course assignment")

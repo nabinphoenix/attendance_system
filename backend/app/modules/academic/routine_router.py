@@ -141,7 +141,7 @@ def check_routine_conflicts(db,p:RoutineCreate,exclude_id:int|None=None):
  conflicts=routine_conflicts(db,p,exclude_id)
  if conflicts:raise HTTPException(409,f"{conflicts[0].title}: {conflicts[0].description}")
 def valid_routine(db,p:RoutineCreate):
- intake=get(db,Intake,p.intake_id,"Intake");section=get(db,Section,p.section_id,"Section");module=get(db,AcademicModule,p.module_id,"Module");get(db,ClassType,p.class_type_id,"Class type");get(db,Teacher,p.teacher_id,"Lecturer");get(db,Room,p.room_id,"Room");slot=get(db,TimeSlot,p.time_slot_id,"Time slot")
+ intake=get(db,Intake,p.intake_id,"Intake");section=get(db,Section,p.section_id,"Section");module=get(db,AcademicModule,p.module_id,"Course");get(db,ClassType,p.class_type_id,"Class type");get(db,Teacher,p.teacher_id,"Lecturer");get(db,Room,p.room_id,"Room");slot=get(db,TimeSlot,p.time_slot_id,"Time slot")
  if p.day_of_week not in range(7):raise HTTPException(422,"Day of week must be between 0 (Monday) and 6 (Sunday)")
  if slot.start_time>=slot.end_time:raise HTTPException(422,"Time slot end time must be after start time")
  sections=[]
@@ -150,8 +150,8 @@ def valid_routine(db,p:RoutineCreate):
   if section.batch_id != sections[0].batch_id:raise HTTPException(422,"All routine sections must belong to the same batch")
  cohort_semester_id=p.cohort_semester_id
  if cohort_semester_id is not None:
-  period=get(db,CohortSemester,cohort_semester_id,"Cohort semester")
-  if period.intake_id!=intake.id or period.semester_number!=p.semester_number or period.batch_id!=sections[0].batch_id:raise HTTPException(422,"Cohort semester does not match the selected intake, batch, and semester")
+  period=get(db,CohortSemester,cohort_semester_id,"Semester")
+  if period.intake_id!=intake.id or period.semester_number!=p.semester_number or period.batch_id!=sections[0].batch_id:raise HTTPException(422,"Selected semester does not match the chosen Level / Intake and Batch")
  return resolve_active_module_offering(db,module=module,intake=intake,semester_number=p.semester_number,sections=sections,cohort_semester_id=cohort_semester_id)
 @router.post("/intakes",response_model=IntakeRead)
 def create_intake(p:IntakeCreate,user:Annotated[User,Depends(require_role("admin"))],db:DbSession):return save(db,Intake(**p.model_dump()),user,"intake.created","intake")
@@ -204,6 +204,11 @@ def module_offering_query():
 def module_offering_read(offering:ModuleOffering)->ModuleOfferingRead:
  sections=sorted(offering.sections,key=lambda section:(section.name,section.id))
  return ModuleOfferingRead(id=offering.id,academic_module_id=offering.academic_module_id,module_code=offering.academic_module.code,module_title=offering.academic_module.title,intake_id=offering.intake_id,intake_code=offering.intake.code,batch_id=offering.batch_id,batch_name=offering.batch.name,semester_number=offering.semester_number,cohort_semester_id=offering.cohort_semester_id,section_ids=[section.id for section in sections],section_names=[section.name for section in sections],is_active=offering.is_active)
+def resolve_assignment_semester(db, *, intake_id:int, batch_id:int, semester_number:int, supplied_id:int|None)->CohortSemester:
+ period=period_for_context(db,intake_id,batch_id,semester_number)
+ if period is None:raise HTTPException(422,"The selected batch, level / intake, and semester do not identify a semester record")
+ if supplied_id is not None and supplied_id!=period.id:raise HTTPException(422,"The selected semester does not match the chosen batch and level / intake")
+ return period
 def get_module_offering(db,id:int)->ModuleOffering:
  offering=db.scalar(module_offering_query().where(ModuleOffering.id==id))
  if not offering:raise HTTPException(404,"Module offering not found")
@@ -211,17 +216,16 @@ def get_module_offering(db,id:int)->ModuleOffering:
 
 @router.post("/module-offerings",response_model=ModuleOfferingRead)
 def create_module_offering(p:ModuleOfferingCreate,user:Annotated[User,Depends(require_role("admin"))],db:DbSession):
- validate_offering_context(db,academic_module_id=p.academic_module_id,intake_id=p.intake_id,batch_id=p.batch_id,semester_number=p.semester_number,cohort_semester_id=p.cohort_semester_id,section_ids=set(p.section_ids))
+ period=resolve_assignment_semester(db,intake_id=p.intake_id,batch_id=p.batch_id,semester_number=p.semester_number,supplied_id=p.cohort_semester_id)
+ validate_offering_context(db,academic_module_id=p.academic_module_id,intake_id=p.intake_id,batch_id=p.batch_id,semester_number=p.semester_number,cohort_semester_id=period.id,section_ids=set(p.section_ids))
  if db.scalar(select(ModuleOffering.id).where(ModuleOffering.academic_module_id==p.academic_module_id,ModuleOffering.intake_id==p.intake_id,ModuleOffering.batch_id==p.batch_id,ModuleOffering.semester_number==p.semester_number)):
-  raise HTTPException(409,"A module offering already exists for this module, intake, batch, and semester")
- period=get(db,CohortSemester,p.cohort_semester_id,"Cohort semester") if p.cohort_semester_id is not None else period_for_context(db,p.intake_id,p.batch_id,p.semester_number)
- offering=ModuleOffering(academic_module_id=p.academic_module_id,intake_id=p.intake_id,batch_id=p.batch_id,semester_number=p.semester_number,cohort_semester_id=period.id if period else None,inherit_all_sections=not bool(p.section_ids),is_active=p.is_active)
+  raise HTTPException(409,"A course assignment already exists for this course, intake, batch, and semester")
+ offering=ModuleOffering(academic_module_id=p.academic_module_id,intake_id=p.intake_id,batch_id=p.batch_id,semester_number=p.semester_number,cohort_semester_id=period.id,inherit_all_sections=not bool(p.section_ids),is_active=p.is_active)
  try:
-  db.add(offering);db.flush();sections=synchronize_offering_sections(db,offering,set(p.section_ids) if p.section_ids else None);after=p.model_dump(exclude={"section_ids"})|{"section_ids":[section.id for section in sections]};log_audit(db,user.id,"module_offering.created","module_offering",offering.id,None,after);db.commit()
+  db.add(offering);db.flush();sections=synchronize_offering_sections(db,offering,set(p.section_ids) if p.section_ids else None);after=p.model_dump(exclude={"section_ids","cohort_semester_id"})|{"cohort_semester_id":period.id,"section_ids":[section.id for section in sections]};log_audit(db,user.id,"module_offering.created","module_offering",offering.id,None,after);db.commit()
  except IntegrityError:
-  db.rollback();raise HTTPException(409,"A module offering already exists for this module, intake, batch, and semester")
+  db.rollback();raise HTTPException(409,"A course assignment already exists for this course, intake, batch, and semester")
  return module_offering_read(get_module_offering(db,offering.id))
-
 @router.get("/module-offerings",response_model=list[ModuleOfferingRead])
 def module_offerings(db:DbSession,academic_module_id:int|None=None,intake_id:int|None=None,batch_id:int|None=None,semester_number:int|None=None,cohort_semester_id:int|None=None,section_id:int|None=None,is_active:bool|None=None):
  q=module_offering_query()
@@ -242,11 +246,13 @@ def update_module_offering(id:int,p:ModuleOfferingUpdate,user:Annotated[User,Dep
  offering=get_module_offering(db,id);values=p.model_dump(exclude_none=True);requested_section_ids=values.pop("section_ids",None);identity={key for key in ("academic_module_id","intake_id","batch_id","semester_number","cohort_semester_id") if key in values}
  if identity and db.scalar(select(RoutineEntry.id).where(RoutineEntry.module_offering_id==id)):
   changed=any(values[key]!=getattr(offering,key) for key in identity)
-  if changed:raise HTTPException(409,"Cannot change a module offering context while routine entries are linked to it")
- module_id=values.get("academic_module_id",offering.academic_module_id);intake_id=values.get("intake_id",offering.intake_id);batch_id=values.get("batch_id",offering.batch_id);semester=values.get("semester_number",offering.semester_number);cohort_id=values.get("cohort_semester_id",offering.cohort_semester_id)
- validate_offering_context(db,academic_module_id=module_id,intake_id=intake_id,batch_id=batch_id,semester_number=semester,cohort_semester_id=cohort_id,section_ids=set(requested_section_ids or set()))
+  if changed:raise HTTPException(409,"Cannot change a course assignment context while routine entries are linked to it")
+ module_id=values.get("academic_module_id",offering.academic_module_id);intake_id=values.get("intake_id",offering.intake_id);batch_id=values.get("batch_id",offering.batch_id);semester=values.get("semester_number",offering.semester_number);context_changed=any(values.get(key,getattr(offering,key))!=getattr(offering,key) for key in ("intake_id","batch_id","semester_number"));cohort_id=values.get("cohort_semester_id",None if context_changed else offering.cohort_semester_id)
+ period=resolve_assignment_semester(db,intake_id=intake_id,batch_id=batch_id,semester_number=semester,supplied_id=cohort_id)
+ values["cohort_semester_id"]=period.id
+ validate_offering_context(db,academic_module_id=module_id,intake_id=intake_id,batch_id=batch_id,semester_number=semester,cohort_semester_id=period.id,section_ids=set(requested_section_ids or set()))
  duplicate=db.scalar(select(ModuleOffering.id).where(ModuleOffering.academic_module_id==module_id,ModuleOffering.intake_id==intake_id,ModuleOffering.batch_id==batch_id,ModuleOffering.semester_number==semester,ModuleOffering.id!=id))
- if duplicate:raise HTTPException(409,"A module offering already exists for this module, intake, batch, and semester")
+ if duplicate:raise HTTPException(409,"A course assignment already exists for this course, Level / Intake, Batch, and Semester")
  if requested_section_ids is not None:
   offering.inherit_all_sections=not bool(requested_section_ids)
  for key in ("academic_module_id","intake_id","batch_id","semester_number","cohort_semester_id","is_active"):
@@ -254,7 +260,7 @@ def update_module_offering(id:int,p:ModuleOfferingUpdate,user:Annotated[User,Dep
  try:
   db.flush();sections=synchronize_offering_sections(db,offering,set(requested_section_ids) if requested_section_ids is not None else None);after=values|{"section_ids":[section.id for section in sections]};log_audit(db,user.id,"module_offering.updated","module_offering",offering.id,None,after);db.commit()
  except IntegrityError:
-  db.rollback();raise HTTPException(409,"A module offering already exists for this module, intake, batch, and semester")
+  db.rollback();raise HTTPException(409,"A course assignment already exists for this course, Level / Intake, Batch, and Semester")
  return module_offering_read(get_module_offering(db,id))
 
 @router.patch("/module-offerings/{id}/activation",response_model=ModuleOfferingRead)
