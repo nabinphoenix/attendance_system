@@ -17,6 +17,7 @@ from app.modules.academic.onboarding_router import router as onboarding_router
 from app.modules.academic.promotion_router import router as promotion_router
 from app.modules.agent.router import router as agent_router
 from app.modules.academic.semester_resource_router import router as semester_resource_router
+from app.modules.google_workspace.router import router as google_workspace_router
 
 app = FastAPI(title=settings.app_name, version="0.1.0")
 app.add_middleware(
@@ -43,6 +44,7 @@ for router in (
     onboarding_router,
     promotion_router,
     semester_resource_router,
+    google_workspace_router,
     agent_router,
 ):
     app.include_router(router, prefix="/api/v1")

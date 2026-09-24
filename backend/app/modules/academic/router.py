@@ -1,3 +1,4 @@
+import calendar
 from datetime import date, timedelta
 from typing import Annotated, TypeVar
 from fastapi import APIRouter, Depends, HTTPException
@@ -65,11 +66,53 @@ def validate_batch_dates(start: date, end: date) -> None:
 
 
 def validate_level_seeds(levels: list[schemas.BatchLevelSeed]) -> None:
-    if sorted(level.level_number for level in levels) != [1, 2, 3]:
-        raise HTTPException(422, 'A batch requires exactly Level 1, Level 2, and Level 3')
+    if not levels:
+        return
+    numbers = [level.level_number for level in levels]
+    if len(numbers) != len(set(numbers)):
+        raise HTTPException(422, 'A batch cannot contain the same Level more than once')
     codes = [level.intake_code.strip().casefold() for level in levels]
-    if len(set(codes)) != 3:
-        raise HTTPException(422, 'Each level requires a different Intake Code')
+    if len(set(codes)) != len(codes):
+        raise HTTPException(422, 'Each Level requires a different Intake Code')
+
+
+def add_months(value: date, months: int) -> date:
+    """Return ``value`` shifted by whole months, preserving its day when possible."""
+
+    month_index = value.month - 1 + months
+    year, month = divmod(month_index, 12)
+    year += value.year
+    month += 1
+    day = min(value.day, calendar.monthrange(year, month)[1])
+    return date(year, month, day)
+
+
+def semester_dates(batch: Batch, semester_number: int) -> tuple[date, date]:
+    """Derive one of a batch's six consecutive semester date ranges."""
+
+    start = add_months(batch.start_date, (semester_number - 1) * 6)
+    end = add_months(batch.start_date, semester_number * 6) - timedelta(days=1)
+    return start, end
+
+
+def create_level_semesters(db: Session, batch: Batch, level: BatchLevel) -> list[CohortSemester]:
+    """Create the two fixed semester records owned by a newly configured Level."""
+
+    records: list[CohortSemester] = []
+    for semester_number in (level.level_number * 2 - 1, level.level_number * 2):
+        start_date, end_date = semester_dates(batch, semester_number)
+        semester = CohortSemester(
+            intake_id=level.intake_id,
+            batch_id=batch.id,
+            batch_level_id=level.id,
+            semester_number=semester_number,
+            start_date=start_date,
+            end_date=end_date,
+        )
+        db.add(semester)
+        records.append(semester)
+    db.flush()
+    return records
 
 
 def resolve_intake(
@@ -139,7 +182,10 @@ def create_batch(p: schemas.BatchCreate, user: Annotated[User, Depends(require_r
             code=seed.intake_code,
             name=seed.intake_name,
         )
-        db.add(BatchLevel(batch_id=batch.id, level_number=seed.level_number, intake_id=intake.id))
+        level = BatchLevel(batch_id=batch.id, level_number=seed.level_number, intake_id=intake.id)
+        db.add(level)
+        db.flush()
+        create_level_semesters(db, batch, level)
     db.flush()
     log_audit(
         db,
@@ -224,13 +270,19 @@ def create_level(
         name=p.intake_name,
     )
     level = BatchLevel(batch_id=batch.id, level_number=p.level_number, intake_id=intake.id)
-    return save_with_audit(
-        db,
-        level,
-        user.id,
-        'batch_level.created',
-        'batch_level',
-        p.model_dump(),
+    db.add(level)
+    db.flush()
+    semesters = create_level_semesters(db, batch, level)
+    after = p.model_dump() | {
+        'semester_ids': [semester.id for semester in semesters],
+        'semester_numbers': [semester.semester_number for semester in semesters],
+    }
+    log_audit(db, user.id, 'batch_level.created', 'batch_level', level.id, None, after)
+    db.commit()
+    return db.scalar(
+        select(BatchLevel)
+        .options(selectinload(BatchLevel.intake))
+        .where(BatchLevel.id == level.id)
     )
 
 @router.patch('/levels/{id}', response_model=schemas.BatchLevelRead)

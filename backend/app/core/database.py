@@ -25,4 +25,5 @@ def get_db() -> Generator[Session, None, None]:
 
 # Register global tables and ownership enforcement for every entry point.
 from app.modules.platform import models as platform_models  # noqa: E402,F401
+from app.modules.google_workspace import models as google_workspace_models  # noqa: E402,F401
 from app.core import tenancy  # noqa: E402,F401

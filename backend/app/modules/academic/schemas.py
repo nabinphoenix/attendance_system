@@ -27,7 +27,10 @@ class BatchCreate(BaseModel):
     program_id: int
     start_date: date
     end_date: date
-    levels: list[BatchLevelSeed]
+    # New batches are created before their yearly Intake Codes. Keep this
+    # optional for existing API callers that still create a batch and levels
+    # in one request.
+    levels: list[BatchLevelSeed] = Field(default_factory=list)
 class BatchRead(ORMModel):
     id: int
     name: str

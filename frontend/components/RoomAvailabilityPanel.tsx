@@ -67,6 +67,7 @@ export default function RoomAvailabilityPanel() {
   const [roomQuery, setRoomQuery] = useState("");
   const [roomType, setRoomType] = useState("");
   const [slotId, setSlotId] = useState("");
+  const [mobileSlotId, setMobileSlotId] = useState("");
   const [availabilityFilter, setAvailabilityFilter] =
     useState<AvailabilityFilter>("all");
   const [availability, setAvailability] = useState<AvailabilityResponse | null>(
@@ -132,6 +133,32 @@ export default function RoomAvailabilityPanel() {
   );
   const isToday = selectedDate === localDate(now);
 
+  useEffect(() => {
+    if (
+      !slots.length ||
+      slots.some((slot) => String(slot.time_slot_id) === mobileSlotId)
+    )
+      return;
+
+    const nowMinutes = now.getHours() * 60 + now.getMinutes();
+    const activeSlot = isToday
+      ? slots.find(
+          (slot) =>
+            minutes(slot.start_time) <= nowMinutes &&
+            nowMinutes < minutes(slot.end_time),
+        )
+      : null;
+    setMobileSlotId(String((activeSlot ?? slots[0]).time_slot_id));
+  }, [isToday, mobileSlotId, now, slots]);
+
+  const mobileSelectedSlot = useMemo(
+    () =>
+      slots.find((slot) => String(slot.time_slot_id) === mobileSlotId) ??
+      slots[0] ??
+      null,
+    [mobileSlotId, slots],
+  );
+
   const visibleBlocks = useMemo(
     () =>
       (availability?.blocks ?? [])
@@ -196,9 +223,9 @@ export default function RoomAvailabilityPanel() {
   };
 
   return (
-    <section className="panel p-5 sm:p-6">
+    <section className="panel w-full min-w-0 max-w-full p-5 sm:p-6">
       <div className="flex flex-wrap items-start justify-between gap-4">
-        <div>
+        <div className="min-w-0 max-w-full">
           <h2 className="text-xl font-semibold">Room availability</h2>
           <p className="mt-1 max-w-3xl text-sm text-slate-400">
             Live inventory view for the selected date. Approved cancellations,
@@ -217,7 +244,43 @@ export default function RoomAvailabilityPanel() {
         </Button>
       </div>
 
-      <div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
+      <div className="mt-5 grid min-w-0 gap-3 md:hidden">
+        <label className="min-w-0">
+          <span className="field-label">Block</span>
+          <select
+            className="w-full min-w-0"
+            value={blockId}
+            onChange={(event) => setBlockId(event.target.value)}
+          >
+            <option value="">All blocks</option>
+            {(availability?.blocks ?? []).map((block) => (
+              <option key={block.id} value={block.id}>
+                {block.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="min-w-0">
+          <span className="field-label">Time</span>
+          <select
+            className="w-full min-w-0"
+            value={
+              mobileSelectedSlot ? String(mobileSelectedSlot.time_slot_id) : ""
+            }
+            onChange={(event) => setMobileSlotId(event.target.value)}
+            disabled={!mobileSelectedSlot}
+          >
+            {mobileSelectedSlot ? null : <option value="">No time slots</option>}
+            {slots.map((slot) => (
+              <option key={slot.time_slot_id} value={slot.time_slot_id}>
+                {timeLabel(slot.start_time)} to {timeLabel(slot.end_time)}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+
+      <div className="mt-5 hidden min-w-0 gap-3 md:grid md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
         <label>
           <span className="field-label">Date</span>
           <input
@@ -311,7 +374,19 @@ export default function RoomAvailabilityPanel() {
         </label>
       </div>
 
-      <div className="mt-4 flex flex-wrap items-center justify-between gap-3 text-sm">
+      <div className="mt-4 flex min-w-0 items-center justify-between gap-3 text-sm md:hidden">
+        <span className="text-slate-400">
+          {displayedRooms.length} room{displayedRooms.length === 1 ? "" : "s"}
+          {mobileSelectedSlot && (
+            <>
+              {" "} {timeLabel(mobileSelectedSlot.start_time)}{"\u2013"}
+              {timeLabel(mobileSelectedSlot.end_time)}
+            </>
+          )}
+        </span>
+      </div>
+
+      <div className="mt-4 hidden min-w-0 flex-wrap items-center justify-between gap-3 text-sm md:flex">
         <div className="flex flex-wrap gap-3">
           <span className="rounded-full border border-slate-700 px-3 py-1 text-slate-300">
             {displayedRooms.length} rooms shown
@@ -336,7 +411,7 @@ export default function RoomAvailabilityPanel() {
         </Button>
       </div>
       {isToday && (
-        <p className="mt-3 text-xs text-slate-500">
+        <p className="mt-3 hidden text-xs text-slate-500 md:block">
           Live status uses your local time (
           {now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}).
           The table remains a full schedule view for the day.
@@ -371,8 +446,52 @@ export default function RoomAvailabilityPanel() {
           />
         </div>
       ) : (
-        <div className="mt-6 space-y-6">
-          {visibleBlocks.map((block) => (
+        <>
+          <div className="mt-6 space-y-4 md:hidden">
+            {visibleBlocks.flatMap((block) =>
+              block.rooms.map((room) => {
+                const selectedSlot = room.slots.find(
+                  (slot) =>
+                    slot.time_slot_id === mobileSelectedSlot?.time_slot_id,
+                );
+                const active = currentSlot(room, selectedDate, now);
+                const isOccupied = selectedSlot?.status === "occupied";
+                const isActiveSlot =
+                  active?.time_slot_id === selectedSlot?.time_slot_id;
+
+                return (
+                  <article
+                    key={room.id}
+                    className="w-full min-w-0 max-w-full rounded-xl border border-slate-800 bg-slate-900/40 p-4"
+                  >
+                    <p className="break-words text-xs font-medium uppercase tracking-wide text-slate-400">
+                      {block.name}
+                    </p>
+                    <h3 className="mt-1 break-words font-semibold text-slate-100">
+                      {room.name}
+                    </h3>
+                    <p className="mt-1 text-sm text-slate-400">
+                      {room.room_type}{" \u00B7 "}{room.capacity} seats
+                    </p>
+                    <p
+                      className={`mt-3 inline-flex items-center gap-1.5 text-sm font-medium ${isOccupied ? "text-amber-300" : "text-emerald-300"}`}
+                    >
+                      <span aria-hidden="true">{"\u25CF"}</span>
+                      {isOccupied ? "Occupied" : "Available"}
+                    </p>
+                    {isToday && isActiveSlot && !isOccupied && (
+                      <p className="mt-1 text-xs text-emerald-300">
+                        Available now
+                      </p>
+                    )}
+                  </article>
+                );
+              }),
+            )}
+          </div>
+
+          <div className="mt-6 hidden space-y-6 md:block">
+            {visibleBlocks.map((block) => (
             <section
               key={block.id}
               className="overflow-hidden rounded-xl border border-slate-800"
@@ -441,16 +560,16 @@ export default function RoomAvailabilityPanel() {
                             .map((slot) => (
                               <td key={slot.time_slot_id} className="align-top">
                                 {slot.status === "available" ? (
-                                  <span className="inline-flex rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-1 text-xs font-medium text-emerald-200">
-                                    Available
+                                  <span className="inline-flex items-center gap-1 text-xs font-medium text-emerald-200">
+                                    <span aria-hidden="true">{"\u25CF"}</span> Available
                                   </span>
                                 ) : (
                                   <div>
-                                    <span className="inline-flex rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-1 text-xs font-medium text-amber-200">
-                                      Occupied
+                                    <span className="inline-flex items-center gap-1 text-xs font-medium text-amber-200">
+                                      <span aria-hidden="true">{"\u25CF"}</span> Occupied
                                     </span>
                                     {slot.override_id && (
-                                      <span className="ml-1 inline-flex rounded-full border border-sky-500/30 bg-sky-500/10 px-2 py-1 text-xs font-medium text-sky-200">
+                                      <span className="ml-2 text-[10px] font-medium uppercase tracking-wide text-sky-200">
                                         Adjusted
                                       </span>
                                     )}
@@ -471,8 +590,9 @@ export default function RoomAvailabilityPanel() {
                 </table>
               </div>
             </section>
-          ))}
-        </div>
+            ))}
+          </div>
+        </>
       )}
     </section>
   );
