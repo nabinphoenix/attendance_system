@@ -37,6 +37,7 @@ from .schemas import (
     CampusNetworkRead,
     CampusNetworkUpdate,
     AttendanceCodeCheckInRequest,
+    ChallengeRegenerationRequest,
     CheckInExceptionRead,
     ChallengeConfirmationRequest,
     CheckInRequest,
@@ -340,11 +341,20 @@ def pending_response(session: ClassSession, db, reason: str) -> CheckInResponse:
     )
 
 
-def teacher_qr_response(id: int, user: User, db, *, force: bool = False) -> QRResponse:
+def teacher_qr_response(
+    id: int,
+    user: User,
+    db,
+    *,
+    force: bool = False,
+    rotation_seconds: int | None = None,
+) -> QRResponse:
     session = teacher_session(db, user, id)
     # Keep the QR fields and challenge row in the same database transaction.
     session = db.scalar(select(ClassSession).where(ClassSession.id == id).with_for_update())
     ensure_accepting_check_ins(session, db)
+    if rotation_seconds is not None:
+        session.challenge_rotation_seconds = rotation_seconds
     token, expires, challenge, code, created = issue_qr_challenge(db, session, user.id, force=force)
     if created:
         now = datetime.now(UTC)
@@ -367,7 +377,12 @@ def teacher_qr_response(id: int, user: User, db, *, force: bool = False) -> QRRe
             "attendance_challenge",
             challenge.id,
             None,
-            {"class_session_id": session.id, "qr_version": challenge.qr_version, "expires_at": expires},
+            {
+                "class_session_id": session.id,
+                "qr_version": challenge.qr_version,
+                "expires_at": expires,
+                "rotation_seconds": session.challenge_rotation_seconds,
+            },
         )
         db.commit()
     title, sections, room, start, end = session_metadata(session, db)
@@ -396,8 +411,19 @@ def qr(id: int, user: Annotated[User, Depends(require_role("teacher"))], db: DbS
 
 
 @router.post("/sessions/{id}/challenge", response_model=QRResponse)
-def regenerate_challenge(id: int, user: Annotated[User, Depends(require_role("teacher"))], db: DbSession):
-    return teacher_qr_response(id, user, db, force=True)
+def regenerate_challenge(
+    id: int,
+    user: Annotated[User, Depends(require_role("teacher"))],
+    db: DbSession,
+    payload: ChallengeRegenerationRequest | None = None,
+):
+    return teacher_qr_response(
+        id,
+        user,
+        db,
+        force=True,
+        rotation_seconds=payload.rotation_seconds if payload else None,
+    )
 
 
 @router.post("/check-ins", response_model=CheckInResponse)

@@ -162,22 +162,13 @@ def issue_qr_challenge(db, session: ClassSession, created_by: int, now: datetime
     )
     created = qr_created or challenge is None
     if created:
-        previous_active = db.scalar(
-            select(AttendanceChallenge)
-            .where(
-                AttendanceChallenge.class_session_id == session.id,
-                AttendanceChallenge.revoked_at.is_(None),
-            )
-            .order_by(AttendanceChallenge.id.desc())
-        )
-        if previous_active is not None and not force:
-            code_hash = previous_active.code_hash
-            code_ciphertext = previous_active.code_ciphertext
-            code = reveal_classroom_code(previous_active)
-        else:
-            code = unique_classroom_code(db)
-            code_hash = _code_hash(code)
-            code_ciphertext = _challenge_cipher().encrypt(code.encode()).decode()
+        # The QR and its manual alternative are one short-lived challenge.
+        # Rotate both together so the countdown shown to the teacher is honest
+        # for either check-in method and an old classroom code stops working at
+        # the same instant as its QR.
+        code = unique_classroom_code(db)
+        code_hash = _code_hash(code)
+        code_ciphertext = _challenge_cipher().encrypt(code.encode()).decode()
         for previous in db.scalars(
             select(AttendanceChallenge).where(
                 AttendanceChallenge.class_session_id == session.id,

@@ -81,6 +81,38 @@ test('QR/code check-in controls and live roster list remain usable on mobile',as
   const list=page.getByRole('button',{name:/list/i});if(await list.count()) {await list.first().click();await noOverflow(page);}
 });
 
+test('teacher can set a 22-second QR and code interval in a compact dialog',async({page},testInfo)=>{
+  await page.setViewportSize({width:1440,height:900});
+  const state=await mockWorkspace(page);state.role='teacher';
+  let rotationSeconds=20;let classroomCode='123456';let token='test-qr-value';let expiresAt=new Date(Date.now()+20000).toISOString();
+  const qrData=()=>({token,classroom_code:classroomCode,expires_at:expiresAt,rotation_seconds:rotationSeconds,self_checkin_window_minutes:15,self_checkin_closes_at:new Date(Date.now()+600000).toISOString(),module_title:moduleTitle,section_names:['Section A'],room:'Laboratory 301',start_time:'09:00:00',end_time:'10:00:00',geofence_radius_meters:150,teacher_location_accuracy_meters:12,challenge_id:1,teacher_ip_status:'campus'});
+  await page.route('**/api/v1/sessions/1/qr',route=>route.fulfill({json:qrData()}));
+  await page.route('**/api/v1/sessions/1/challenge',route=>{
+    const body=route.request().postDataJSON() as {rotation_seconds:number};rotationSeconds=body.rotation_seconds;classroomCode='654321';token='replacement-qr-value';expiresAt=new Date(Date.now()+rotationSeconds*1000).toISOString();return route.fulfill({json:qrData()});
+  });
+  await page.goto('/teacher/sessions/1');
+  await page.getByRole('button',{name:'Set interval & refresh'}).click();
+  const dialog=page.getByRole('dialog',{name:'Update QR & attendance code'});
+  await expect(dialog).toBeVisible();
+  const bounds=await dialog.boundingBox();expect(bounds).not.toBeNull();expect(bounds!.width).toBeLessThanOrEqual(520);
+  await page.screenshot({path:testInfo.outputPath('challenge-dialog-desktop.png')});
+  await dialog.getByLabel('Change QR & code every').fill('22');
+  await dialog.getByRole('button',{name:'Update & generate'}).click();
+  await expect(dialog).not.toBeVisible();
+  await expect(page.getByText('654321',{exact:true})).toBeVisible();
+  await expect(page.getByText('The code changes with the QR every 22 seconds.',{exact:false})).toBeVisible();
+  await page.getByRole('button',{name:'Open full-screen attendance QR code'}).click();
+  const projector=page.getByRole('dialog',{name:'Full-screen attendance QR code'});
+  await expect(projector.getByText('654321',{exact:true})).toBeVisible();
+  await expect(projector.getByText(/every 22s/)).toBeVisible();
+  await projector.getByRole('button',{name:'Close full-screen QR code'}).click();
+  await page.setViewportSize({width:320,height:568});
+  await page.getByRole('button',{name:'Set interval & refresh'}).click();
+  await expect(dialog).toBeVisible();
+  await page.screenshot({path:testInfo.outputPath('challenge-dialog-mobile.png')});
+  await noOverflow(page);
+});
+
 
 test('promotion shuffle preview and held-student decisions fit a narrow viewport',async({page})=>{
   await page.setViewportSize({width:320,height:568});const state=await mockWorkspace(page);state.role='admin';await page.goto('/admin/academic/promotions');

@@ -53,6 +53,11 @@ class QRResponse(BaseModel):
     teacher_ip_status: str | None = None
 
 
+class ChallengeRegenerationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    rotation_seconds: int | None = Field(default=None, ge=15, le=300)
+
+
 class ChallengeConfirmationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     verification_token: str = Field(min_length=20, max_length=512)

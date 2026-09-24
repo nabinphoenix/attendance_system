@@ -303,7 +303,7 @@ def test_teacher_start_does_not_block_on_low_gps_precision(attendance_env):
 
 
 def test_teacher_can_configure_checkin_window_and_qr_rotation(attendance_env):
-    client, _, auth, ids, _ = attendance_env
+    client, TestSession, auth, ids, _ = attendance_env
     response = client.post(
         f"/api/v1/routine-sessions/{ids['routine']}/start",
         headers=auth["teacher"],
@@ -322,6 +322,17 @@ def test_teacher_can_configure_checkin_window_and_qr_rotation(attendance_env):
     qr = get_qr(client, auth, session_id)
     assert qr["self_checkin_window_minutes"] == 60
     assert qr["rotation_seconds"] == 45
+    updated = client.post(
+        f"/api/v1/sessions/{session_id}/challenge",
+        headers=auth["teacher"],
+        json={"rotation_seconds": 22},
+    )
+    assert updated.status_code == 200, updated.text
+    assert updated.json()["rotation_seconds"] == 22
+    assert updated.json()["token"] != qr["token"]
+    assert updated.json()["classroom_code"] != qr["classroom_code"]
+    with TestSession() as db:
+        assert db.get(ClassSession, session_id).challenge_rotation_seconds == 22
 
 
 def test_qr_generation_authorization_claims_and_rotation(attendance_env):
@@ -345,7 +356,7 @@ def test_qr_generation_authorization_claims_and_rotation(attendance_env):
         db.commit()
     second = get_qr(client, auth, session_id)
     assert second["token"] != first["token"] and validate_qr_token(second["token"]).version == 2
-    assert second["classroom_code"] == first["classroom_code"]
+    assert second["classroom_code"] != first["classroom_code"]
     # 6: old rotations fail even while their signed exp claim is still fresh (zero grace).
     old = check_in(client, auth, first["token"])
     assert old.status_code == 400 and old.json()["detail"] == "ATTENDANCE_CHALLENGE_EXPIRED"
@@ -577,7 +588,7 @@ def test_qr_scan_requires_no_classroom_code(attendance_env):
     assert replay.status_code == 409 and replay.json()["detail"] == "ALREADY_CHECKED_IN"
 
 
-def test_code_is_independent_of_qr_and_survives_automatic_qr_rotation(attendance_env):
+def test_code_rotates_with_qr_and_old_code_expires_immediately(attendance_env):
     client, TestSession, auth, ids, new_session = attendance_env
     session_id = new_session()
     first = get_qr(client, auth, session_id)
@@ -587,8 +598,10 @@ def test_code_is_independent_of_qr_and_survives_automatic_qr_rotation(attendance
         db.commit()
     rotated = get_qr(client, auth, session_id)
     assert rotated["token"] != first["token"]
-    assert rotated["classroom_code"] == first["classroom_code"]
-    marked = code_check_in(client, auth, first["classroom_code"])
+    assert rotated["classroom_code"] != first["classroom_code"]
+    expired = code_check_in(client, auth, first["classroom_code"])
+    assert expired.status_code == 400 and expired.json()["detail"] == "INVALID_ATTENDANCE_CODE"
+    marked = code_check_in(client, auth, rotated["classroom_code"])
     assert marked.status_code == 200 and marked.json()["status"] == "present"
     with TestSession() as db:
         record = db.scalar(select(AttendanceRecord).where(AttendanceRecord.class_session_id == session_id, AttendanceRecord.student_id == ids["student_a3"]))
@@ -673,6 +686,7 @@ def test_wrong_manual_code_is_limited_and_teacher_regeneration_invalidates_pendi
     assert second_scan.status_code == 200
     regenerated = client.post(f"/api/v1/sessions/{session_id}/challenge", headers=auth["teacher"])
     assert regenerated.status_code == 200 and regenerated.json()["token"] != first["token"]
+    assert regenerated.json()["classroom_code"] != first["classroom_code"]
     assert client.post(f"/api/v1/sessions/{session_id}/challenge", headers=auth["other_teacher"]).status_code == 403
     stale_confirm = client.post(
         "/api/v1/check-ins/confirm",

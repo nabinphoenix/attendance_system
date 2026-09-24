@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import api from "@/lib/api";
@@ -53,6 +53,7 @@ function ListIcon() { return <svg aria-hidden="true" viewBox="0 0 24 24" classNa
 export default function Page() {
   const { id } = useParams<{ id: string }>();
   const [qr, setQr] = useState<QRData | null>(null);
+  const latestChallengeId = useRef(0);
   const [rows, setRows] = useState<Row[]>([]);
   const [exceptions, setExceptions] = useState<ExceptionRow[]>([]);
   const [message, setMessage] = useState("");
@@ -60,6 +61,8 @@ export default function Page() {
   const [completed, setCompleted] = useState(false);
   const [checkInClosed, setCheckInClosed] = useState(false);
   const [countdown, setCountdown] = useState(0);
+  const [rotationInput, setRotationInput] = useState("");
+  const [rotationError, setRotationError] = useState("");
   const [checkInSecondsRemaining, setCheckInSecondsRemaining] = useState(0);
   const [dialog, setDialog] = useState<DialogAction | null>(null);
   const [rosterView, setRosterView] = useState<RosterView>("grid");
@@ -70,7 +73,16 @@ export default function Page() {
     const [qrResult, rosterResult, exceptionsResult] = await Promise.allSettled([
       api.get<QRData>(`/api/v1/sessions/${id}/qr`), api.get<Row[]>(`/api/v1/sessions/${id}/summary`), api.get<ExceptionRow[]>(`/api/v1/sessions/${id}/check-in-exceptions`),
     ]);
-    if (qrResult.status === "fulfilled") { setQr(qrResult.value.data); setCompleted(false); setCheckInClosed(false); }
+    if (qrResult.status === "fulfilled") {
+      const next = qrResult.value.data;
+      if (next.challenge_id >= latestChallengeId.current) {
+        latestChallengeId.current = next.challenge_id;
+        setQr(next);
+        setCountdown(Math.max(0, Math.ceil((new Date(next.expires_at).getTime() - Date.now()) / 1000)));
+      }
+      setCompleted(false);
+      setCheckInClosed(false);
+    }
     else if (qrResult.reason?.response?.status === 409) {
       setQr(null);
       if (qrResult.reason?.response?.data?.detail === "SELF_CHECKIN_WINDOW_CLOSED") setCheckInClosed(true);
@@ -81,7 +93,20 @@ export default function Page() {
   }, [id]);
 
   useEffect(() => { void refresh(); const timer = window.setInterval(() => void refresh(), 3000); return () => window.clearInterval(timer); }, [refresh]);
-  useEffect(() => { const timer = window.setInterval(() => setCountdown(qr ? Math.max(0, Math.ceil((new Date(qr.expires_at).getTime() - Date.now()) / 1000)) : 0), 250); return () => window.clearInterval(timer); }, [qr]);
+  const qrExpiresAt = qr?.expires_at;
+  useEffect(() => {
+    const update = () => setCountdown(qrExpiresAt ? Math.max(0, Math.ceil((new Date(qrExpiresAt).getTime() - Date.now()) / 1000)) : 0);
+    update();
+    const timer = window.setInterval(update, 250);
+    return () => window.clearInterval(timer);
+  }, [qrExpiresAt]);
+  useEffect(() => {
+    if (!qrExpiresAt) return;
+    const delay = Math.max(0, new Date(qrExpiresAt).getTime() - Date.now());
+    const hideExpired = window.setTimeout(() => setCountdown(0), delay);
+    const fetchReplacement = window.setTimeout(() => void refresh(), delay + 100);
+    return () => { window.clearTimeout(hideExpired); window.clearTimeout(fetchReplacement); };
+  }, [qrExpiresAt, refresh]);
   useEffect(() => {
     const update = () => {
       const remaining = qr ? Math.max(0, Math.ceil((new Date(qr.self_checkin_closes_at).getTime() - Date.now()) / 1000)) : 0;
@@ -131,20 +156,29 @@ export default function Page() {
     }
   }
   async function regenerateChallenge() {
+    const seconds = Number(rotationInput);
+    if (!Number.isInteger(seconds) || seconds < 15 || seconds > 300) {
+      setRotationError("Enter a whole number from 15 to 300 seconds.");
+      throw new Error("Invalid rotation interval");
+    }
+    setRotationError("");
     try {
-      const response = await api.post<QRData>(`/api/v1/sessions/${id}/challenge`);
+      const response = await api.post<QRData>(`/api/v1/sessions/${id}/challenge`, { rotation_seconds: seconds });
+      latestChallengeId.current = response.data.challenge_id;
       setQr(response.data);
+      setCountdown(Math.max(0, Math.ceil((new Date(response.data.expires_at).getTime() - Date.now()) / 1000)));
+      setRotationInput(String(response.data.rotation_seconds));
       setMessageTone("success");
-      setMessage("A new QR and attendance code have been generated. The previous challenge is no longer valid.");
+      setMessage(`The QR and attendance code were refreshed. Both now change together every ${seconds} seconds.`);
       await refresh();
-    } catch (error: any) { setMessageTone("danger"); setMessage(error.response?.data?.detail ?? "Unable to generate a new classroom challenge."); }
+    } catch (error: any) { setMessageTone("danger"); setMessage(error.response?.data?.detail ?? "Unable to update the QR and attendance code."); throw error; }
   }
   async function confirmAction(reason: string) { if (!dialog) return; if (dialog.kind === "finalize") await finalize(); else if (dialog.kind === "challenge") await regenerateChallenge(); else if (dialog.kind === "exception") await decide(dialog.item, dialog.decision, reason); else await change(dialog.row, dialog.status, reason); }
 
   const dialogInfo = dialog?.kind === "finalize"
     ? { title: "Finalize attendance?", description: "Students who have not checked in will be finalized using the attendance rules. Resolve pending verifications first.", label: "Finalize session", tone: "danger" as const, reason: false }
     : dialog?.kind === "challenge"
-      ? { title: "Generate a new classroom challenge?", description: "The current QR and attendance code will stop working immediately. Students can use either the new QR or the new code.", label: "Generate new challenge", tone: "primary" as const, reason: false }
+      ? { title: "Update QR & attendance code", description: "Choose how often both change. Saving replaces the current QR and code immediately.", label: "Update & generate", tone: "primary" as const, reason: false }
       : dialog?.kind === "exception"
       ? { title: dialog.decision === "confirm" ? `Confirm ${dialog.item.student_name} present?` : `Reject ${dialog.item.student_name}'s attempt?`, description: "This decision is recorded in the attendance audit trail.", label: dialog.decision === "confirm" ? "Confirm present" : "Reject attempt", tone: dialog.decision === "confirm" ? "primary" as const : "danger" as const, reason: true }
       : dialog?.kind === "status"
@@ -162,8 +196,8 @@ export default function Page() {
     {qr && qr.teacher_ip_status && qr.teacher_ip_status !== "campus" && <section className="my-6 rounded-xl border border-amber-500/35 bg-amber-500/10 p-5"><Badge tone="warning">Teacher network warning</Badge><p className="mt-2 text-sm text-amber-100">The teacher&apos;s public network is {qr.teacher_ip_status === "outside" ? "outside the configured campus networks" : "unknown"}. Student network badges remain evidence only and never change attendance outcomes.</p></section>}
     {checkInClosed && <section className="my-6 rounded-xl border border-amber-500/35 bg-amber-500/10 p-5"><Badge tone="warning">Self check-in closed</Badge><h2 className="mt-3 text-xl font-semibold">Self check-in is no longer available</h2><p className="mt-2 text-sm text-slate-300">The configured check-in window has ended, so the QR and attendance code are hidden. You can still record manual attendance, review exceptions, or finalize this session.</p></section>}
     {qr && <section className="panel my-6 grid items-center gap-8 p-5 sm:p-7 xl:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)]">
-      <div><QRDisplay value={qr.token} classroomCode={qr.classroom_code} /><div className="mx-auto mt-3 max-w-[380px]"><div className="h-1.5 overflow-hidden rounded-full bg-slate-800"><div className="h-full rounded-full bg-emerald-400 transition-[width]" style={{ width: `${Math.max(0, Math.min(100, (countdown / qr.rotation_seconds) * 100))}%` }} /></div><p className="mt-2 text-center text-sm font-medium text-emerald-300">QR changes in {countdown} seconds</p><p className="mt-1 text-center text-sm font-semibold text-amber-300">Self check-in closes in {durationLabel(checkInSecondsRemaining)}</p></div></div>
-      <div><Badge tone="success">Session active</Badge><h2 className="mt-4 text-2xl font-semibold sm:text-3xl">{qr.module_title}</h2><p className="mt-2 text-lg text-slate-300">{qr.section_names.join(" + ")}</p><div className="mt-6 rounded-2xl border border-emerald-400/40 bg-emerald-400/10 p-5 text-center"><p className="text-xs font-semibold uppercase tracking-[0.2em] text-emerald-200">Attendance code · alternative to QR</p><p className="mt-2 font-mono text-3xl font-bold tracking-[0.15em] sm:text-5xl sm:tracking-[0.3em] text-emerald-100">{qr.classroom_code}</p><p className="mt-3 text-sm text-slate-300">Students may scan the QR or enter this code. Both options check their location automatically.</p><Button className="mt-4" variant="outline" onClick={() => setDialog({ kind: "challenge" })}>Generate New Challenge</Button></div><dl className="mt-6 grid gap-4 sm:grid-cols-3"><div><dt className="text-xs uppercase tracking-wider text-slate-500">Time</dt><dd className="mt-1 font-medium">{qr.start_time.slice(0, 5)}-{qr.end_time.slice(0, 5)}</dd></div><div><dt className="text-xs uppercase tracking-wider text-slate-500">Room</dt><dd className="mt-1 font-medium">{qr.room}</dd></div><div><dt className="text-xs uppercase tracking-wider text-slate-500">Check-in window</dt><dd className="mt-1 font-medium">{qr.self_checkin_window_minutes} minutes</dd></div></dl>{qr.geofence_radius_meters != null ? <div className="mt-6 rounded-lg border border-emerald-500/25 bg-emerald-500/10 p-4"><p className="font-semibold text-emerald-300">Campus location check active</p><p className="mt-1 text-sm text-slate-400">Teacher location was captured with +/-{Math.round(qr.teacher_location_accuracy_meters ?? 0)}m accuracy.</p></div> : <p className="mt-6 rounded-lg border border-amber-500/25 bg-amber-500/10 p-4 text-amber-200">Historical session: location attempts require teacher verification.</p>}</div>
+      <div><QRDisplay value={qr.token} classroomCode={qr.classroom_code} secondsRemaining={countdown} rotationSeconds={qr.rotation_seconds} /><div className="mx-auto mt-3 max-w-[380px]"><div className="h-1.5 overflow-hidden rounded-full bg-slate-800"><div className="h-full rounded-full bg-emerald-400 transition-[width]" style={{ width: `${Math.max(0, Math.min(100, (countdown / qr.rotation_seconds) * 100))}%` }} /></div><p className="mt-2 text-center text-sm font-medium text-emerald-300">QR &amp; code change together in {countdown} seconds</p><p className="mt-1 text-center text-sm font-semibold text-amber-300">Self check-in closes in {durationLabel(checkInSecondsRemaining)}</p></div></div>
+      <div><Badge tone="success">Session active</Badge><h2 className="mt-4 text-2xl font-semibold sm:text-3xl">{qr.module_title}</h2><p className="mt-2 text-lg text-slate-300">{qr.section_names.join(" + ")}</p><div className="mt-6 rounded-2xl border border-emerald-400/40 bg-emerald-400/10 p-5 text-center"><p className="text-xs font-semibold uppercase tracking-[0.2em] text-emerald-200">Attendance code · alternative to QR</p><p className="mt-2 font-mono text-3xl font-bold tracking-[0.15em] text-emerald-100 sm:text-5xl sm:tracking-[0.3em]">{countdown > 0 ? qr.classroom_code : "Refreshing..."}</p><p className="mt-3 text-sm text-slate-300">Students may scan the QR or enter this code. Both options check their location automatically. The code changes with the QR every {qr.rotation_seconds} seconds.</p><Button className="mt-4" variant="outline" onClick={() => { setRotationInput(String(qr.rotation_seconds)); setRotationError(""); setDialog({ kind: "challenge" }); }}>Set interval &amp; refresh</Button></div><dl className="mt-6 grid gap-4 sm:grid-cols-3"><div><dt className="text-xs uppercase tracking-wider text-slate-500">Time</dt><dd className="mt-1 font-medium">{qr.start_time.slice(0, 5)}-{qr.end_time.slice(0, 5)}</dd></div><div><dt className="text-xs uppercase tracking-wider text-slate-500">Room</dt><dd className="mt-1 font-medium">{qr.room}</dd></div><div><dt className="text-xs uppercase tracking-wider text-slate-500">Check-in window</dt><dd className="mt-1 font-medium">{qr.self_checkin_window_minutes} minutes</dd></div></dl>{qr.geofence_radius_meters != null ? <div className="mt-6 rounded-lg border border-emerald-500/25 bg-emerald-500/10 p-4"><p className="font-semibold text-emerald-300">Campus location check active</p><p className="mt-1 text-sm text-slate-400">Teacher location was captured with +/-{Math.round(qr.teacher_location_accuracy_meters ?? 0)}m accuracy.</p></div> : <p className="mt-6 rounded-lg border border-amber-500/25 bg-amber-500/10 p-4 text-amber-200">Historical session: location attempts require teacher verification.</p>}</div>
     </section>}
     {qr && <section className="panel mb-6 p-4 sm:p-5" aria-label="Teacher network evidence">
       <h2 className="text-sm font-semibold">Teacher public network</h2>
@@ -207,6 +241,14 @@ export default function Page() {
       {!rows.length ? <div className="panel"><EmptyState title="No students in this roster" description="Students enrolled in this session will appear here." /></div> : !visibleRows.length ? <div className="panel"><EmptyState title="No matching students" description="Try another status filter or search by name or student number." /></div> : rosterView === "grid" ? <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">{visibleRows.map((row) => <article key={row.student_id} className={`rounded-2xl border-2 p-4 shadow-lg shadow-slate-950/20 transition hover:-translate-y-0.5 ${rosterToneFor(row.status)}`}><div className="flex flex-col items-start gap-3 sm:flex-row sm:flex-wrap sm:justify-between"><div className="flex min-w-0 items-center gap-3"><ProfileAvatar name={row.student_name} className="h-12 w-12 text-base" /><div className="min-w-0"><h3 className="break-words font-semibold text-slate-50">{row.student_name}</h3><p className="mt-0.5 text-sm text-slate-300">Student no. {row.roll_number}</p></div></div><div className="flex flex-wrap justify-end gap-2"><StatusBadge status={row.status} /><NetworkBadge status={row.ip_status} /></div></div><dl className="mt-4 grid grid-cols-2 gap-3 border-y border-current/20 py-3 text-sm"><div><dt className="text-slate-400">Check-in</dt><dd className="mt-1 font-medium text-slate-100">{timeLabel(row.check_in_time)}</dd></div><div><dt className="text-slate-400">Distance</dt><dd className="mt-1 font-medium text-slate-100">{row.distance_meters == null ? "Not recorded" : meters(row.distance_meters)}</dd></div></dl><div className="mt-3 rounded-lg border border-current/20 bg-slate-950/20 px-3 py-2 text-xs text-slate-300"><p className="font-medium text-slate-100">{distanceLabel(row)}</p>{row.location_accuracy_meters != null && <p className="mt-1 text-slate-400">Location accuracy: +/-{meters(row.location_accuracy_meters)}</p>}</div><label className="mt-4 block"><span className="sr-only">Correct attendance for {row.student_name}</span>{correctionSelect(row)}</label></article>)}</div> : <div className="space-y-3">{visibleRows.map((row) => <article key={row.student_id} className={`grid gap-4 rounded-xl border-2 p-4 shadow-sm sm:grid-cols-2 2xl:grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)_minmax(0,.8fr)_minmax(0,.8fr)_minmax(0,1fr)] 2xl:items-center ${rosterToneFor(row.status)}`}><div className="flex min-w-0 items-center gap-3"><ProfileAvatar name={row.student_name} className="h-11 w-11 text-base" /><div className="min-w-0"><h3 className="break-words font-semibold text-slate-50">{row.student_name}</h3><p className="mt-0.5 text-sm text-slate-300">Student no. {row.roll_number}</p></div></div><div className="flex flex-wrap justify-end gap-2"><StatusBadge status={row.status} /><NetworkBadge status={row.ip_status} /></div><div><p className="text-xs uppercase tracking-wide text-slate-500">Check-in</p><p className="mt-1 text-sm font-medium text-slate-100">{timeLabel(row.check_in_time)}</p></div><div><p className="text-xs uppercase tracking-wide text-slate-500">Distance from teacher</p><p className="mt-1 text-sm font-medium text-slate-100">{row.distance_meters == null ? "Not recorded" : meters(row.distance_meters)}</p><p className="mt-1 text-xs text-slate-400">{row.allowed_radius_meters == null ? "No boundary recorded" : `${meters(row.allowed_radius_meters)} allowed radius`}</p></div><label className="block"><span className="sr-only">Correct attendance for {row.student_name}</span>{correctionSelect(row)}</label></article>)}</div>}
       <p className="mt-4 text-sm text-slate-400">Showing {visibleRows.length} of {counts.total} students. Distance is calculated from the teacher location captured at session start to the student&apos;s approved check-in location.</p>
     </section>
-    {dialogInfo && <ConfirmDialog open title={dialogInfo.title} description={dialogInfo.description} confirmLabel={dialogInfo.label} tone={dialogInfo.tone} requireReason={dialogInfo.reason} onClose={() => setDialog(null)} onConfirm={confirmAction} />}
+    {dialogInfo && <ConfirmDialog open title={dialogInfo.title} description={dialogInfo.description} confirmLabel={dialogInfo.label} tone={dialogInfo.tone} requireReason={dialogInfo.reason} onClose={() => setDialog(null)} onConfirm={confirmAction}>
+      {dialog?.kind === "challenge" && <div className="rounded-xl border border-emerald-500/25 bg-emerald-500/5 p-4">
+        <label htmlFor="challenge-rotation-seconds" className="field-label">Change QR &amp; code every</label>
+        <div className="mt-2 flex items-center gap-3"><input id="challenge-rotation-seconds" type="number" min="15" max="300" step="1" inputMode="numeric" value={rotationInput} onChange={(event) => { setRotationInput(event.target.value); setRotationError(""); }} aria-invalid={Boolean(rotationError)} aria-describedby="challenge-rotation-help" style={{ width: "7rem", maxWidth: "7rem", flex: "none" }} /><span className="whitespace-nowrap text-sm font-medium">seconds</span></div>
+        <div className="mt-3 flex flex-wrap gap-2" role="group" aria-label="Quick rotation intervals">{[20, 30, 45, 60].map((seconds) => <Button key={seconds} type="button" size="sm" variant={rotationInput === String(seconds) ? "primary" : "outline"} aria-pressed={rotationInput === String(seconds)} onClick={() => { setRotationInput(String(seconds)); setRotationError(""); }}>{seconds}s</Button>)}</div>
+        <p id="challenge-rotation-help" className="app-caption mt-3 text-xs">Enter any whole number from 15 to 300, including 22.</p>
+        {rotationError && <p role="alert" className="mt-2 text-sm font-medium text-red-400">{rotationError}</p>}
+      </div>}
+    </ConfirmDialog>}
   </div>;
 }

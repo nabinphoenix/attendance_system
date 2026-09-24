@@ -49,7 +49,7 @@ export default function Page() {
       return null;
     }
     if (!Number.isInteger(challengeRotationSeconds) || challengeRotationSeconds < 15 || challengeRotationSeconds > 300) {
-      setError("QR rotation must be between 15 and 300 seconds.");
+      setError("QR and attendance code rotation must be between 15 and 300 seconds.");
       return null;
     }
     return { boundary, selfCheckinWindowMinutes, challengeRotationSeconds };
@@ -197,10 +197,11 @@ export default function Page() {
             <div className="mt-4 grid gap-3 sm:grid-cols-3">
               <label><span className="field-label">Campus boundary (meters)</span><input className="w-full" type="number" min="1" max={MAX_GEOFENCE_RADIUS_METERS} step="1" inputMode="decimal" value={radiusInput} onChange={(event) => setRadiusInput(event.target.value)} aria-describedby={`boundary-help-${item.routine_id}`} /></label>
               <label><span className="field-label">Check-in window (minutes)</span><input className="w-full" type="number" min="1" max="240" step="1" inputMode="numeric" value={selfCheckinInput} onChange={(event) => setSelfCheckinInput(event.target.value)} aria-describedby={`settings-help-${item.routine_id}`} /></label>
-              <label><span className="field-label">QR rotation (seconds)</span><input className="w-full" type="number" min="15" max="300" step="1" inputMode="numeric" value={rotationInput} onChange={(event) => setRotationInput(event.target.value)} aria-describedby={`settings-help-${item.routine_id}`} /></label>
+              <label><span className="field-label">QR &amp; code rotation (seconds)</span><input className="w-full" type="number" min="15" max="300" step="1" inputMode="numeric" value={rotationInput} onChange={(event) => setRotationInput(event.target.value)} aria-describedby={`settings-help-${item.routine_id}`} /></label>
             </div>
+            <div className="mt-3 flex flex-wrap items-center gap-2" role="group" aria-label="Quick rotation intervals"><span className="mr-1 text-xs font-semibold text-slate-300">Quick intervals</span>{[20, 30, 45, 60].map((seconds) => <Button key={seconds} type="button" size="sm" variant={rotationInput === String(seconds) ? "primary" : "outline"} aria-pressed={rotationInput === String(seconds)} onClick={() => setRotationInput(String(seconds))}>{seconds}s</Button>)}</div>
             <span id={`boundary-help-${item.routine_id}`} className="helper-text">Your location is captured automatically. Students use either the rotating QR or the six-digit attendance code, with their own location checked for both.</span>
-            <span id={`settings-help-${item.routine_id}`} className="helper-text">Students can check in during the selected window. The QR rotates at this interval; the attendance code remains valid for the session window.</span>
+            <span id={`settings-help-${item.routine_id}`} className="helper-text">Students can check in during the selected window. The QR and six-digit attendance code change together at the selected interval. You can enter any whole number from 15 to 300, such as 22.</span>
             <div className="mt-4 flex flex-wrap gap-2"><Button size="lg" loading={startingId === item.routine_id} disabled={startingId !== null} onClick={() => void startSession()}>{startingId === item.routine_id ? "Starting attendance…" : "Start attendance"}</Button><Button type="button" variant="ghost" disabled={startingId !== null} onClick={() => { setPendingStart(null); setStartStatus(""); }}>Cancel</Button></div>
           </div>
         ) : <Button size="lg" loading={startingId === item.routine_id} disabled={startingId !== null || pendingStart !== null} onClick={() => void start(item.routine_id)}>{startingId === item.routine_id ? "Getting location…" : "Use location & set boundary"}</Button>}
