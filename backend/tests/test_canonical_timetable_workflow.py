@@ -158,7 +158,7 @@ def test_canonical_teacher_and_section_import_workflow_csv_xlsx():
     inactive_csv = (",".join(TEACHER_HEADER) + "\n" + ",".join(inactive_row[0]) + "\n").encode()
     inactive = client.post(f"/api/v1/academic/teachers/{ids['teacher']}/timetable/preview", headers=admin_headers, files={"file": ("inactive.csv", io.BytesIO(inactive_csv), "text/csv")})
     assert inactive.json()["invalid_rows"] == 1
-    assert "No active module offering" in inactive.json()["errors"][0]["error_message"]
+    assert "No active course assignment" in inactive.json()["errors"][0]["error_message"]
     with Session() as db:
         db.get(ModuleOffering, ids["offering"]).is_active = True
         db.commit()
@@ -166,5 +166,5 @@ def test_canonical_teacher_and_section_import_workflow_csv_xlsx():
     invalid_csv = (",".join(TEACHER_HEADER) + "\n" + ",".join(invalid_row[0]) + "\n").encode()
     invalid = client.post(f"/api/v1/academic/teachers/{ids['teacher']}/timetable/preview", headers=admin_headers, files={"file": ("invalid.csv", io.BytesIO(invalid_csv), "text/csv")})
     assert invalid.json()["invalid_rows"] == 1
-    assert "not part of the active module offering" in invalid.json()["errors"][0]["error_message"]
+    assert "not part of the active course assignment" in invalid.json()["errors"][0]["error_message"]
     app.dependency_overrides.clear()

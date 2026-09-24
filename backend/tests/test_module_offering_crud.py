@@ -10,7 +10,7 @@ from sqlalchemy.pool import StaticPool
 from app.core.database import Base, get_db
 from app.core.security import hash_password
 from app.main import app
-from app.modules.academic.models import AcademicModule, Batch, Block, ClassType, Intake, ModuleOffering, Program, Room, RoutineEntry, Section, Teacher, TimeSlot
+from app.modules.academic.models import AcademicModule, Batch, BatchLevel, Block, ClassType, CohortSemester, Intake, ModuleOffering, Program, Room, RoutineEntry, Section, Teacher, TimeSlot
 from app.modules.academic.module_offering_service import validate_routine_entry_module_offering
 from app.modules.identity.models import User, UserRole
 
@@ -38,6 +38,21 @@ def test_module_offering_admin_crud_validation_filters_and_routine_safety():
         module = AcademicModule(code="CT004", title="Databases", credits=3, semester_number=6)
         wrong_semester_module = AcademicModule(code="CT005", title="Networks", credits=3, semester_number=5)
         db.add_all([intake, other_intake, batch, second_batch, other_batch, module, wrong_semester_module])
+        db.flush()
+        level = BatchLevel(batch_id=batch.id, level_number=3, intake_id=intake.id)
+        db.add(level)
+        db.flush()
+        semester = CohortSemester(
+            batch_id=batch.id,
+            intake_id=intake.id,
+            batch_level_id=level.id,
+            semester_number=6,
+            display_name="Semester 6",
+            start_date=date(2027, 1, 1),
+            end_date=date(2027, 6, 30),
+            status="planned",
+        )
+        db.add(semester)
         db.flush()
         section = Section(name="A1", batch_id=batch.id, intake_id=intake.id, semester_number=6)
         unused_section = Section(name="A2", batch_id=batch.id, intake_id=intake.id, semester_number=6)
