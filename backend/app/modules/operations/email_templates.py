@@ -26,45 +26,45 @@ def branded_email(
     """Return broadly compatible HTML with inline styles for email clients."""
 
     rows = "".join(
-        f'<tr><td style="padding:10px 0;border-bottom:1px solid #e2e8f0;color:#64748b;font-size:14px">{_html(label)}</td>'
-        f'<td style="padding:10px 0;border-bottom:1px solid #e2e8f0;color:#0f172a;font-size:14px;font-weight:700;text-align:right">{_html(value)}</td></tr>'
+        f'<tr><td style="padding:10px 0;border-bottom:1px solid #dcebe1;color:#557464;font-size:14px">{_html(label)}</td>'
+        f'<td style="padding:10px 0;border-bottom:1px solid #dcebe1;color:#173d2e;font-size:14px;font-weight:700;text-align:right">{_html(value)}</td></tr>'
         for label, value in (details or [])
     )
     details_html = (
-        f'<table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin:22px 0;background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:0 16px">{rows}</table>'
+        f'<table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin:22px 0;background:#f3faf5;border:1px solid #dcebe1;border-radius:10px;padding:0 16px">{rows}</table>'
         if rows
         else ""
     )
     action_html = (
-        f'<table role="presentation" cellspacing="0" cellpadding="0" style="margin:26px 0"><tr><td style="border-radius:8px;background:#059669">'
+        f'<table role="presentation" cellspacing="0" cellpadding="0" style="margin:26px 0"><tr><td style="border-radius:8px;background:#16834a">'
         f'<a href="{_html(action_url)}" style="display:inline-block;padding:13px 22px;color:#ffffff;font-size:15px;font-weight:700;text-decoration:none">{_html(action_label)}</a>'
-        f'</td></tr></table><p style="margin:0;color:#64748b;font-size:12px;line-height:18px;word-break:break-all">If the button does not open, copy this link into your browser:<br /><a href="{_html(action_url)}" style="color:#047857">{_html(action_url)}</a></p>'
+        f'</td></tr></table><p style="margin:0;color:#557464;font-size:12px;line-height:18px;word-break:break-all">If the button does not open, copy this link into your browser:<br /><a href="{_html(action_url)}" style="color:#137043">{_html(action_url)}</a></p>'
         if action_label and action_url
         else ""
     )
-    logo_url = _html(public_url("/antimbench-logo.svg"))
+    logo_url = _html(public_url("/logo.png"))
     return f"""<!doctype html>
 <html lang="en">
   <head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" /></head>
-  <body style="margin:0;padding:0;background:#eef5f3;font-family:Arial,Helvetica,sans-serif;color:#0f172a">
+  <body style="margin:0;padding:0;background:#edf5ef;font-family:Arial,Helvetica,sans-serif;color:#173d2e">
     <div style="display:none;max-height:0;overflow:hidden;opacity:0">{_html(title)}</div>
-    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#eef5f3;padding:28px 12px"><tr><td align="center">
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#edf5ef;padding:28px 12px"><tr><td align="center">
       <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:620px;background:#ffffff;border-radius:14px;overflow:hidden;box-shadow:0 8px 24px rgba(15,23,42,.08)">
-        <tr><td style="padding:24px 30px;background:#063d36;color:#ffffff">
+        <tr><td style="padding:22px 30px;background:#e5f3e9;border-top:5px solid #16834a;color:#173d2e">
           <table role="presentation" cellspacing="0" cellpadding="0"><tr>
-            <td style="padding-right:13px"><img src="{logo_url}" width="46" height="34" alt="AntimBench" style="display:block;border:0;outline:none" /></td>
-            <td><div style="font-size:21px;font-weight:700;line-height:24px">AntimBench</div><div style="font-size:12px;color:#b7e4d7;line-height:18px">Attendance &amp; Student Support</div></td>
+            <td style="padding-right:13px"><img src="{logo_url}" width="44" height="44" alt="AntimBench" style="display:block;width:44px;height:44px;object-fit:contain;border:0;outline:none" /></td>
+            <td><div style="font-size:21px;font-weight:700;line-height:24px;color:#14532d">AntimBench</div><div style="font-size:12px;color:#4b755d;line-height:18px">Attendance &amp; Student Support</div></td>
           </tr></table>
         </td></tr>
         <tr><td style="padding:32px 30px 28px">
-          <h1 style="margin:0 0 20px;color:#0f172a;font-size:25px;line-height:32px">{_html(title)}</h1>
-          <p style="margin:0 0 14px;color:#334155;font-size:16px;line-height:25px">Hello <strong>{_html(greeting_name)}</strong>,</p>
-          <p style="margin:0;color:#334155;font-size:16px;line-height:25px">{_html(intro)}</p>
+          <h1 style="margin:0 0 20px;color:#173d2e;font-size:25px;line-height:32px">{_html(title)}</h1>
+          <p style="margin:0 0 14px;color:#355747;font-size:16px;line-height:25px">Hello <strong>{_html(greeting_name)}</strong>,</p>
+          <p style="margin:0;color:#355747;font-size:16px;line-height:25px">{_html(intro)}</p>
           {details_html}
           {action_html}
-          <p style="margin:24px 0 0;color:#475569;font-size:14px;line-height:22px">{_html(closing)}</p>
+          <p style="margin:24px 0 0;color:#486454;font-size:14px;line-height:22px">{_html(closing)}</p>
         </td></tr>
-        <tr><td style="padding:18px 30px;background:#f8fafc;border-top:1px solid #e2e8f0;color:#64748b;font-size:12px;line-height:18px">This is an automated message from AntimBench. Please do not share secure account links with anyone.</td></tr>
+        <tr><td style="padding:18px 30px;background:#f3faf5;border-top:1px solid #dcebe1;color:#557464;font-size:12px;line-height:18px">This is an automated message from AntimBench. Please do not share secure account links with anyone.</td></tr>
       </table>
     </td></tr></table>
   </body>
