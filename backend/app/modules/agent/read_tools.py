@@ -17,6 +17,7 @@ from app.core.config import settings
 from app.core.database import Base
 from app.modules.identity.models import User
 from app.modules.operations.models import ImportJob
+from app.modules.google_workspace import service as google_workspace_service
 
 # Import every model package so the metadata catalog is complete when this
 # module is used outside the normal FastAPI startup path (for example, tests).
@@ -42,7 +43,7 @@ _PRIVATE_COLUMNS = frozenset({
     "results_json", "session_version", "token_hash",
 })
 _PRIVATE_PARTS = ("password", "secret", "token", "hash", "cipher", "avatar", "geofence")
-_SENSITIVE_LABELS = ("address", "email", "phone", "mobile", "password", "location", "latitude", "longitude")
+_SENSITIVE_LABELS = ("address", "email", "phone", "mobile", "password", "location", "latitude", "longitude", "name", "full name", "student name", "respondent name", "student id", "respondent id", "roll number", "roll no", "registration number", "student number")
 _EMAIL = re.compile(r"(?<![\w.+-])[\w.+-]+@[\w-]+(?:\.[\w-]+)+(?![\w.+-])")
 _PHONE = re.compile(r"(?<!\w)(?:\+?\d[\d .-]{7,}\d)(?!\w)")
 
@@ -278,7 +279,7 @@ def google_form_responses(limit: int) -> dict[str, Any]:
         for question_id, answer in (response.get("answers") or {}).items():
             label = question_titles.get(question_id, f"Question {question_id}")
             values = _answer_values(answer)
-            answers[label] = ["[redacted]" if any(word in label.casefold() for word in _SENSITIVE_LABELS) else _redact_text(value) for value in values]
+            answers[label] = ["[redacted]" if _sensitive_feedback_label(label) else _redact_text(value) for value in values]
         responses.append({
             "response_id": response.get("responseId"),
             "submitted_at": response.get("lastSubmittedTime") or response.get("createTime"),
@@ -293,3 +294,185 @@ def google_form_responses(limit: int) -> dict[str, Any]:
         "metadata_warning": metadata_warning,
         "untrusted_source_data": True,
     }
+
+
+def google_workspace_files(
+    db: Session,
+    *,
+    query: str | None = None,
+    file_type: str = "all",
+    limit: int = 25,
+) -> dict[str, Any]:
+    try:
+        connection = google_workspace_service.get_connection(db)
+        result = google_workspace_service.list_drive_files(
+            connection,
+            query=query,
+            file_type=file_type,
+            page_size=min(max(limit, 1), 50),
+        )
+    except google_workspace_service.GoogleWorkspaceError as exc:
+        raise ValueError(exc.detail) from exc
+    files = []
+    for item in result.get("files") or []:
+        mime_type = str(item.get("mimeType") or "")
+        if mime_type == "application/vnd.google-apps.form":
+            kind = "form"
+        elif mime_type == "application/vnd.google-apps.spreadsheet":
+            kind = "spreadsheet"
+        else:
+            continue
+        files.append({
+            "file_id": str(item.get("id") or ""),
+            "title": str(item.get("name") or "Untitled file"),
+            "type": kind,
+            "modified_time": item.get("modifiedTime"),
+        })
+    return {
+        "files": files,
+        "next_page_available": bool(result.get("nextPageToken")),
+        "untrusted_source_data": True,
+    }
+
+
+def _sensitive_feedback_label(label: str) -> bool:
+    folded = label.casefold()
+    if "teacher" in folded and "name" in folded and "student" not in folded and "respondent" not in folded:
+        return False
+    return any(sensitive in folded for sensitive in _SENSITIVE_LABELS)
+
+
+def _safe_feedback_value(value: Any) -> Any:
+    return _redact_text(value) if isinstance(value, str) else value
+
+
+def _spreadsheet_column_number(label: str) -> int:
+    total = 0
+    for character in label.upper():
+        total = total * 26 + ord(character) - ord("A") + 1
+    return total
+
+
+def _bounded_feedback_range(cell_range: str, *, max_rows: int) -> str:
+    value = cell_range.strip()
+    notation = value.rsplit("!", 1)[-1]
+    match = re.fullmatch(r"\$?([A-Za-z]+)\$?(\d+):\$?([A-Za-z]+)\$?(\d+)", notation)
+    if not match:
+        raise ValueError("Use a bounded A1 range such as 'Form Responses 1'!A1:Z51.")
+    start_column, start_row, end_column, end_row = match.groups()
+    start_row, end_row = int(start_row), int(end_row)
+    if (
+        start_row < 1 or end_row < start_row or end_row - start_row + 1 > max_rows
+        or _spreadsheet_column_number(end_column) > 52
+        or _spreadsheet_column_number(end_column) < _spreadsheet_column_number(start_column)
+    ):
+        raise ValueError(f"Google Sheet reads are limited to {max_rows} rows and 52 columns.")
+    return value
+
+
+def _safe_feedback_rows(values: list[list[Any]]) -> list[list[Any]]:
+    if not values:
+        return []
+    private_columns = {
+        index for index, value in enumerate(values[0])
+        if _sensitive_feedback_label(str(value or ""))
+    }
+    result: list[list[Any]] = []
+    for row_index, row in enumerate(values):
+        cleaned = []
+        for column_index, value in enumerate(row):
+            if column_index in private_columns:
+                cleaned.append("[private field]" if row_index == 0 else "[redacted]")
+            else:
+                cleaned.append(_safe_feedback_value(value))
+        result.append(cleaned)
+    return result
+
+
+def _form_questions_for_ai(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    questions = []
+    for item in items:
+        question = ((item.get("questionItem") or {}).get("question") or {})
+        if question:
+            question_type = next(
+                (key for key in ("choiceQuestion", "scaleQuestion", "textQuestion", "dateQuestion") if key in question),
+                "question",
+            )
+            options = ((question.get("choiceQuestion") or {}).get("options") or [])
+            questions.append({
+                "title": str(item.get("title") or "Untitled question"),
+                "type": question_type,
+                "required": bool(question.get("required")),
+                "options": [str(option.get("value") or "") for option in options],
+            })
+        questions.extend(_form_questions_for_ai(item.get("items") or []))
+    return questions
+
+
+def google_workspace_file_content(
+    db: Session,
+    *,
+    file_id: str,
+    limit: int = 50,
+    cell_range: str | None = None,
+) -> dict[str, Any]:
+    try:
+        connection = google_workspace_service.get_connection(db)
+        file = google_workspace_service.drive_file_metadata(connection, file_id)
+        mime_type = str(file.get("mimeType") or "")
+        if mime_type == "application/vnd.google-apps.form":
+            form = google_workspace_service.form_definition(connection, file_id)
+            data = google_workspace_service.form_responses_for_file(
+                connection, file_id, page_size=min(max(limit, 1), 100),
+            )
+            titles = data.get("questionTitles") or {}
+            responses = []
+            for response in data.get("responses") or []:
+                answers = {}
+                for question_id, answer in (response.get("answers") or {}).items():
+                    title = str(titles.get(question_id) or f"Question {question_id}")
+                    text_values = (((answer.get("textAnswers") or {}).get("answers")) or [])
+                    values = [str(item.get("value") or "") for item in text_values]
+                    if not values and (answer.get("fileUploadAnswers") or {}).get("answers"):
+                        values = ["[file response omitted]"]
+                    answers[title] = (
+                        ["[redacted]"] if _sensitive_feedback_label(title)
+                        else [_redact_text(value) for value in values]
+                    )
+                responses.append({
+                    "submitted_at": response.get("lastSubmittedTime") or response.get("createTime"),
+                    "answers": answers,
+                })
+            return {
+                "file_id": file_id,
+                "title": str((form.get("info") or {}).get("title") or file.get("name") or "Google Form"),
+                "type": "form",
+                "questions": _form_questions_for_ai(form.get("items") or []),
+                "returned_count": len(responses),
+                "next_page_available": bool(data.get("nextPageToken")),
+                "responses": responses,
+                "untrusted_source_data": True,
+                "privacy_note": "Respondent emails and answers to sensitive identity/contact fields are excluded or redacted.",
+            }
+        if mime_type == "application/vnd.google-apps.spreadsheet":
+            sheet = google_workspace_service.spreadsheet_metadata(connection, file_id)
+            tabs = sheet.get("sheets") or []
+            first_title = str(((tabs[0].get("properties") or {}).get("title")) if tabs else "Sheet1")
+            if not cell_range:
+                escaped_title = first_title.replace("'", "''")
+                cell_range = f"'{escaped_title}'!A1:Z{min(max(limit, 1) + 1, 101)}"
+            safe_range = _bounded_feedback_range(cell_range, max_rows=min(max(limit, 1) + 1, 101))
+            values = google_workspace_service.read_spreadsheet_values(connection, file_id, safe_range)
+            return {
+                "file_id": file_id,
+                "title": str((sheet.get("properties") or {}).get("title") or file.get("name") or "Google Sheet"),
+                "type": "spreadsheet",
+                "range": values.get("range"),
+                "returned_rows": len(values.get("values") or []),
+                "values": _safe_feedback_rows(values.get("values") or []),
+                "untrusted_source_data": True,
+                "privacy_note": "Values under student identity/contact columns and email/phone-like text are redacted.",
+            }
+        raise ValueError("Choose a Google Form or Google Sheet to read feedback data.")
+    except google_workspace_service.GoogleWorkspaceError as exc:
+        raise ValueError(exc.detail) from exc

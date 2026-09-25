@@ -157,6 +157,15 @@ export default function AssistantPage() {
   function selectChat(id: string) { const chat = chats.find((item) => item.id === id); if (!chat) return; setChatId(id); setMessages(chat.messages); setPending(null); setInput(""); }
 
   useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const fileId = params.get("googleFileId");
+    if (!fileId) return;
+    const title = params.get("googleFileTitle") || "selected file";
+    const type = params.get("googleFileType") || "Form or Sheet";
+    setInput(`Analyze this Google ${type} for teacher feedback: "${title}" (Google file ID: ${fileId}). Read only this file. Report the sample size, rating patterns, repeated strengths, improvement themes, and constructive recommendations. Do not identify respondents.`);
+  }, []);
+
+  useEffect(() => {
     api.get<AgentStatus>("/api/v1/agent/status").then((response) => setStatus(response.data)).catch(() => setError("Unable to check the assistant configuration."));
   }, []);
 

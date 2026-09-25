@@ -73,7 +73,7 @@ def protect_college_writes(db, flush_context, instances):
             row = db.connection().execute(select(fk.column.table.c.college_id).where(fk.column == value)).first()
             if row and row[0] != obj.college_id:
                 # Global super admins may be audit actors, uploaders, approvers.
-                actor_columns = {"actor_id", "uploaded_by", "created_by", "approved_by", "changed_by", "staff_id", "requested_by"}
+                actor_columns = {"actor_id", "uploaded_by", "created_by", "created_by_id", "connected_by_id", "approved_by", "changed_by", "staff_id", "requested_by"}
                 if fk.column.table.name == "users" and row[0] is None and fk.parent.name in actor_columns:
                     continue
                 raise HTTPException(422, "Related records must belong to the same college")

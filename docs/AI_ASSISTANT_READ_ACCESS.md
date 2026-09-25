@@ -10,7 +10,20 @@ Use `get_database_catalog` before `read_database_records`. The catalog exposes o
 
 The application stores import-job outcomes and row results, not the original uploaded file. `get_import_history` lets the assistant read those stored outcomes. Contact data in saved row results is redacted before it reaches an AI provider.
 
-## Google Forms responses
+## Connected Google Drive files
+
+The current Google Workspace connection is college-scoped and managed from Admin → Google Workspace. After connecting the admin's Workspace account, the page lists files that account can access. An existing connection created before Drive listing was added must be authorized once more with **Update Google permissions**. The added `drive.metadata.readonly` scope is used to list file metadata; Forms and Sheets content is read through their respective APIs. The Google OAuth project must have the Drive, Forms, and Sheets APIs enabled and allow the requested scopes.
+
+Admins can preview Google Form questions, optionally open its respondent-facing form, page through responses, preview up to 100 rows × 26 columns of a Sheet tab, or open the original file on Google for full editing. The in-app preview is read-only. Opening the live respondent form can submit a real response.
+
+From a selected Form or Sheet, **Analyze with AI** opens the assistant with that file selected. The assistant reads only the selected file, at most 100 Form responses or a bounded Sheet range per call. Respondent email, contact details, and answers under student/respondent identity headings are omitted or redacted before the data reaches the model. Google file contents are treated as untrusted data. The analysis should not identify respondents and should distinguish evidence from interpretation.
+
+The current assistant uses the configured cloud AI provider. When an admin submits a request, the prompt and the minimum selected-file data returned by the read-only tool are sent to that provider; provider API keys remain on the backend. Do not use this flow for data that must remain entirely on premises unless the deployment is configured to use an approved local model.
+
+## Legacy single-form connection
+
+The `get_google_form_responses` tool and `GOOGLE_FORMS_*` settings below are a separate legacy integration for one statically configured form. New feedback workflows should use the college's Google Workspace connection and the Drive browser above.
+
 
 The `get_google_form_responses` tool is disabled unless all required server-side settings are configured. It uses only `GET` requests to Google Forms and never modifies a form or its responses.
 

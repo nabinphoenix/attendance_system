@@ -12,7 +12,7 @@ import json
 import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
 import httpx
 from cryptography.fernet import Fernet, InvalidToken
@@ -38,6 +38,7 @@ SCOPES = (
     "email",
     "profile",
     "https://www.googleapis.com/auth/drive.file",
+    "https://www.googleapis.com/auth/drive.metadata.readonly",
     "https://www.googleapis.com/auth/forms.body",
     "https://www.googleapis.com/auth/forms.responses.readonly",
     "https://www.googleapis.com/auth/spreadsheets",
@@ -338,23 +339,134 @@ def rename_resource(connection: GoogleWorkspaceConnection, resource: GoogleWorks
         google_api_request(connection, "PATCH", f"{DRIVE_API}/files/{resource.google_resource_id}", payload={"name": title})
     resource.title = title
 
+def has_drive_listing_scope(connection: GoogleWorkspaceConnection) -> bool:
+    try:
+        granted = set(json.loads(connection.granted_scopes or "[]"))
+    except (TypeError, json.JSONDecodeError):
+        return False
+    return "https://www.googleapis.com/auth/drive.metadata.readonly" in granted
+
+
+def list_drive_files(
+    connection: GoogleWorkspaceConnection,
+    *,
+    query: str | None = None,
+    file_type: str = "all",
+    page_token: str | None = None,
+    page_size: int = 50,
+) -> dict[str, Any]:
+    mime_types = {
+        "form": "application/vnd.google-apps.form",
+        "spreadsheet": "application/vnd.google-apps.spreadsheet",
+        "folder": "application/vnd.google-apps.folder",
+    }
+    if file_type not in {"all", "form", "spreadsheet", "folder", "other"}:
+        raise GoogleWorkspaceError("Choose Google Forms, Sheets, folders, or all Drive files.", 422)
+    predicates = ["trashed = false"]
+    if file_type in mime_types:
+        predicates.append(f"mimeType = '{mime_types[file_type]}'")
+    elif file_type == "other":
+        predicates.append("mimeType != 'application/vnd.google-apps.form'")
+        predicates.append("mimeType != 'application/vnd.google-apps.spreadsheet'")
+        predicates.append("mimeType != 'application/vnd.google-apps.folder'")
+    if query and query.strip():
+        escaped = query.strip().replace("\\", "\\\\").replace("'", "\\'")
+        predicates.append(f"name contains '{escaped}'")
+    params: dict[str, Any] = {
+        "q": " and ".join(predicates),
+        "pageSize": min(max(page_size, 1), 100),
+        "orderBy": "modifiedTime desc",
+        "fields": "nextPageToken,files(id,name,mimeType,webViewLink,modifiedTime,iconLink)",
+        "includeItemsFromAllDrives": "true",
+        "supportsAllDrives": "true",
+        "corpora": "allDrives",
+    }
+    if page_token:
+        params["pageToken"] = page_token
+    return google_api_request(connection, "GET", f"{DRIVE_API}/files", params=params)
+
+
+def drive_file_metadata(connection: GoogleWorkspaceConnection, file_id: str) -> dict[str, Any]:
+    if not file_id or len(file_id) > 255 or any(char in file_id for char in "/?#"):
+        raise GoogleWorkspaceError("That Google Drive file identifier is invalid.", 422)
+    return google_api_request(
+        connection,
+        "GET",
+        f"{DRIVE_API}/files/{quote(file_id, safe='')}",
+        params={"fields": "id,name,mimeType,webViewLink,modifiedTime,iconLink"},
+    )
+
+
+def form_definition(connection: GoogleWorkspaceConnection, form_id: str) -> dict[str, Any]:
+    file = drive_file_metadata(connection, form_id)
+    if file.get("mimeType") != "application/vnd.google-apps.form":
+        raise GoogleWorkspaceError("That Drive file is not a Google Form.", 422)
+    return google_api_request(connection, "GET", f"{FORMS_API}/forms/{quote(form_id, safe='')}")
+
+
+def form_question_titles(items: list[dict[str, Any]]) -> dict[str, str]:
+    titles: dict[str, str] = {}
+    for item in items:
+        title = str(item.get("title") or "Untitled question")
+        question = (item.get("questionItem") or {}).get("question") or {}
+        if question.get("questionId"):
+            titles[str(question["questionId"])] = title
+        for grouped in ((item.get("questionGroupItem") or {}).get("questions") or []):
+            if grouped.get("questionId"):
+                titles[str(grouped["questionId"])] = title
+        titles.update(form_question_titles(item.get("items") or []))
+    return titles
+
+
+def form_responses_for_file(
+    connection: GoogleWorkspaceConnection,
+    form_id: str,
+    *,
+    page_size: int = 100,
+    page_token: str | None = None,
+) -> dict[str, Any]:
+    form = form_definition(connection, form_id)
+    params: dict[str, Any] = {"pageSize": min(max(page_size, 1), 100)}
+    if page_token:
+        params["pageToken"] = page_token
+    responses = google_api_request(
+        connection,
+        "GET",
+        f"{FORMS_API}/forms/{quote(form_id, safe='')}/responses",
+        params=params,
+    )
+    return {
+        **responses,
+        "questionTitles": form_question_titles(form.get("items") or []),
+        "formTitle": (form.get("info") or {}).get("title") or "Google Form",
+    }
+
+
+def spreadsheet_metadata(connection: GoogleWorkspaceConnection, spreadsheet_id: str) -> dict[str, Any]:
+    file = drive_file_metadata(connection, spreadsheet_id)
+    if file.get("mimeType") != "application/vnd.google-apps.spreadsheet":
+        raise GoogleWorkspaceError("That Drive file is not a Google Sheet.", 422)
+    return google_api_request(
+        connection,
+        "GET",
+        f"{SHEETS_API}/spreadsheets/{quote(spreadsheet_id, safe='')}",
+        params={"fields": "spreadsheetId,properties(title),sheets(properties(sheetId,title,index,gridProperties(rowCount,columnCount)))"},
+    )
+
+
 
 def delete_resource(connection: GoogleWorkspaceConnection, resource: GoogleWorkspaceResource) -> None:
     google_api_request(connection, "DELETE", f"{DRIVE_API}/files/{resource.google_resource_id}")
 
 
 def form_responses(connection: GoogleWorkspaceConnection, resource: GoogleWorkspaceResource) -> dict[str, Any]:
-    return google_api_request(connection, "GET", f"{FORMS_API}/forms/{resource.google_resource_id}/responses", params={"pageSize": 100})
+    form_id = resource.google_resource_id if isinstance(resource, GoogleWorkspaceResource) else resource
+    return form_responses_for_file(connection, form_id, page_size=100)
 
 
-def read_spreadsheet_values(connection: GoogleWorkspaceConnection, resource: GoogleWorkspaceResource, cell_range: str) -> dict[str, Any]:
-    from urllib.parse import quote
-
-    return google_api_request(
-        connection,
-        "GET",
-        f"{SHEETS_API}/spreadsheets/{resource.google_resource_id}/values/{quote(cell_range, safe='')}",
-    )
+def read_spreadsheet_values(connection: GoogleWorkspaceConnection, resource: GoogleWorkspaceResource | str, cell_range: str) -> dict[str, Any]:
+    spreadsheet_id = resource.google_resource_id if isinstance(resource, GoogleWorkspaceResource) else resource
+    return google_api_request(connection, "GET", f"{SHEETS_API}/spreadsheets/{quote(spreadsheet_id, safe='')}/values/{quote(cell_range, safe='')}")
 
 
 def write_spreadsheet_values(
@@ -391,4 +503,5 @@ def revoke_connection(connection: GoogleWorkspaceConnection) -> None:
 
 def scope_list(token: dict[str, Any]) -> str:
     raw = str(token.get("scope") or "")
-    return json.dumps(sorted(set(raw.split())))
+    # Google may omit `scope` when the requested grant exactly matches the token.
+    return json.dumps(sorted(set(raw.split()) if raw else set(SCOPES)))
