@@ -53,8 +53,11 @@ def resource_read(resource: GoogleWorkspaceResource) -> GoogleWorkspaceResourceR
     )
 
 
-def callback_redirect(result: str) -> RedirectResponse:
-    query = urlencode({"google": result})
+def callback_redirect(result: str, reason: str | None = None) -> RedirectResponse:
+    values = {"google": result}
+    if reason:
+        values["google_reason"] = reason[:300]
+    query = urlencode(values)
     return RedirectResponse(f"{settings.frontend_url.rstrip('/')}/admin/google-workspace?{query}", status_code=303)
 
 
@@ -93,10 +96,21 @@ def authorization_callback(
 ):
     try:
         attempt = service.consume_oauth_attempt(db, state)
-    except service.GoogleWorkspaceError:
-        return callback_redirect("failed")
+    except service.GoogleWorkspaceError as exc:
+        return callback_redirect("failed", exc.detail)
     if error or not code:
-        return callback_redirect("cancelled" if error == "access_denied" else "failed")
+        if error == "access_denied":
+            return callback_redirect("cancelled")
+        reason = (
+            "Google rejected the redirect URL. Ensure it exactly matches the authorized redirect URI in Google Cloud."
+            if error == "redirect_uri_mismatch"
+            else "Google rejected the requested permissions. Check the OAuth consent screen and requested scopes."
+            if error == "invalid_scope"
+            else "Google did not return an authorization code. Restart the connection and try again."
+            if not error
+            else "Google authorization failed with error: " + error[:100] + ". Check the OAuth configuration and try again."
+        )
+        return callback_redirect("failed", reason)
     try:
         token, email = service.exchange_code(code)
         set_college_scope(db, attempt.college_id)
@@ -138,9 +152,9 @@ def authorization_callback(
             college_id=attempt.college_id,
         )
         db.commit()
-    except service.GoogleWorkspaceError:
+    except service.GoogleWorkspaceError as exc:
         db.rollback()
-        return callback_redirect("failed")
+        return callback_redirect("failed", exc.detail)
     return callback_redirect("connected")
 
 

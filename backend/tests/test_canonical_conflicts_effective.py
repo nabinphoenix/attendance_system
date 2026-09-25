@@ -15,7 +15,8 @@ from app.modules.academic.models import AcademicModule, Batch, Block, ClassType,
 from app.modules.academic.routine_router import RoutineCreate, check_routine_conflicts, create_routine_entry
 from app.modules.identity.models import User, UserRole
 from app.modules.scheduling.models import ClassSession, OverrideStatus, ScheduleOverride
-from app.modules.scheduling.service import resolve_effective_class, validate_routine_override_conflicts
+from app.modules.scheduling.service import resolve_effective_class, session_section_ids, validate_routine_override_conflicts
+from app.modules.academic.promotion_service import students_for_sections_as_of
 
 
 def setup_context():
@@ -88,6 +89,94 @@ def test_effective_override_conflicts_cancellation_and_start_session():
     a3_occurrences=client.get(f"/api/v1/academic/routines/me/occurrences?{date_query}",headers=auth(client,"student-a3@example.com"));assert a3_occurrences.status_code==200 and a3_occurrences.json()[0]["room"]=="Annapurna"
     teacher_occurrences=client.get(f"/api/v1/academic/teachers/me/occurrences?{date_query}",headers=chandra);assert teacher_occurrences.status_code==200 and any(row["routine_id"]==later_id and row["can_start"] for row in teacher_occurrences.json())
     admin_occurrences=client.get(f"/api/v1/academic/routine-occurrences?{date_query}",headers=admin);assert admin_occurrences.status_code==200 and any(row["cancelled"] for row in admin_occurrences.json());assert any(row["occupancy_status"]=="empty" for row in admin_occurrences.json());assert any(row["occupancy_status"]=="occupied" for row in admin_occurrences.json());assert any(row["routine_id"]==second_id and row["override_id"] and row["occupancy_status"]=="occupied" for row in admin_occurrences.json())
+    app.dependency_overrides.clear()
+
+
+def test_routine_override_can_combine_an_offered_section_and_move_room_for_one_date():
+    Session, ids = setup_context()
+    client = TestClient(app)
+    admin = auth(client, "admin@example.com")
+    bina = auth(client, "bina@example.com")
+    today = date.today()
+    with Session() as db:
+        entry = create_routine_entry(
+            db,
+            RoutineCreate(**payload(ids, section="A3", teacher="Bina", room="Khaptad-LT05", slot="base")),
+        )
+        db.commit()
+        routine_id = entry.id
+
+    base_payload = {
+        "override_date": today.isoformat(),
+        "new_room_id": ids["room_Codespace"],
+        "reason": "Combine the parallel section in a larger room",
+    }
+    section_conflict = client.post(
+        f"/api/v1/academic/routines/{routine_id}/overrides/availability",
+        headers=admin,
+        json=base_payload | {"additional_section_ids": [ids["section_A1"]]},
+    )
+    assert section_conflict.status_code == 200, section_conflict.text
+    assert not section_conflict.json()["available"]
+    assert any(conflict["resource"] == "section" for conflict in section_conflict.json()["conflicts"])
+
+    available = client.post(
+        f"/api/v1/academic/routines/{routine_id}/overrides/availability",
+        headers=admin,
+        json=base_payload | {"additional_section_ids": [ids["section_A4"]]},
+    )
+    assert available.status_code == 200 and available.json()["available"], available.text
+
+    created = client.post(
+        f"/api/v1/academic/routines/{routine_id}/overrides",
+        headers=admin,
+        json=base_payload | {"additional_section_ids": [ids["section_A4"]]},
+    )
+    assert created.status_code == 200, created.text
+    override_id = created.json()["id"]
+    history = client.get(f"/api/v1/academic/routines/{routine_id}/overrides", headers=admin)
+    assert history.status_code == 200
+    assert history.json()[0]["additional_section_ids"] == [ids["section_A4"]]
+    assert history.json()[0]["additional_section_names"] == ["A4"]
+
+    approved = client.patch(
+        f"/api/v1/academic/routines/{routine_id}/overrides/{override_id}",
+        headers=admin,
+        json={"status": "approved"},
+    )
+    assert approved.status_code == 200, approved.text
+
+    query = f"date_from={today.isoformat()}&days=8"
+    admin_occurrences = client.get(f"/api/v1/academic/routine-occurrences?{query}", headers=admin)
+    assert admin_occurrences.status_code == 200, admin_occurrences.text
+    target_occurrences = [row for row in admin_occurrences.json() if row["routine_id"] == routine_id]
+    moved = next(row for row in target_occurrences if row["date"] == today.isoformat())
+    assert set(moved["section_names"]) == {"A3", "A4"}
+    assert moved["room"] == "Codespace"
+    following_week = next(row for row in target_occurrences if row["date"] != today.isoformat())
+    assert following_week["section_names"] == ["A3"]
+
+    a4_occurrences = client.get(
+        f"/api/v1/academic/routines/me/occurrences?{query}",
+        headers=auth(client, "student-a4@example.com"),
+    )
+    assert a4_occurrences.status_code == 200, a4_occurrences.text
+    a4_class_dates = [
+        row["date"] for row in a4_occurrences.json() if row["routine_id"] == routine_id
+    ]
+    assert a4_class_dates == [today.isoformat()]
+
+    started = client.post(
+        f"/api/v1/routine-sessions/{routine_id}/start",
+        headers=bina,
+        json={"latitude": 27.7172, "longitude": 85.3240, "accuracy_meters": 12},
+    )
+    assert started.status_code == 200, started.text
+    with Session() as db:
+        session = db.get(ClassSession, started.json()["id"])
+        assert session_section_ids(session) == {ids["section_A3"], ids["section_A4"]}
+        roster = students_for_sections_as_of(db, session_section_ids(session), today)
+        assert any(student.roll_number == "R-A4" for student in roster)
     app.dependency_overrides.clear()
 
 

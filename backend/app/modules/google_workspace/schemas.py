@@ -83,6 +83,12 @@ class GoogleFormRead(BaseModel):
     items: list[dict[str, Any]] = Field(default_factory=list)
 
 
+class GoogleSpreadsheetRead(BaseModel):
+    spreadsheet_id: str
+    title: str
+    sheets: list[dict[str, Any]] = Field(default_factory=list)
+
+
 class GoogleFormResponsesRead(BaseModel):
     responses: list[dict[str, Any]] = Field(default_factory=list)
     question_titles: dict[str, str] = Field(default_factory=dict)

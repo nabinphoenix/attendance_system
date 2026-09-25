@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import api from "@/lib/api";
 import { Button } from "@/components/ui/Button";
@@ -10,10 +10,11 @@ import { PageHeader } from "@/components/ui/PageHeader";
 import { EmptyState } from "@/components/ui/States";
 import { apiMessage, AvailabilityState, ScheduleFeedback } from "@/components/ScheduleFeedback";
 
-const empty = { override_date: "", teacher_id: "", room_id: "", start_time: "", end_time: "", is_cancelled: false, reason: "" };
+const empty = { override_date: "", teacher_id: "", room_id: "", start_time: "", end_time: "", is_cancelled: false, additional_section_ids: [] as number[], reason: "" };
 const days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 
-type Routine = { id: number; intake_id: number; semester_number: number; section_id: number; section_names: string[]; module_id: number; class_type_id: number; teacher_id: number; room_id: number; day_of_week: number; time_slot_id: number };
+type Routine = { id: number; intake_id: number; semester_number: number; section_id: number; section_ids?: number[]; section_names: string[]; module_id: number; module_offering_id?: number | null; class_type_id: number; teacher_id: number; room_id: number; day_of_week: number; time_slot_id: number };
+type Section = { id: number; name: string; batch_id: number };
 
 function timeValue(value?: string) {
   return value?.slice(0, 5) || "";
@@ -37,7 +38,7 @@ export default function OverrideWorkspace() {
   const [availability, setAvailability] = useState<AvailabilityState>({ status: "incomplete", message: "Select a class and date to check the override." });
 
   useEffect(() => {
-    const names = ["routines", "intakes", "teachers", "modules", "rooms", "blocks", "time-slots"];
+    const names = ["routines", "intakes", "teachers", "modules", "rooms", "blocks", "time-slots", "sections", "module-offerings"];
     Promise.all(names.map((name) => api.get(`/api/v1/academic/${name}`)))
       .then((responses) => setData(Object.fromEntries(names.map((name, index) => [name, responses[index].data]))))
       .catch((requestError) => setError(apiMessage(requestError, "Unable to load overrides.")));
@@ -54,6 +55,16 @@ export default function OverrideWorkspace() {
   const selected = useMemo(() => (data.routines || []).find((routine) => routine.id === Number(routineId)) as Routine | undefined, [data.routines, routineId]);
   const routineOptions = useMemo(() => (data.routines || []).filter((routine) => !intakeId || routine.intake_id === Number(intakeId)) as Routine[], [data.routines, intakeId]);
   const selectedSlot = selected ? find("time-slots", selected.time_slot_id) : undefined;
+  const additionalSectionOptions = useMemo(() => {
+    if (!selected) return [];
+    const currentIds = new Set(selected.section_ids?.length ? selected.section_ids : [selected.section_id]);
+    const offering = data["module-offerings"]?.find((item) => item.id === selected.module_offering_id);
+    const offeredIds = new Set<number>(offering?.section_ids || []);
+    const primaryBatchId = (data.sections as Section[] | undefined)?.find((section) => section.id === selected.section_id)?.batch_id;
+    return ((data.sections || []) as Section[])
+      .filter((section) => !currentIds.has(section.id) && (offeredIds.size ? offeredIds.has(section.id) : section.batch_id === primaryBatchId))
+      .sort((left, right) => left.name.localeCompare(right.name));
+  }, [data, selected]);
 
   useEffect(() => {
     if (routineId && selected && !intakeId) setIntakeId(String(selected.intake_id));
@@ -63,9 +74,9 @@ export default function OverrideWorkspace() {
     setForm(selected ? initialForm(selected, data["time-slots"] || []) : empty);
     setError("");
     setAvailability({ status: "incomplete", message: "Select a class and date to check the override." });
-  }, [data, selected?.id]);
+  }, [data, selected]);
 
-  async function load(id = routineId) {
+  const load = useCallback(async (id = routineId) => {
     if (!id) {
       setRows([]);
       return;
@@ -75,9 +86,9 @@ export default function OverrideWorkspace() {
     } catch (requestError) {
       setError(apiMessage(requestError, "Unable to load overrides."));
     }
-  }
+  }, [routineId]);
 
-  useEffect(() => { void load(); }, [routineId]);
+  useEffect(() => { void load(); }, [load]);
 
   const overridePayload = useMemo(() => ({
     override_date: form.override_date,
@@ -86,6 +97,7 @@ export default function OverrideWorkspace() {
     start_time: selectedSlot && form.start_time !== timeValue(selectedSlot.start_time) ? form.start_time || null : null,
     end_time: selectedSlot && form.end_time !== timeValue(selectedSlot.end_time) ? form.end_time || null : null,
     is_cancelled: form.is_cancelled,
+    additional_section_ids: form.additional_section_ids,
     reason: form.reason,
   }), [form, selected, selectedSlot]);
 
@@ -145,16 +157,17 @@ export default function OverrideWorkspace() {
     if (row.new_room_id) changes.push(`Room: ${roomLabel(find("rooms", row.new_room_id))}`);
     else if (row.new_room) changes.push(`Room: ${row.new_room}`);
     if (row.start_time || row.end_time) changes.push(`Time: ${timeValue(row.start_time) || timeValue(selectedSlot?.start_time)}-${timeValue(row.end_time) || timeValue(selectedSlot?.end_time)}`);
+    if (row.additional_section_names?.length) changes.push(`Combined with: ${row.additional_section_names.join(" + ")}`);
     return changes.join(" / ") || "Class details retained";
   };
 
   return <div className="max-w-6xl">
-    <PageHeader title="Routine overrides" description="Schedule a lecturer, room or time change, or cancellation for a specific class date." />
+    <PageHeader title="Routine overrides" description="Change a lecturer, room, time, or section membership for one class date." />
     <div className="grid gap-4 sm:grid-cols-2">
       <label><span className="field-label">Intake</span><select className="w-full" value={intakeId} onChange={(event) => { setIntakeId(event.target.value); setRoutineId(""); }}><option value="">All intakes</option>{(data.intakes || []).map((intake) => <option key={intake.id} value={intake.id}>{intake.code} - {intake.name}</option>)}</select></label>
       <label><span className="field-label">Routine entry</span><select className="w-full" value={routineId} onChange={(event) => setRoutineId(event.target.value)}><option value="">Select a class</option>{routineOptions.map((routine) => <option key={routine.id} value={routine.id}>{routineLabel(routine)}</option>)}</select></label>
     </div>
-    {selected && <div className="mt-4 rounded-xl border border-blue-500/20 bg-blue-500/5 p-4"><p className="text-xs font-semibold uppercase tracking-wider text-blue-300">Original class</p><p className="mt-1 text-sm text-slate-200">{routineLabel(selected)}</p><p className="mt-2 text-sm text-slate-400">The lecturer, room, and time fields below begin with these current values. Change only what is needed.</p></div>}
+    {selected && <div className="mt-4 rounded-xl border border-blue-500/20 bg-blue-500/5 p-4"><p className="text-xs font-semibold uppercase tracking-wider text-blue-300">Original class</p><p className="mt-1 text-sm text-slate-200">{routineLabel(selected)}</p><p className="mt-2 text-sm text-slate-400">The lecturer, room, and time fields begin with these current values. Any extra section you choose is added for this date only; the original section(s) remain included.</p></div>}
     {selected && <form onSubmit={submit} className="mt-5 grid gap-4 panel p-5 md:grid-cols-2">
       <label><span className="field-label">Override date</span><input className="w-full" required type="date" value={form.override_date} onChange={(event) => setForm({ ...form, override_date: event.target.value })} /></label>
       <label><span className="field-label">Lecturer</span><select className="w-full" value={form.teacher_id} onChange={(event) => setForm({ ...form, teacher_id: event.target.value })}>{(data.teachers || []).map((teacher) => <option key={teacher.id} value={teacher.id}>{teacher.name}{teacher.id === selected.teacher_id ? " - current class" : ""}</option>)}</select></label>
@@ -162,6 +175,11 @@ export default function OverrideWorkspace() {
       <label className="flex min-h-10 items-center gap-2 self-end"><input type="checkbox" checked={form.is_cancelled} onChange={(event) => setForm({ ...form, is_cancelled: event.target.checked })} /><span className="text-sm font-medium text-slate-200">Cancel this class</span></label>
       <label><span className="field-label">Start time</span><input className="w-full" type="time" value={form.start_time} onChange={(event) => setForm({ ...form, start_time: event.target.value })} /></label>
       <label><span className="field-label">End time</span><input className="w-full" type="time" value={form.end_time} onChange={(event) => setForm({ ...form, end_time: event.target.value })} /></label>
+      <fieldset className="rounded-xl border border-slate-700 p-4 md:col-span-2" disabled={form.is_cancelled}>
+        <legend className="px-2 text-sm font-medium text-slate-200">Combine another section for this date</legend>
+        <p className="mb-3 text-sm text-slate-400">The original section(s) stay in the class. Choose one or more sections from the same batch and course assignment.</p>
+        {additionalSectionOptions.length ? <div className="grid gap-2 sm:grid-cols-2">{additionalSectionOptions.map((section) => <label key={section.id} className="flex items-center gap-2 rounded-lg bg-slate-900/60 px-3 py-2"><input type="checkbox" checked={form.additional_section_ids.includes(section.id)} onChange={(event) => setForm({ ...form, additional_section_ids: event.target.checked ? [...form.additional_section_ids, section.id] : form.additional_section_ids.filter((id) => id !== section.id) })} /><span className="text-sm text-slate-200">{section.name}</span></label>)}</div> : <p className="text-sm text-slate-500">No other sections are assigned to this course and batch.</p>}
+      </fieldset>
       <label className="md:col-span-2"><span className="field-label">Reason</span><textarea className="min-h-24 w-full" required value={form.reason} onChange={(event) => setForm({ ...form, reason: event.target.value })} placeholder="Explain why this change is needed" /></label>
       <div className="md:col-span-2"><p className="mb-2 text-xs font-semibold uppercase tracking-[.14em] text-slate-400">System feedback</p><ScheduleFeedback state={availability} /></div>
       <div className="md:col-span-2"><Button loading={saving} disabled={availability.status === "checking" || availability.status === "conflict"}>{saving ? "Creating..." : "Create override"}</Button></div>

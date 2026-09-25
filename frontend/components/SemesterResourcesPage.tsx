@@ -200,7 +200,7 @@ export default function SemesterResourcesPage({ role }: { role: "admin" | "stude
       : "Find your semester calendar and share feedback with your teachers."} />
     {loading ? <LoadingState label="Loading semester resources" /> : loadError
       ? <ErrorState description={loadError} onRetry={() => setReload(value => value + 1)} />
-      : !semesters.length ? <EmptyState title="No semesters available" description={admin ? "Create a dated cohort semester to add its calendar and teacher feedback." : "Your semester resources will appear once your semester is assigned."} action={admin && <Link className={linkClass} href="/admin/academic/promotions">Set up semesters</Link>} />
+      : !semesters.length ? <EmptyState title="No semesters available" description={admin ? "Create a Semester in Levels & Intake Codes to add its calendar and teacher feedback." : "Your semester resources will appear once your semester is assigned."} action={admin && <Link className={linkClass} href="/admin/academic/intakes">Open Levels & Intake Codes</Link>} />
       : <>
         <label className="mb-6 block max-w-3xl text-sm font-medium">Semester
           <select className={fieldClass + " mt-2"} value={selectedId} disabled={busy} onChange={e => changeSemester(e.target.value)}>

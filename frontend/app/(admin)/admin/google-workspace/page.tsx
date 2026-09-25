@@ -1,10 +1,13 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import api from "@/lib/api";
 import { Button } from "@/components/ui/Button";
+import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { PageHeader } from "@/components/ui/PageHeader";
+import { apiErrorMessage } from "@/lib/apiErrorMessage";
+import { notifySystemFeedback } from "@/lib/systemFeedback";
 
 type Status = {
   configured: boolean;
@@ -14,6 +17,8 @@ type Status = {
   allowed_workspace_domain?: string | null;
   drive_listing_ready?: boolean;
 };
+
+type Confirmation = { kind: "disconnect" } | { kind: "delete"; resource: Resource };
 
 type Resource = {
   id: number;
@@ -53,8 +58,7 @@ type FormResponsePage = { responses: FormResponse[]; question_titles: Record<str
 type GoogleSheet = { spreadsheet_id: string; title: string; sheets: { title: string; index?: number; sheetId: number }[] };
 
 function requestError(error: unknown) {
-  const maybe = error as { response?: { data?: { detail?: string } } };
-  return maybe.response?.data?.detail || "Something went wrong. Please try again.";
+  return apiErrorMessage(error, "Google Workspace could not complete this request. Check the account connection, permissions, and server setup, then try again.");
 }
 
 function typeLabel(type: Resource["resource_type"]) {
@@ -110,6 +114,7 @@ export default function GoogleWorkspacePage() {
   const [busy, setBusy] = useState("");
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
+  const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
   const [driveFiles, setDriveFiles] = useState<DriveFile[]>([]);
   const [driveQuery, setDriveQuery] = useState("");
   const [driveType, setDriveType] = useState("all");
@@ -135,6 +140,10 @@ export default function GoogleWorkspacePage() {
     if (typeof window === "undefined") return "";
     return new URLSearchParams(window.location.search).get("google") || "";
   }, []);
+  const callbackReason = useMemo(() => {
+    if (typeof window === "undefined") return "";
+    return new URLSearchParams(window.location.search).get("google_reason") || "";
+  }, []);
 
   async function loadDriveFiles(query = driveQuery, fileType = driveType, pageToken?: string, append = false) {
     setDriveLoading(true); setError("");
@@ -147,17 +156,30 @@ export default function GoogleWorkspacePage() {
     } catch (fetchError) { setError(requestError(fetchError)); }
     finally { setDriveLoading(false); }
   }
-  async function refresh() {
-    const [statusResponse, resourcesResponse] = await Promise.all([
-      api.get<Status>("/api/v1/google-workspace/status"),
-      api.get<Resource[]>("/api/v1/google-workspace/resources"),
-    ]);
+  const refresh = useCallback(async () => {
+    const statusResponse = await api.get<Status>("/api/v1/google-workspace/status");
     setStatus(statusResponse.data);
+    const resourcesResponse = await api.get<Resource[]>("/api/v1/google-workspace/resources");
     setResources(resourcesResponse.data);
-    if (statusResponse.data.connected && statusResponse.data.drive_listing_ready) await loadDriveFiles("", "all");
-    else { setDriveFiles([]); setDriveNextPage(null); }
-  }
-
+    if (statusResponse.data.connected && statusResponse.data.drive_listing_ready) {
+      setDriveLoading(true);
+      try {
+        const response = await api.get<{ files: DriveFile[]; next_page_token?: string | null }>("/api/v1/google-workspace/drive/files", {
+          params: { type: "all", page_size: 50 },
+        });
+        setDriveFiles(response.data.files);
+        setDriveNextPage(response.data.next_page_token || null);
+      } catch (fetchError) {
+        setError(requestError(fetchError));
+      } finally {
+        setDriveLoading(false);
+      }
+    } else {
+      setDriveFiles([]);
+      setDriveNextPage(null);
+    }
+    return statusResponse.data;
+  }, []);
   async function previewDriveFile(file: DriveFile) {
     setActiveFileId(file.id); setError("");
     if (file.mime_type === "application/vnd.google-apps.form") {
@@ -210,19 +232,50 @@ export default function GoogleWorkspacePage() {
 
   useEffect(() => {
     let active = true;
-    void refresh().catch((fetchError) => {
+    void refresh().then((workspaceStatus) => {
+      if (!active) return;
+      if (!workspaceStatus.configured) {
+        notifySystemFeedback({
+          tone: "warning",
+          title: "Google Workspace setup is incomplete",
+          description: "Configure the Google OAuth client ID, secret, redirect URL, and allowed Workspace domain on the server, then restart the API.",
+        });
+      } else if (!workspaceStatus.connected && !callbackResult) {
+        notifySystemFeedback({
+          tone: "warning",
+          title: "Google account is not connected",
+          description: "Connect the college admin account" + (workspaceStatus.allowed_workspace_domain ? " (@" + workspaceStatus.allowed_workspace_domain + ")" : "") + " to browse and read its Forms and Sheets here.",
+        });
+      } else if (!workspaceStatus.drive_listing_ready) {
+        notifySystemFeedback({
+          tone: "warning",
+          title: "Google Drive access needs updating",
+          description: "Reconnect and approve the Drive listing permission to find existing Forms and Sheets in this account.",
+        });
+      }
+    }).catch((fetchError) => {
       if (active) setError(requestError(fetchError));
     }).finally(() => {
       if (active) setLoading(false);
     });
     return () => { active = false; };
-  }, []);
+  }, [callbackResult, refresh]);
 
   useEffect(() => {
-    if (callbackResult === "connected") setNotice("Google Workspace connected successfully.");
-    if (callbackResult === "cancelled") setNotice("Google authorization was cancelled.");
-    if (callbackResult === "failed") setError("Google authorization did not finish. Confirm the Workspace account and try again.");
-  }, [callbackResult]);
+    if (callbackResult === "connected") {
+      setNotice("Google Workspace connected successfully.");
+      notifySystemFeedback({ tone: "success", title: "Google Workspace connected", description: "The college Google account is ready to use." });
+    }
+    if (callbackResult === "cancelled") {
+      setNotice("Google authorization was cancelled.");
+      notifySystemFeedback({ tone: "info", title: "Google connection cancelled", description: "No Google account changes were made. You can connect it whenever you are ready." });
+    }
+    if (callbackResult === "failed") {
+      const message = callbackReason || "Google authorization did not finish. Check the OAuth settings, redirect URL, approved account domain, and requested permissions, then try again.";
+      setError(message);
+      notifySystemFeedback({ tone: "danger", title: "Google authorization failed", description: message });
+    }
+  }, [callbackReason, callbackResult]);
 
   async function connect() {
     setBusy("connect"); setError(""); setNotice("");
@@ -234,8 +287,11 @@ export default function GoogleWorkspacePage() {
     }
   }
 
-  async function disconnect() {
-    if (!window.confirm("Disconnect this college from Google Workspace? Existing Google files will not be deleted.")) return;
+  function disconnect() {
+    setConfirmation({ kind: "disconnect" });
+  }
+
+  async function performDisconnect() {
     setBusy("disconnect"); setError(""); setNotice("");
     try {
       await api.delete("/api/v1/google-workspace/connection");
@@ -244,7 +300,6 @@ export default function GoogleWorkspacePage() {
     } catch (disconnectError) { setError(requestError(disconnectError)); }
     finally { setBusy(""); }
   }
-
   async function create(path: string, payload: object, success: string) {
     setBusy(path); setError(""); setNotice("");
     try {
@@ -269,16 +324,24 @@ export default function GoogleWorkspacePage() {
     finally { setBusy(""); }
   }
 
-  async function remove(resource: Resource) {
-    if (!window.confirm(`Permanently delete “${resource.title}” from Google Workspace?`)) return;
-    setBusy(`delete-${resource.id}`); setError(""); setNotice("");
+  function remove(resource: Resource) {
+    setConfirmation({ kind: "delete", resource });
+  }
+
+  async function performRemove(resource: Resource) {
+    setBusy("delete-" + resource.id); setError(""); setNotice("");
     try {
-      await api.delete(`/api/v1/google-workspace/resources/${resource.id}`);
+      await api.delete("/api/v1/google-workspace/resources/" + resource.id);
       await refresh(); setNotice("Resource deleted from Google Workspace.");
     } catch (deleteError) { setError(requestError(deleteError)); }
     finally { setBusy(""); }
   }
 
+  async function confirmDestructiveAction() {
+    if (!confirmation) return;
+    if (confirmation.kind === "disconnect") return performDisconnect();
+    return performRemove(confirmation.resource);
+  }
   async function readResponses(resource: Resource) {
     setBusy(`responses-${resource.id}`); setError("");
     try {
@@ -332,7 +395,8 @@ export default function GoogleWorkspacePage() {
       <div className="min-w-0">
         <p className="text-sm font-semibold">Connection</p>
 
-        {!status?.configured && <p className="helper-text">The server still needs the Google OAuth settings. Check the backend environment and restart the API.</p>}
+        {!status && <p className="helper-text">Google Workspace status could not be loaded. Use the reason shown above, then reload this page.</p>}
+        {status && !status.configured && <p className="helper-text">The server still needs the Google OAuth settings. Check the backend environment and restart the API.</p>}
         {status?.configured && !status.connected && <p className="helper-text">No account is connected yet. Use the college admin’s @{status.allowed_workspace_domain} account.</p>}
         {connected && <p className="helper-text">Connected as <span className="font-semibold">{status?.google_email}</span>. Only this college’s admins can use this connection.</p>}
         {connected && !status?.drive_listing_ready && <p className="helper-text">Reconnect once to grant read-only Drive listing access, so AntimBench can find the Forms and Sheets already in this account.</p>}
@@ -448,5 +512,15 @@ export default function GoogleWorkspacePage() {
         </div>
       </section>
     </>}
-  </div>;
+  <ConfirmDialog
+    open={confirmation !== null}
+    title={confirmation?.kind === "disconnect" ? "Disconnect this college from Google Workspace?" : "Delete this Google resource?"}
+    description={confirmation?.kind !== "delete"
+      ? "The college's Workspace connection will be removed. Existing Google files will remain in Drive."
+      : "Permanently delete “" + confirmation.resource.title + "” from Google Workspace. This also removes its AntimBench link."}
+    confirmLabel={confirmation?.kind === "disconnect" ? "Disconnect" : "Delete resource"}
+    tone="danger"
+    onClose={() => setConfirmation(null)}
+    onConfirm={confirmDestructiveAction}
+  />  </div>;
 }

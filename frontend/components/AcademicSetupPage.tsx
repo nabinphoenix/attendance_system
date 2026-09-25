@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import api from "@/lib/api";
 import { Button } from "@/components/ui/Button";
 import { PageHeader } from "@/components/ui/PageHeader";
@@ -39,7 +39,7 @@ export default function AcademicSetupPage({ config }: { config: AcademicSetupCon
   );
   const columns = config.columns.filter((column) => column.field !== "id");
 
-  const load = async (nextPage = page) => {
+  const load = useCallback(async (nextPage: number) => {
     setLoading(true);
     setError("");
     try {
@@ -56,11 +56,11 @@ export default function AcademicSetupPage({ config }: { config: AcademicSetupCon
     } finally {
       setLoading(false);
     }
-  };
+  }, [config.endpoint, endpoints]);
 
   useEffect(() => {
     void load(1);
-  }, [config.endpoint]);
+  }, [load]);
 
   const body = (source: Record<string, string | number>) => Object.fromEntries(
     config.fields.flatMap((field) => {

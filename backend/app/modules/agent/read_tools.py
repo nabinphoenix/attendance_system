@@ -43,7 +43,7 @@ _PRIVATE_COLUMNS = frozenset({
     "results_json", "session_version", "token_hash",
 })
 _PRIVATE_PARTS = ("password", "secret", "token", "hash", "cipher", "avatar", "geofence")
-_SENSITIVE_LABELS = ("address", "email", "phone", "mobile", "password", "location", "latitude", "longitude", "name", "full name", "student name", "respondent name", "student id", "respondent id", "roll number", "roll no", "registration number", "student number")
+_SENSITIVE_LABELS = ("address", "email", "phone", "mobile", "password", "location", "latitude", "longitude", "student id", "respondent id", "roll number", "roll no", "registration number", "student number")
 _EMAIL = re.compile(r"(?<![\w.+-])[\w.+-]+@[\w-]+(?:\.[\w-]+)+(?![\w.+-])")
 _PHONE = re.compile(r"(?<!\w)(?:\+?\d[\d .-]{7,}\d)(?!\w)")
 

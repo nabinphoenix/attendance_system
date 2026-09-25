@@ -93,6 +93,16 @@ class Settings(BaseSettings):
     ai_request_timeout_seconds: float = Field(default=30, ge=5, le=120)
     ai_max_tool_rounds: int = Field(default=8, ge=1, le=8)
     ai_confirmation_expire_minutes: int = Field(default=10, ge=1, le=60)
+    # Google Workspace OAuth credentials stay server-side. A separate token
+    # encryption key is recommended; the service can temporarily fall back to
+    # JWT_SECRET_KEY for existing installations.
+    google_oauth_client_id: str | None = None
+    google_oauth_client_secret: str | None = None
+    google_oauth_redirect_uri: str | None = None
+    google_allowed_workspace_domain: str | None = None
+    google_token_encryption_key: str | None = None
+    google_oauth_state_ttl_seconds: int = Field(default=600, ge=60, le=3600)
+    google_workspace_timeout_seconds: float = Field(default=15, ge=5, le=60)
     # Google Forms access is opt-in and read-only. The OAuth token must carry
     # forms.responses.readonly; adding forms.body.readonly maps answer IDs to
     # their question titles.

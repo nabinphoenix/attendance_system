@@ -40,6 +40,25 @@ class ScheduleOverride(CollegeOwned, Base):
     routine_entry = relationship("RoutineEntry")
     new_teacher = relationship("Teacher")
     new_room_reference = relationship("Room", foreign_keys=[new_room_id])
+    additional_sections: Mapped[list["ScheduleOverrideSection"]] = relationship(
+        back_populates="schedule_override", cascade="all, delete-orphan"
+    )
+
+
+class ScheduleOverrideSection(CollegeOwned, Base):
+    """A section temporarily combined into one dated routine occurrence."""
+
+    __tablename__ = "schedule_override_sections"
+    __table_args__ = (
+        UniqueConstraint("schedule_override_id", "section_id", name="uq_schedule_override_section"),
+        Index("ix_schedule_override_sections_schedule_override_id", "schedule_override_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    schedule_override_id: Mapped[int] = mapped_column(ForeignKey("schedule_overrides.id", ondelete="CASCADE"))
+    section_id: Mapped[int] = mapped_column(ForeignKey("sections.id"))
+    schedule_override: Mapped[ScheduleOverride] = relationship(back_populates="additional_sections")
+    section = relationship("Section")
 class ClassSession(CollegeOwned, Base):
     __tablename__="class_sessions";__table_args__=(Index("ix_class_sessions_routine_entry_id","routine_entry_id"),CheckConstraint("routine_entry_id IS NOT NULL OR timetable_entry_id IS NOT NULL",name="ck_class_sessions_schedule_source"),)
     id:Mapped[int]=mapped_column(primary_key=True);timetable_entry_id:Mapped[int|None]=mapped_column(ForeignKey("timetable_entries.id"),nullable=True);routine_entry_id:Mapped[int|None]=mapped_column(ForeignKey("routine_entries.id"),nullable=True);session_date:Mapped[date]=mapped_column(Date);effective_teacher_id:Mapped[int]=mapped_column(ForeignKey("teachers.id"));teacher_ip:Mapped[str|None]=mapped_column(INET_TYPE,nullable=True);teacher_ip_status:Mapped[str]=mapped_column(String(20),default="unknown",server_default="unknown");effective_room:Mapped[str]=mapped_column(String(100));schedule_override_id:Mapped[int|None]=mapped_column(ForeignKey("schedule_overrides.id"),nullable=True);status:Mapped[SessionStatus]=mapped_column(Enum(SessionStatus),default=SessionStatus.ACTIVE);started_at:Mapped[datetime]=mapped_column(DateTime(timezone=True),server_default=func.now());finalized_at:Mapped[datetime|None]=mapped_column(DateTime(timezone=True),nullable=True);geofence_latitude:Mapped[float|None]=mapped_column(Float,nullable=True);geofence_longitude:Mapped[float|None]=mapped_column(Float,nullable=True);geofence_radius_meters:Mapped[float|None]=mapped_column(Float,nullable=True);teacher_location_accuracy_meters:Mapped[float|None]=mapped_column(Float,nullable=True);geofence_captured_at:Mapped[datetime|None]=mapped_column(DateTime(timezone=True),nullable=True);self_checkin_window_minutes:Mapped[int|None]=mapped_column(Integer,nullable=True);challenge_rotation_seconds:Mapped[int|None]=mapped_column(Integer,nullable=True);current_qr_token:Mapped[str|None]=mapped_column(String(1000),nullable=True);qr_version:Mapped[int]=mapped_column(Integer,default=0,server_default="0");qr_nonce:Mapped[str|None]=mapped_column(String(64),nullable=True);qr_issued_at:Mapped[datetime|None]=mapped_column(DateTime(timezone=True),nullable=True);qr_expires_at:Mapped[datetime|None]=mapped_column(DateTime(timezone=True),nullable=True);timetable_entry=relationship("TimetableEntry");routine_entry=relationship("RoutineEntry");schedule_override=relationship("ScheduleOverride")

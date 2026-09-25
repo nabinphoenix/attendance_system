@@ -2,6 +2,7 @@ import hashlib, io
 from datetime import UTC, datetime, timedelta, time
 from urllib.parse import parse_qs, urlparse
 from fastapi.testclient import TestClient
+from openpyxl import Workbook
 from sqlalchemy import create_engine,select
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -39,7 +40,7 @@ def test_override_substitute_and_original_denied():
 
 def test_mixed_csv_import_creates_student_account():
     Session,_,_,_=setup_db();client=TestClient(app);admin=auth(client,"admin@example.com");csv=b"name,email,batch_name,section_name,phone\nValid Student,valid@example.com,2026,A,9800000000\nMissing Email,,2026,A,\nWrong Section,wrong@example.com,2026,Z,\n"
-    response=client.post("/api/v1/imports/students",headers=admin,files={"file":("students.csv",io.BytesIO(csv),"text/csv")});assert response.status_code==200,response.text;data=response.json();assert(data["success_count"],data["failed_count"])==(1,2);messages=" ".join(x["error_message"] for x in data["errors"]);assert "email is required" in messages and "does not exist" in messages
+    response=client.post("/api/v1/imports/students",headers=admin,files={"file":("students.csv",io.BytesIO(csv),"text/csv")});assert response.status_code==200,response.text;data=response.json();assert(data["success_count"],data["failed_count"])==(1,2);messages=" ".join(x["error_message"] for x in data["errors"]);assert "Enter an email address" in messages and "Create the batch and section first" in messages
     students=client.get("/api/v1/academic/students",headers=admin).json();assert any(x["email"]=="valid@example.com" and x["account_status"]=="Password Setup Queued" for x in students)
     with Session() as db:
         student=next(item for item in db.scalars(select(Student)).all() if item.email=="valid@example.com")
@@ -51,6 +52,28 @@ def test_mixed_csv_import_creates_student_account():
     assert client.post("/api/v1/auth/login",json={"email":"valid@example.com","password":"Welcome123!"}).status_code==401
     assert client.post("/api/v1/auth/activate",json={"token":token,"password":"NewPassword123!"}).status_code==200
     login=client.post("/api/v1/auth/login",json={"email":"valid@example.com","password":"NewPassword123!"});assert login.status_code==200,login.text
+    app.dependency_overrides.clear()
+
+
+def test_student_xlsx_accepts_any_single_worksheet_name():
+    Session,_,_,_=setup_db();client=TestClient(app);admin=auth(client,"admin@example.com")
+    workbook=Workbook();worksheet=workbook.active;worksheet.title="Students September 2023";worksheet.append(["name","email","batch_name","section_name","phone"]);worksheet.append(["Excel Student","excel@example.com","2026","A","9800000000"])
+    content=io.BytesIO();workbook.save(content);content.seek(0)
+    response=client.post("/api/v1/imports/students",headers=admin,files={"file":("students.xlsx",content,"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")})
+    assert response.status_code==200,response.text
+    assert response.json()["success_count"]==1
+    app.dependency_overrides.clear()
+
+def test_student_import_reports_actionable_workbook_and_header_errors():
+    setup_db();client=TestClient(app);admin=auth(client,"admin@example.com")
+    workbook=Workbook();workbook.active.title="Students";workbook.create_sheet("Instructions");content=io.BytesIO();workbook.save(content);content.seek(0)
+    multiple_sheets=client.post("/api/v1/imports/students",headers=admin,files={"file":("students.xlsx",content,"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")})
+    assert multiple_sheets.status_code==400
+    assert "exactly one data worksheet" in multiple_sheets.json()["detail"]
+    assert "worksheet name can be anything" in multiple_sheets.json()["detail"]
+    missing_column=client.post("/api/v1/imports/students",headers=admin,files={"file":("students.csv",io.BytesIO(b"name,email,section_name\nStudent,student@example.com,A\n"),"text/csv")})
+    assert missing_column.status_code==400
+    assert "missing required column(s): batch_name" in missing_column.json()["detail"]
     app.dependency_overrides.clear()
 
 def test_registered_student_can_receive_password_setup_invitation():

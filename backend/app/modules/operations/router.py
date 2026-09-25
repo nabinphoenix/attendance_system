@@ -212,39 +212,53 @@ def read_job(job):
         results=[{"row_number":item.get("row_number",0),"status":"failed","message":item.get("error_message", "Import failed"),"data":{}} for item in errors]
     results=sorted(results,key=lambda item:item.get("row_number",0))
     return ImportJobRead(id=job.id,file_name=job.file_name,upload_type=job.upload_type,total_rows=job.total_rows,success_count=job.success_count,failed_count=job.failed_count,pending_section_references=job.pending_section_references,errors=[ImportError(**e) for e in errors],results=[ImportRowResult(**item) for item in results],created_at=job.created_at)
-async def read_import_file(file:UploadFile):
+async def read_import_file(file:UploadFile,*,required_columns:tuple[str,...]=(),import_label:str="import"):
     raw=await file.read();name=(file.filename or "").lower()
     try:
         if name.endswith(".xlsx"):
             workbook=pd.ExcelFile(io.BytesIO(raw))
-            if workbook.sheet_names!=["Timetable"]:raise HTTPException(400,"XLSX must contain exactly one worksheet named Timetable")
-            return pd.read_excel(workbook,sheet_name="Timetable",dtype=str).fillna("")
-        if name.endswith(".csv"):return pd.read_csv(io.BytesIO(raw),dtype=str).fillna("")
-    except Exception as exc:raise HTTPException(400,"Invalid spreadsheet file") from exc
-    raise HTTPException(400,"Only CSV and XLSX files are supported")
+            if len(workbook.sheet_names)!=1:
+                found=", ".join(f"'{sheet}'" for sheet in workbook.sheet_names) or "none"
+                raise HTTPException(400,f"Excel workbooks must contain exactly one data worksheet. Found {len(workbook.sheet_names)}: {found}. Remove the extra worksheets, then upload again. The worksheet name can be anything.")
+            frame=pd.read_excel(workbook,sheet_name=workbook.sheet_names[0],dtype=str).fillna("")
+        elif name.endswith(".csv"):
+            frame=pd.read_csv(io.BytesIO(raw),dtype=str).fillna("")
+        else:
+            raise HTTPException(400,"Unsupported file type. Upload a CSV or XLSX file, then try again.")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(400,"We could not read this spreadsheet. Make sure it is a valid CSV or XLSX file, then try again.") from exc
+    missing=[column for column in required_columns if column not in frame.columns]
+    if missing:
+        expected=", ".join(required_columns)
+        raise HTTPException(400,f"{import_label.capitalize()} import is missing required column(s): {', '.join(missing)}. Add them to the header row and upload again. Required columns: {expected}.")
+    if frame.empty:
+        raise HTTPException(400,f"This {import_label} file has no data rows. Add at least one row below the header, then upload again.")
+    return frame
 @router.post("/imports/students",response_model=ImportJobRead)
 async def import_students(user:Annotated[User,Depends(require_role("admin"))],db:DbSession,file:UploadFile=File(...)):
-    frame=await read_import_file(file)
+    frame=await read_import_file(file,required_columns=("name","email","batch_name","section_name"),import_label="student")
     job=ImportJob(uploaded_by=user.id,file_name=file.filename or "students.csv",upload_type="students",total_rows=len(frame),success_count=0,failed_count=0);db.add(job);db.flush();errors=[];results=[]
     for offset,row in frame.iterrows():
         row_number=int(offset)+2
         try:
             with db.begin_nested():
                 name=str(row.get("name","")).strip();email=str(row.get("email","")).strip().lower();batch_name=str(row.get("batch_name","")).strip();section_name=str(row.get("section_name","")).strip()
-                if not name:raise ValueError("name is required")
-                if not email:raise ValueError("email is required")
-                if db.scalar(select(User).where(func.lower(User.email)==email)):raise ValueError("email is already in use")
+                if not name:raise ValueError("Student name is missing. Enter a name in the 'name' column.")
+                if not email:raise ValueError("Student email is missing. Enter an email address in the 'email' column.")
+                if db.scalar(select(User).where(func.lower(User.email)==email)):raise ValueError(f"Email '{email}' is already used by an account. Use another email address or remove this row.")
                 intake_code=str(row.get('intake_code','')).strip()
                 section_query=select(Section).join(Batch).where(func.lower(Batch.name)==batch_name.lower(),func.lower(Section.name)==section_name.lower())
                 sections_found=db.scalars(section_query).all()
-                if len(sections_found)>1:raise ValueError('section_name is ambiguous for batch_name')
+                if len(sections_found)>1:raise ValueError(f"Section '{section_name}' is ambiguous within batch '{batch_name}'. Use the exact batch and section names configured in the system.")
                 section=sections_found[0] if sections_found else None
-                if not section:raise ValueError("batch_name or section_name does not exist")
+                if not section:raise ValueError(f"Section '{section_name}' does not exist in batch '{batch_name}'. Create the batch and section first, or correct these values.")
                 if intake_code:
                     intake=db.scalar(select(Intake).where(func.lower(Intake.code)==intake_code.lower()))
-                    if not intake:raise ValueError('intake_code does not exist')
-                    if not db.scalar(select(BatchLevel.id).where(BatchLevel.batch_id==section.batch_id,BatchLevel.intake_id==intake.id)):raise ValueError('intake_code does not belong to batch_name')
-                if db.scalar(select(Student).where(func.lower(Student.email)==email)):raise ValueError("student email is already imported")
+                    if not intake:raise ValueError(f"Intake code '{intake_code}' does not exist. Create it first, or correct the intake_code value.")
+                    if not db.scalar(select(BatchLevel.id).where(BatchLevel.batch_id==section.batch_id,BatchLevel.intake_id==intake.id)):raise ValueError(f"Intake code '{intake_code}' is not assigned to batch '{batch_name}'. Assign the intake to the batch, or correct the intake_code value.")
+                if db.scalar(select(Student).where(func.lower(Student.email)==email)):raise ValueError(f"A student with email '{email}' already exists. Use another email address or remove this row.")
                 account=User(name=name,email=email,password_hash=hash_password(secrets.token_urlsafe(32)),role=UserRole.STUDENT)
                 db.add(account);db.flush()
                 student=Student(user_id=account.id,section_id=section.id,roll_number=str(row.get("roll_number","")).strip() or f"IMP-{job.id}-{row_number}",name=name,email=email);db.add(student);db.flush();issue_student_invitation(db,student,account,welcome=True);phone=str(row.get("phone","")).strip()

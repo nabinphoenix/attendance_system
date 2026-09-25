@@ -6,7 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.modules.academic.models import Room, RoutineEntry, RoutineEntrySection, Section, Teacher
-from app.modules.scheduling.models import OverrideStatus, ScheduleOverride
+from app.modules.scheduling.models import OverrideStatus, ScheduleOverride, ScheduleOverrideSection
 
 
 @dataclass(frozen=True)
@@ -25,9 +25,11 @@ class EffectiveClass:
     override_id: int | None
 
 
-def create_schedule_override(db:Session,*,override_date:date,created_by:int,reason:str,timetable_entry_id:int|None=None,routine_entry_id:int|None=None,new_teacher_id:int|None=None,new_room:str|None=None,new_room_id:int|None=None,start_time:time|None=None,end_time:time|None=None,is_cancelled:bool=False,is_makeup:bool=False,status:OverrideStatus=OverrideStatus.PENDING)->ScheduleOverride:
+def create_schedule_override(db:Session,*,override_date:date,created_by:int,reason:str,timetable_entry_id:int|None=None,routine_entry_id:int|None=None,new_teacher_id:int|None=None,new_room:str|None=None,new_room_id:int|None=None,start_time:time|None=None,end_time:time|None=None,is_cancelled:bool=False,is_makeup:bool=False,status:OverrideStatus=OverrideStatus.PENDING,additional_section_ids:list[int]|None=None)->ScheduleOverride:
     if bool(timetable_entry_id) == bool(routine_entry_id):raise ValueError("Provide exactly one schedule source")
-    obj=ScheduleOverride(timetable_entry_id=timetable_entry_id,routine_entry_id=routine_entry_id,override_date=override_date,created_by=created_by,reason=reason,new_teacher_id=new_teacher_id,new_room=new_room,new_room_id=new_room_id,start_time=start_time,end_time=end_time,is_cancelled=is_cancelled,is_makeup=is_makeup,status=status);db.add(obj);db.flush();return obj
+    obj=ScheduleOverride(timetable_entry_id=timetable_entry_id,routine_entry_id=routine_entry_id,override_date=override_date,created_by=created_by,reason=reason,new_teacher_id=new_teacher_id,new_room=new_room,new_room_id=new_room_id,start_time=start_time,end_time=end_time,is_cancelled=is_cancelled,is_makeup=is_makeup,status=status);db.add(obj);db.flush()
+    for section_id in additional_section_ids or []:db.add(ScheduleOverrideSection(schedule_override_id=obj.id,section_id=section_id))
+    db.flush();return obj
 
 
 def routine_section_ids(db: Session, entry: RoutineEntry) -> frozenset[int]:
@@ -65,7 +67,9 @@ def resolve_effective_class(
         teacher_id=override.new_teacher_id if override and override.new_teacher_id is not None else entry.teacher_id,
         room=override_room.name if override_room else (override.new_room if override and override.new_room else entry.room.name),
         room_id=override_room.id if override_room else (None if override and override.new_room else entry.room_id),
-        section_ids=routine_section_ids(db, entry),
+        section_ids=routine_section_ids(db, entry) | frozenset(
+            link.section_id for link in (override.additional_sections if override else [])
+        ),
         module_id=entry.module_id,
         class_type_id=entry.class_type_id,
         cancelled=bool(override and override.is_cancelled),
@@ -128,5 +132,9 @@ def resolve_session_schedule(session):
 
 
 def session_section_ids(session)->set[int]:
-    if session.routine_entry:return {x.section_id for x in session.routine_entry.section_links} or {session.routine_entry.section_id}
+    if session.routine_entry:
+        section_ids = {x.section_id for x in session.routine_entry.section_links} or {session.routine_entry.section_id}
+        if session.schedule_override:
+            section_ids.update(link.section_id for link in session.schedule_override.additional_sections)
+        return section_ids
     return {session.timetable_entry.section_id}

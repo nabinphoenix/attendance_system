@@ -82,7 +82,7 @@ export default function Page() {
   const visibleDetailRows = detailRows.slice((detailPage - 1) * PAGE_SIZE, detailPage * PAGE_SIZE);
 
   const hint = kind === "students"
-    ? "Required columns: name, email, batch_name, section_name, phone. Each successful student import automatically queues a secure account-setup email."
+    ? "Required columns: name, email, batch_name, section_name. Optional columns: intake_code and phone. Excel files need one data worksheet; its tab name can be anything. Each successful student import automatically queues a secure account-setup email."
     : "Routine files accept MON-SUN or full day names. For a preview before publishing, use the Routine page import panel.";
 
   return <div className="max-w-6xl">
@@ -100,7 +100,7 @@ export default function Page() {
       <div className="mt-5 flex justify-end"><Button loading={uploading} disabled={!file}>{uploading ? "Importing..." : "Import file"}</Button></div>
     </form>
 
-    {error && <div className="mt-5"><ErrorState title="Import unavailable" description={error} onRetry={load} /></div>}
+    {error && <div className="mt-5"><ErrorState title="Import needs attention" description={error} /></div>}
     {result && <section className="mt-6 panel p-5 sm:p-6" aria-live="polite">
       <div className="flex flex-wrap items-center justify-between gap-3"><div><p className="text-sm text-slate-400">Import details</p><h2 className="text-lg font-semibold">{result.file_name}</h2></div><div className="flex items-center gap-2"><Badge tone={result.failed_count ? "warning" : "success"}>{result.failed_count ? "Completed with errors" : "Completed"}</Badge><Button variant="ghost" size="sm" onClick={() => setResult(null)}>Close</Button></div></div>
       <div className="mt-5 grid grid-cols-3 gap-3">{[["Rows", result.total_rows, "text-slate-100"], ["Succeeded", result.success_count, "text-emerald-300"], ["Failed", result.failed_count, "text-red-300"]].map(([label, value, tone]) => <div key={String(label)} className="rounded-lg bg-slate-950/60 p-4"><p className="text-xs uppercase tracking-wider text-slate-500">{label}</p><p className={`mt-1 text-2xl font-semibold ${tone}`}>{value}</p></div>)}</div>

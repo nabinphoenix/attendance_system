@@ -149,7 +149,18 @@ def consume_oauth_attempt(db: Session, state: str | None) -> GoogleOAuthAttempt:
 
 
 def _request(method: str, url: str, **kwargs: Any) -> httpx.Response:
-    return httpx.request(method, url, timeout=settings.google_workspace_timeout_seconds, **kwargs)
+    try:
+        return httpx.request(method, url, timeout=settings.google_workspace_timeout_seconds, **kwargs)
+    except httpx.TimeoutException as exc:
+        raise GoogleWorkspaceError(
+            "Google Workspace did not respond before the server timeout. Try again; if this continues, check the backend's outbound internet access.",
+            504,
+        ) from exc
+    except httpx.RequestError as exc:
+        raise GoogleWorkspaceError(
+            "The server could not contact Google Workspace. Check the backend's internet connection and Google service availability.",
+            502,
+        ) from exc
 
 
 def _error_detail(response: httpx.Response, fallback: str) -> str:

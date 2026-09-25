@@ -121,7 +121,7 @@ function MarkdownMessage({ content }: { content: string }) {
   return <div className="assistant-markdown">{blocks}</div>;
 }
 const examples = [
-  "List the current intakes and their cohort semesters.",
+  "List the current Levels, Intake Codes, and Semesters.",
   "Create a program called Bachelor of Computer Applications.",
   "Show attendance for section 1.",
   "Show the students at risk because of attendance.",
@@ -144,7 +144,7 @@ export default function AssistantPage() {
     if (saved) { try { const parsed = JSON.parse(saved) as Chat[]; if (parsed.length) { setChats(parsed); setChatId(parsed[0].id); setMessages(parsed[0].messages); return; } } catch { /* ignore corrupt local history */ } }
     const initial = { id: crypto.randomUUID(), title: "New chat", messages: [welcome] };
     setChats([initial]); setChatId(initial.id);
-  }, []);
+  }, [welcome]);
 
   useEffect(() => {
     if (!chatId) return;

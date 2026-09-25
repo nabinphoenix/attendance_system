@@ -8,10 +8,10 @@ from sqlalchemy.orm import joinedload
 from app.core.dependencies import DbSession, get_current_user, require_role
 from app.modules.identity.models import User
 from app.modules.operations.service import log_audit
-from app.modules.scheduling.models import OverrideStatus, ScheduleOverride
+from app.modules.scheduling.models import OverrideStatus, ScheduleOverride, ScheduleOverrideSection
 from app.modules.scheduling.service import EffectiveClass, create_schedule_override, resolve_effective_class, routine_override_conflicts, validate_routine_override_conflicts
 from .models import AcademicModule, Batch, Block, ClassType, CohortSemester, Intake, ModuleOffering, Program, Room, RoutineEntry, RoutineEntrySection, RoutinePendingSection, Section, Student, Teacher, TimeSlot
-from .module_offering_service import resolve_active_module_offering, synchronize_offering_sections, validate_offering_context
+from .module_offering_service import offering_section_ids, resolve_active_module_offering, synchronize_offering_sections, validate_offering_context
 from .student_profile_service import current_student_profile
 from .promotion_service import period_for_context, routine_is_active_on_date, student_section_at
 
@@ -477,10 +477,58 @@ def my_teacher_routine(user:Annotated[User,Depends(require_role("teacher"))],db:
 def teacher_routine(teacher_id:int,db:DbSession):
  get(db,Teacher,teacher_id,"Teacher")
  return routines(db,teacher_id=teacher_id)
-class RoutineOverrideCreate(BaseModel):override_date:date;new_teacher_id:int|None=None;new_room:str|None=None;new_room_id:int|None=None;start_time:time|None=None;end_time:time|None=None;is_cancelled:bool=False;reason:str
+class RoutineOverrideCreate(BaseModel):
+ override_date:date
+ new_teacher_id:int|None=None
+ new_room:str|None=None
+ new_room_id:int|None=None
+ start_time:time|None=None
+ end_time:time|None=None
+ is_cancelled:bool=False
+ additional_section_ids:list[int]=Field(default_factory=list,description="Extra sections included in this occurrence only.")
+ reason:str
 class RoutineOverrideDecision(BaseModel):status:str
 @router.get("/routines/{routine_id}/overrides")
-def routine_overrides(routine_id:int,db:DbSession):return db.scalars(select(ScheduleOverride).where(ScheduleOverride.routine_entry_id==routine_id).order_by(ScheduleOverride.override_date.desc())).all()
+def routine_overrides(routine_id:int,db:DbSession):
+ rows=db.scalars(select(ScheduleOverride).where(ScheduleOverride.routine_entry_id==routine_id).order_by(ScheduleOverride.override_date.desc())).all()
+ return [routine_override_read(row) for row in rows]
+
+def validate_override_additional_sections(db,entry:RoutineEntry,section_ids:list[int])->list[int]:
+ if len(section_ids)!=len(set(section_ids)):raise HTTPException(422,"Choose each additional section only once")
+ requested=set(section_ids);existing=routine_section_ids(entry)
+ if requested & existing:raise HTTPException(422,"The original class sections are already included; choose only another section")
+ if not requested:return []
+ sections=db.scalars(select(Section).where(Section.id.in_(requested))).all()
+ found={section.id:section for section in sections}
+ missing=requested-found.keys()
+ if missing:raise HTTPException(404,f"Section {min(missing)} not found")
+ original_sections=[db.get(Section,section_id) for section_id in existing]
+ batch_ids={section.batch_id for section in original_sections if section}
+ if len(batch_ids)!=1:raise HTTPException(422,"The original class sections must belong to the same batch")
+ batch_id=next(iter(batch_ids))
+ other_batch=[section.name for section in sections if section.batch_id!=batch_id]
+ if other_batch:raise HTTPException(422,f"Additional sections must belong to the original class batch: {', '.join(sorted(other_batch))}")
+ if entry.module_offering_id:
+  offering=entry.module_offering
+  if offering is None:raise HTTPException(422,"The original class course assignment could not be found")
+  not_assigned=requested-offering_section_ids(db,offering)
+  if not_assigned:
+   names=[found[section_id].name for section_id in sorted(not_assigned)]
+   raise HTTPException(422,f"Section {', '.join(names)} is not included in this class's course assignment")
+ return sorted(requested)
+
+def routine_override_read(row:ScheduleOverride)->dict:
+ links=sorted(row.additional_sections,key=lambda link:(link.section.name,link.section_id))
+ return {
+  "id":row.id,"timetable_entry_id":row.timetable_entry_id,"routine_entry_id":row.routine_entry_id,
+  "override_date":row.override_date,"new_teacher_id":row.new_teacher_id,"new_room":row.new_room,
+  "new_room_id":row.new_room_id,"start_time":row.start_time,"end_time":row.end_time,
+  "is_cancelled":row.is_cancelled,"is_makeup":row.is_makeup,"reason":row.reason,
+  "status":row.status.value,"created_by":row.created_by,
+  "additional_section_ids":[link.section_id for link in links],
+  "additional_section_names":[link.section.name for link in links],
+ }
+
 @router.post("/routines/{routine_id}/overrides/availability",response_model=RoutineAvailability)
 def routine_override_availability(routine_id:int,p:RoutineOverrideCreate,user:Annotated[User,Depends(require_role("admin"))],db:DbSession):
  entry=get(db,RoutineEntry,routine_id,"Routine entry")
@@ -491,7 +539,9 @@ def routine_override_availability(routine_id:int,p:RoutineOverrideCreate,user:An
   return RoutineAvailability(available=False,conflicts=[conflict])
  if p.new_teacher_id is not None:get(db,Teacher,p.new_teacher_id,"Substitute teacher")
  if p.new_room_id is not None:get(db,Room,p.new_room_id,"Room")
- proposed=ScheduleOverride(routine_entry_id=routine_id,created_by=user.id,status=OverrideStatus.PENDING,**p.model_dump())
+ additional_ids=validate_override_additional_sections(db,entry,p.additional_section_ids)
+ proposed=ScheduleOverride(routine_entry_id=routine_id,created_by=user.id,status=OverrideStatus.PENDING,**p.model_dump(exclude={"additional_section_ids"}))
+ proposed.additional_sections=[ScheduleOverrideSection(section_id=section_id) for section_id in additional_ids]
  _,conflicts=routine_override_conflicts(db,entry,proposed)
  return RoutineAvailability(available=not conflicts,conflicts=[RoutineConflict(**item) for item in conflicts])
 @router.post("/routines/{routine_id}/overrides")
@@ -500,9 +550,11 @@ def create_routine_override(routine_id:int,p:RoutineOverrideCreate,user:Annotate
  if p.new_teacher_id is not None:get(db,Teacher,p.new_teacher_id,"Substitute teacher")
  if p.new_room_id is not None:get(db,Room,p.new_room_id,"Room")
  if db.scalar(select(ScheduleOverride).where(ScheduleOverride.routine_entry_id==routine_id,ScheduleOverride.override_date==p.override_date)):raise HTTPException(409,"An override already exists for this routine and date")
- proposed=ScheduleOverride(routine_entry_id=routine_id,created_by=user.id,status=OverrideStatus.PENDING,**p.model_dump())
+ additional_ids=validate_override_additional_sections(db,entry,p.additional_section_ids)
+ proposed=ScheduleOverride(routine_entry_id=routine_id,created_by=user.id,status=OverrideStatus.PENDING,**p.model_dump(exclude={"additional_section_ids"}))
+ proposed.additional_sections=[ScheduleOverrideSection(section_id=section_id) for section_id in additional_ids]
  validate_routine_override_conflicts(db,entry,proposed)
- obj=create_schedule_override(db,routine_entry_id=routine_id,created_by=user.id,**p.model_dump());log_audit(db,user.id,"routine_override.created","schedule_override",obj.id,None,{"routine_entry_id":routine_id,**p.model_dump()});db.commit();db.refresh(obj);return obj
+ obj=create_schedule_override(db,routine_entry_id=routine_id,created_by=user.id,additional_section_ids=additional_ids,**p.model_dump(exclude={"additional_section_ids"}));log_audit(db,user.id,"routine_override.created","schedule_override",obj.id,None,{"routine_entry_id":routine_id,**p.model_dump()});db.commit();db.refresh(obj);return routine_override_read(obj)
 
 @router.patch("/routines/{routine_id}/overrides/{override_id}")
 def decide_routine_override(routine_id:int,override_id:int,p:RoutineOverrideDecision,user:Annotated[User,Depends(require_role("admin"))],db:DbSession):
@@ -511,8 +563,10 @@ def decide_routine_override(routine_id:int,override_id:int,p:RoutineOverrideDeci
  try:status=OverrideStatus(p.status)
  except ValueError as exc:raise HTTPException(422,"Status must be approved or rejected") from exc
  if status==OverrideStatus.PENDING:raise HTTPException(422,"Choose approved or rejected")
- if status==OverrideStatus.APPROVED:validate_routine_override_conflicts(db,entry,override)
- before=override.status.value;override.status=status;log_audit(db,user.id,"routine_override.decision","schedule_override",override.id,{"status":before},{"status":status.value});db.commit();db.refresh(override);return override
+ if status==OverrideStatus.APPROVED:
+  validate_override_additional_sections(db,entry,[link.section_id for link in override.additional_sections])
+  validate_routine_override_conflicts(db,entry,override)
+ before=override.status.value;override.status=status;log_audit(db,user.id,"routine_override.decision","schedule_override",override.id,{"status":before},{"status":status.value});db.commit();db.refresh(override);return routine_override_read(override)
 
 def effective_routine_read(db,effective:EffectiveClass)->EffectiveRoutineRead:
  entry=effective.routine_entry;sections=[db.get(Section,section_id) for section_id in sorted(effective.section_ids)]
@@ -525,15 +579,20 @@ def effective_occurrences(db,entries:list[RoutineEntry],date_from:date,days:int,
   on_date=date_from+timedelta(days=offset)
   student_section_id=student_section_at(db,student_id,on_date) if student_id is not None else None
   for entry in entries:
-   if entry.day_of_week==on_date.weekday() and routine_is_active_on_date(db,entry,on_date) and (student_id is None or student_section_id in routine_section_ids(entry)):result.append(effective_routine_read(db,resolve_effective_class(db,entry,on_date)))
+   if entry.day_of_week!=on_date.weekday() or not routine_is_active_on_date(db,entry,on_date):continue
+   effective=resolve_effective_class(db,entry,on_date)
+   if student_id is not None and student_section_id not in effective.section_ids:continue
+   result.append(effective_routine_read(db,effective))
   end_date=date_from+timedelta(days=min(max(days,1),31)-1)
   entry_by_id={entry.id:entry for entry in entries}
   makeup_overrides=db.scalars(select(ScheduleOverride).where(ScheduleOverride.routine_entry_id.in_(entry_by_id),ScheduleOverride.is_makeup.is_(True),ScheduleOverride.status==OverrideStatus.APPROVED,ScheduleOverride.override_date.between(date_from,end_date))).all()
   existing={(item.routine_id,item.date) for item in result}
   for override in makeup_overrides:
-   if student_id is not None and student_section_at(db,student_id,override.override_date) not in routine_section_ids(entry_by_id[override.routine_entry_id]):continue
    key=(override.routine_entry_id,override.override_date)
-   if key not in existing:result.append(effective_routine_read(db,resolve_effective_class(db,entry_by_id[override.routine_entry_id],override.override_date,override)))
+   if key in existing:continue
+   effective=resolve_effective_class(db,entry_by_id[override.routine_entry_id],override.override_date,override)
+   if student_id is not None and student_section_at(db,student_id,override.override_date) not in effective.section_ids:continue
+   result.append(effective_routine_read(db,effective))
  return sorted(result,key=lambda item:(item.date,item.start_time,item.routine_id))
 
 @student_router.get("/routines/me/occurrences",response_model=list[EffectiveRoutineRead])

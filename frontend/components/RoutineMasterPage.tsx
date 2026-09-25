@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import api from "@/lib/api";
 import { Button } from "@/components/ui/Button";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
@@ -42,7 +42,7 @@ export default function RoutineMasterPage({
     [fields],
   );
 
-  async function load() {
+  const load = useCallback(async () => {
     setLoading(true);
     setError("");
     try {
@@ -57,11 +57,11 @@ export default function RoutineMasterPage({
     } finally {
       setLoading(false);
     }
-  }
+  }, [endpoint, optionEndpoints]);
 
   useEffect(() => {
     void load();
-  }, [endpoint]);
+  }, [load]);
 
   const payload = () => Object.fromEntries(
     fields.flatMap((field) => {

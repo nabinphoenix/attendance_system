@@ -3,11 +3,13 @@
 import { FormEvent, useCallback, useEffect, useState } from "react";
 import api from "@/lib/api";
 import { Button } from "@/components/ui/Button";
+import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { SystemFeedback } from "@/components/ui/SystemFeedback";
 
 type Network = { id: number; label: string; cidr: string; is_active: boolean; created_at: string };
 type Policy = "off" | "flag";
+type Confirmation = { kind: "broad-add" } | { kind: "broad-edit" } | { kind: "deactivate"; id: number; label: string; cidr: string };
 
 export default function Page() {
   const [networks, setNetworks] = useState<Network[]>([]);
@@ -22,6 +24,7 @@ export default function Page() {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -41,12 +44,19 @@ export default function Page() {
   async function saveNetwork(event: FormEvent) {
     event.preventDefault();
     if (!label.trim() || !cidr.trim()) return;
-    const broad = isBroadRange(cidr);
-    if (broad && !window.confirm("This range is wider than IPv4 /16 or IPv6 /48. Register it anyway?")) return;
+    if (isBroadRange(cidr)) {
+      setConfirmation({ kind: "broad-add" });
+      return;
+    }
+    await addNetwork(false);
+  }
+
+  async function addNetwork(force: boolean) {
     setBusy(true);
     setError("");
+    setMessage("");
     try {
-      await api.post("/api/v1/campus-networks", { label: label.trim(), cidr: cidr.trim(), force: broad });
+      await api.post("/api/v1/campus-networks", { label: label.trim(), cidr: cidr.trim(), force });
       setLabel("");
       setCidr("");
       setMessage("Campus network added.");
@@ -55,7 +65,6 @@ export default function Page() {
       setError(String(requestError.response?.data?.detail ?? "Unable to add network."));
     } finally { setBusy(false); }
   }
-
   async function detectNetwork() {
     setBusy(true);
     setError("");
@@ -88,12 +97,20 @@ export default function Page() {
   async function saveEdit(event: FormEvent) {
     event.preventDefault();
     if (editing === null || !editLabel.trim() || !editCidr.trim()) return;
-    const broad = isBroadRange(editCidr);
-    if (broad && !window.confirm("This range is wider than IPv4 /16 or IPv6 /48. Save it anyway?")) return;
+    if (isBroadRange(editCidr)) {
+      setConfirmation({ kind: "broad-edit" });
+      return;
+    }
+    await updateNetwork(false);
+  }
+
+  async function updateNetwork(force: boolean) {
+    if (editing === null) return;
     setBusy(true);
     setError("");
+    setMessage("");
     try {
-      await api.patch(`/api/v1/campus-networks/${editing}`, { label: editLabel.trim(), cidr: editCidr.trim(), force: broad });
+      await api.patch("/api/v1/campus-networks/" + editing, { label: editLabel.trim(), cidr: editCidr.trim(), force });
       setEditing(null);
       setMessage("Campus network updated.");
       await load();
@@ -102,12 +119,12 @@ export default function Page() {
     } finally { setBusy(false); }
   }
 
-  async function deactivate(id: number) {
-    if (!window.confirm("Deactivate this campus network? Existing attendance records remain unchanged.")) return;
+  async function deactivateNetwork(id: number) {
     setBusy(true);
     setError("");
+    setMessage("");
     try {
-      await api.post(`/api/v1/campus-networks/${id}/deactivate`);
+      await api.post("/api/v1/campus-networks/" + id + "/deactivate");
       setMessage("Campus network deactivated.");
       await load();
     } catch (requestError: any) {
@@ -115,6 +132,12 @@ export default function Page() {
     } finally { setBusy(false); }
   }
 
+  async function confirmAction() {
+    if (!confirmation) return;
+    if (confirmation.kind === "broad-add") return addNetwork(true);
+    if (confirmation.kind === "broad-edit") return updateNetwork(true);
+    return deactivateNetwork(confirmation.id);
+  }
   async function changePolicy(value: Policy) {
     setBusy(true);
     setError("");
@@ -166,13 +189,23 @@ export default function Page() {
             <div className="flex gap-2"><Button type="submit" disabled={busy}>Save</Button><Button type="button" variant="ghost" onClick={() => setEditing(null)}>Cancel</Button></div>
           </form> : <div className="flex flex-wrap items-center justify-between gap-3">
             <div><p className="font-semibold">{network.label} <span className={network.is_active ? "text-emerald-400" : "text-slate-400"}>· {network.is_active ? "Active" : "Inactive"}</span></p><p className="mt-1 font-mono text-sm text-slate-300">{network.cidr}</p></div>
-            <div className="flex gap-2"><Button type="button" variant="outline" disabled={busy} onClick={() => { setEditing(network.id); setEditLabel(network.label); setEditCidr(network.cidr); }}>Edit</Button>{network.is_active && <Button type="button" variant="ghost" disabled={busy} onClick={() => void deactivate(network.id)}>Deactivate</Button>}</div>
+            <div className="flex gap-2"><Button type="button" variant="outline" disabled={busy} onClick={() => { setEditing(network.id); setEditLabel(network.label); setEditCidr(network.cidr); }}>Edit</Button>{network.is_active && <Button type="button" variant="ghost" disabled={busy} onClick={() => setConfirmation({ kind: "deactivate", id: network.id, label: network.label, cidr: network.cidr })}>Deactivate</Button>}</div>
           </div>}
         </div>)}
         {!networks.length && <p className="text-sm text-slate-400">No campus networks have been registered yet.</p>}
       </div>
     </section>
-  </div>;
+  <ConfirmDialog
+    open={confirmation !== null}
+    title={confirmation?.kind === "deactivate" ? "Deactivate " + confirmation.label + "?" : confirmation?.kind === "broad-edit" ? "Save a broad network range?" : "Register a broad IP range?"}
+    description={confirmation?.kind === "deactivate"
+      ? `Deactivate ${confirmation.label} (${confirmation.cidr})? It will stop being used for new attendance evidence; existing records remain unchanged.`
+      : `The range ${confirmation?.kind === "broad-edit" ? editCidr : cidr} is wider than IPv4 /16 or IPv6 /48 and may include addresses outside your campus. ${confirmation?.kind === "broad-edit" ? "Save" : "Register"} it only if the full range belongs to this college.`}
+    confirmLabel={confirmation?.kind === "deactivate" ? "Deactivate network" : "Use this broad range"}
+    tone="danger"
+    onClose={() => setConfirmation(null)}
+    onConfirm={confirmAction}
+  />  </div>;
 }
 
 function isBroadRange(cidr: string): boolean {
